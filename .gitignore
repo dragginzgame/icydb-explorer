@@ -29,3 +29,9 @@ dist-ssr
 # Cargo workspace build output (moved here from src-tauri/target once
 # src-tauri joined the root workspace in Task 2)
 /target/
+
+# icp-cli's local project state: cached replica binaries, identities, and
+# the running network's ledger/state — machine-local, not project config.
+# (Anchored to the repo root only; test fixtures under
+# src-tauri/tests/fixtures/*/.icp/ are unaffected and stay tracked.)
+/.icp/

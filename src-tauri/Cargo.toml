@@ -27,3 +27,6 @@ icydb = { version = "=0.202.1", features = ["sql-explain"] }
 tokio = { version = "1", features = ["sync"] }
 thiserror = "2"
 
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+

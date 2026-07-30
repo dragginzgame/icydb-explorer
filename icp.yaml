@@ -1,0 +1,13 @@
+# yaml-language-server: $schema=https://github.com/dfinity/icp-cli/raw/refs/tags/v1.0.0/docs/schemas/icp-yaml-schema.json
+canisters:
+  - name: fixture
+    build:
+      steps:
+        - type: pre-built
+          path: target/wasm32-unknown-unknown/release/icydb_explorer_fixture.wasm
+
+networks:
+  - name: local
+    mode: managed
+    gateway:
+      port: 4943
