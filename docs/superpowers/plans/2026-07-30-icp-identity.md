@@ -1127,10 +1127,68 @@ Confirm the identity selector lists `default` and `anonymous`, that `anonymous` 
 - Record the three storage kinds (`plaintext`, `keyring`, `password`) so a reader knows which of their identities will work.
 - Note that `prime256v1` is now supported alongside `secp256k1` and `ed25519`.
 
+- [ ] **Step 4b: Correct the read-only safety claim (author-reported)**
+
+The icydb author reviewed our README and found our central safety claim wrong.
+Verified against `icydb-config-0.202.1`'s `emit.rs`, which calls **four independent
+switches** — `with_sql_readonly_enabled`, `with_sql_ddl_enabled`,
+`with_sql_fixtures_enabled`, `with_sql_update_policy`.
+
+So `readonly = true` means "generate `icydb_query`". It does **not** disable
+`icydb_ddl`, `icydb_update`, integrity, or fixtures. Our README and
+`docs/superpowers/specs/2026-07-29-icydb-explorer-design.md` both say the canister's
+`readonly = true` *is* the security boundary. A reader could follow that, set
+`readonly = true`, leave `ddl` unset, and believe they were protected.
+
+Correct both documents to state the real guarantee, which is what the app already
+does: **it calls only `icydb_query`, a query method whose dispatcher rejects mutation
+statements, and query calls cannot persist canister state.** Then recommend
+`ddl = false`, `update = false`, and production `fixtures = false` as defence in
+depth — explicitly not as the boundary itself.
+
+Do not overstate the app's own role: the statement classifier remains a UX
+affordance, not an enforcement mechanism.
+
+- [ ] **Step 4c: Remove the unbounded `SELECT` fallback (author-reported)**
+
+`src-tauri/src/sql/rows.rs`'s `unordered_rows_sql` returns a bare
+`SELECT * FROM {entity}`. The generated SQL lane is trusted/admin and intentionally
+bypasses public-read admission, so an unbounded read there is exactly wrong — it was
+added in an earlier phase as an introspection-disabled fallback.
+
+Remove it. When `fetch_rows`'s `DESCRIBE` fails with `AppError::IntrospectionDisabled`
+and no primary key can be derived, **do not** issue an unbounded read: return an error
+explaining that automatic row paging needs introspection to derive an `ORDER BY`, and
+that the SQL console with an explicit `ORDER BY … LIMIT` is the way to browse that
+canister. Delete `unordered_rows_sql` and its test rather than leaving them unused.
+
+`rows_sql`'s empty-`pk_columns` branch emits `LIMIT`/`OFFSET` with no `ORDER BY`,
+which icydb rejects as `UnorderedPagination` anyway — make that branch honest too,
+either by erroring or by having callers never reach it. Say which you chose.
+
+Add a test asserting the introspection-disabled path yields an error naming the
+limitation, and that no code path can produce a `SELECT` without both `ORDER BY` and
+`LIMIT`.
+
+Note for the README: this changes what item 8 can promise. Row browsing is
+*unavailable* on a canister with introspection disabled, not merely schema-blind.
+
+- [ ] **Step 4d: Soften the `dfx` claim to a compatibility note (author-reported)**
+
+Our README states categorically that dfx's replica cannot be used because it lacks
+the `/api/v3/…/query` endpoint ic-agent 0.48 requires. The author notes the protocol
+admits both v2 and v3 query routes and found no authoritative basis for rejecting
+every dfx replica.
+
+Ours generalised from a single observed 404 on one machine — the same single-sample
+error already recorded in this project's postmortem. Rewrite it as what it is: an
+observation, with the version and date, and a note that `icp`'s replica is known to
+work while a given dfx replica may or may not. Do not assert a categorical rule.
+
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src-tauri/tests/integration.rs README.md src-tauri/src/discovery
+git add src-tauri/tests/integration.rs README.md docs/superpowers/specs src-tauri/src/sql src-tauri/src/commands.rs src-tauri/src/discovery
 git commit -m "test: verify the default identity loads live; document identity support"
 ```
 
