@@ -83,9 +83,46 @@ independent follow-up, not step zero.
 | Access | Read-only | `SELECT`/`SHOW`/`DESCRIBE`/`EXPLAIN` only; smallest surface, safe to point anywhere |
 | Transport | `ic-agent` in the Tauri backend | Faster and cleaner errors than shelling out to `icp`; no external binary on PATH |
 | Sharded entities | Canister tree, query one leaf | Never invents cross-canister query semantics or lies about where a row lives |
-| Canister discovery | Read the project's `.icp/` artifacts | Zero manual entry for canic-style projects |
+| Canister discovery | Root id from `.icp/`, then live topology walk | Zero manual entry for canic-style projects; see "Discovery inputs" |
 | Frontend | React + Vite + Tailwind | Matches every other frontend in the user's projects |
 | icydb version | Pinned `=0.202.1` | Matches toko's pin; icydb moves fast and `SqlQueryResult` is version-coupled |
+
+## Discovery inputs
+
+A canic-orchestrated project keeps everything the explorer needs under `.icp/`.
+Verified against `dragginz/toko`:
+
+| Path | Yields |
+|---|---|
+| `.icp/cache/mappings/<project>.ids.json` | Statically known canister ids |
+| `.icp/cli-home/port-descriptors/<port>.json` | Replica `gateway.{ip,port}`, network name, cached `root-key` |
+| `.icp/cli-home/identity/identity_defaults.json` | Default identity name |
+| `.icp/cli-home/identity/identity_list.json` | Identity `algorithm` (e.g. `secp256k1`) and principal |
+| `.icp/cli-home/identity/keys/<name>.pem` | The identity key itself |
+| `.icp/<env>/canisters/<role>/<role>.did` | Known canister roles and their candid interfaces |
+
+**Static ids are not sufficient.** `toko.ids.json` contains only `root`; canic creates
+the rest of the fleet dynamically at runtime. Canister ids for hubs, shards, and
+instances exist only in root's live topology. So the tree walk is not merely nicer
+navigation — it is the only way to obtain most canister ids:
+
+1. Read the root canister id from `.icp/cache/mappings/<project>.ids.json`.
+2. Call `canic_canister_children` on it, paging with
+   `record { offset : nat64; limit : nat64 }`.
+3. Each `CanisterInfo` is `record { pid : principal; role : text; created_at : nat64;
+   module_hash : opt blob; parent_pid : opt principal }`. `parent_pid` builds the
+   tree; `role` labels the node and matches the `.icp/<env>/canisters/<role>/`
+   directory name.
+
+Identities live in icp's own store, **not** dfx's. toko's default is `toko-local`,
+a plaintext `secp256k1` pem — so `ic_agent::identity::Secp256k1Identity` is the
+loader, and the pem's algorithm must be read from `identity_list.json` rather than
+assumed.
+
+Canic's error type is `record { code : ErrorCode; message : text }`. The explorer
+decodes only `{ message : String }` from it — candid skips unmatched record fields,
+so this deliberately avoids coupling to canic's large and evolving `ErrorCode`
+variant.
 
 ## Architecture
 
@@ -102,7 +139,7 @@ React/Vite/Tailwind  ──tauri invoke──▶  Rust backend  ──ic-agent�
 
 | Module | Responsibility | Depends on |
 |---|---|---|
-| `discovery` | Parse `.icp/<env>/canisters/*` into canister names and ids | filesystem only |
+| `discovery` | Parse `.icp/` into environments, root ids, replica URL, identity | filesystem only |
 | `topology` | Walk `canic_canister_children` into a fleet/role tree | `agent` |
 | `agent` | Build and cache one `ic-agent` per environment; `fetch_root_key()` locally; load identity pem | ic-agent |
 | `sql` | Send `icydb_query(text)` as a query call; decode into `SqlQueryResult` | `agent`, icydb |
@@ -121,6 +158,13 @@ is the only module that changes.
 
 `topology` degrades gracefully: a canister without `canic_*` endpoints yields a flat
 list rather than an error.
+
+Note for `view`: icydb's catalog description structs
+(`EntityCatalogDescription`, `EntityFieldDescription`, `EntitySchemaDescription`)
+have **private fields with `const fn` accessors** — `entity_name()`, `store_path()`,
+`storage()`, `columns()`, `indexes()`, `relations()`, `schema_version()`. They derive
+`CandidType + Deserialize`, so they decode fine, but `view` must read them through
+accessors rather than field access.
 
 ### Command surface
 
@@ -170,7 +214,7 @@ explanations rather than raw error text:
 
 | Scope | Approach |
 |---|---|
-| `discovery` | Fixture `.icp/` directory trees → expected canister lists |
+| `discovery` | Fixture `.icp/` trees → expected environments, root ids, replica URL, identity |
 | `view` | `SqlQueryResult` fixtures → DTO snapshots, covering **every** `OutputValue` variant; pure and fast, no replica |
 | Statement classifier | Table-driven: statements → allowed/rejected |
 | Integration | Real query calls against a local replica running the fixture canister |
