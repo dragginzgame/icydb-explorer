@@ -1,9 +1,10 @@
 //! Turns a discovered `Environment` into a usable `ic_agent::Agent`.
 //!
-//! Building an agent means loading a pem identity from disk and — for
-//! local replicas only — an extra network round-trip to fetch the root
-//! key. Neither is something callers should repeat on every query, so
-//! `AgentPool` builds one `Agent` per environment and reuses it.
+//! Building an agent means loading an identity (pem from disk, or a keyring
+//! export) and — for local replicas only — an extra network round-trip to
+//! fetch the root key. Neither is something callers should repeat on every
+//! query, so `AgentPool` builds one `Agent` per `(environment, identity)`
+//! pair and reuses it.
 
 mod export;
 mod identity;
@@ -17,10 +18,11 @@ use std::sync::Arc;
 use ic_agent::Agent;
 use tokio::sync::Mutex;
 
-use crate::discovery::Environment;
+use crate::discovery::{Environment, IdentityRef};
 use crate::error::AppError;
 
-/// Caches one `ic_agent::Agent` per `Environment::name`.
+/// Caches one `ic_agent::Agent` per `(Environment::name, IdentityRef::name)`
+/// pair — see `cache_key`.
 pub struct AgentPool {
     agents: Mutex<HashMap<String, Arc<Agent>>>,
 }
@@ -38,8 +40,14 @@ impl AgentPool {
         }
     }
 
-    /// Returns the cached agent for `env`, building and caching one on a
-    /// miss.
+    /// Returns the cached agent for `(env, identity)`, building and caching
+    /// one on a miss.
+    ///
+    /// Keyed by both `env` and `identity` (see `cache_key`) rather than by
+    /// environment alone: once identity is user-selectable, a cache keyed
+    /// only on the environment name would silently keep returning the first
+    /// identity's agent for every later selection — the UI would show one
+    /// identity while queries ran as another.
     ///
     /// For local replicas (loopback/localhost/private-network hosts — see
     /// `is_local_replica`), this also calls `fetch_root_key`, since a local
@@ -48,17 +56,22 @@ impl AgentPool {
     /// is reported as `AppError::ReplicaUnreachable` naming the URL, not a
     /// generic agent error, so that someone whose replica isn't running can
     /// tell what's wrong at a glance.
-    pub async fn get(&self, env: &Environment) -> Result<Arc<Agent>, AppError> {
+    pub async fn get(
+        &self,
+        env: &Environment,
+        identity: &IdentityRef,
+    ) -> Result<Arc<Agent>, AppError> {
+        let key = cache_key(&env.name, &identity.name);
         let mut agents = self.agents.lock().await;
-        if let Some(agent) = agents.get(&env.name) {
+        if let Some(agent) = agents.get(&key) {
             return Ok(Arc::clone(agent));
         }
 
-        let identity = identity_for(env).await?;
+        let boxed_identity = load_identity(identity).await?;
 
         let agent = Agent::builder()
             .with_url(&env.replica_url)
-            .with_boxed_identity(identity)
+            .with_boxed_identity(boxed_identity)
             .build()
             .map_err(|e| AppError::Agent(e.to_string()))?;
 
@@ -72,42 +85,18 @@ impl AgentPool {
         }
 
         let agent = Arc::new(agent);
-        agents.insert(env.name.clone(), Arc::clone(&agent));
+        agents.insert(key, Arc::clone(&agent));
         Ok(agent)
     }
 }
 
-/// Resolves the identity to use for `env`.
+/// Builds the pool's cache key.
 ///
-/// An environment with no *loadable* identity (`Environment.identity ==
-/// None`) is not treated as "connect anonymously": icydb's SQL endpoints
-/// are controller-gated, so an anonymous caller would only find out it's
-/// rejected after a network round-trip, via a rejection message that
-/// doesn't obviously point back at "you have no usable identity". Failing
-/// locally and immediately, with a message that says exactly what's
-/// missing, is the clearer failure for the user.
-///
-/// `None` here means *no identity store was found at all* — neither a
-/// project-local `.icp/cli-home/identity/` nor a user-level icp-cli store
-/// (see `discovery::read_default_identity`). It no longer also covers "a
-/// default identity exists but its `kind` isn't loadable": `IdentityRef` can
-/// now represent every kind honestly (`kind`, `unusable_reason`), so a
-/// resolved store's default identity is always `Some`, keyring included —
-/// `load_identity` is what decides whether that identity can actually be
-/// used, surfacing its own `unusable_reason` when it can't.
-async fn identity_for(env: &Environment) -> Result<Box<dyn ic_agent::Identity>, AppError> {
-    match &env.identity {
-        Some(identity_ref) => load_identity(identity_ref).await,
-        None => Err(AppError::Agent(format!(
-            "no usable identity is available for environment \"{}\"; icydb's SQL endpoints \
-             are controller-gated, so no default identity means no identity store was found \
-             at all — neither a project-local `.icp/cli-home/identity/` nor a user-level \
-             icp-cli store. Configure an identity for this environment (e.g. via `icp identity \
-             new`/`icp identity use`, or this project's own .icp/cli-home/identity/) before \
-             connecting",
-            env.name
-        ))),
-    }
+/// Length-prefixed rather than joined with a separator, so an environment or
+/// identity name containing the separator cannot collide with a different
+/// pair.
+fn cache_key(env: &str, identity: &str) -> String {
+    format!("{}:{env}:{}:{identity}", env.len(), identity.len())
 }
 
 /// Treats a replica as local only if its host is `localhost` or an IP in a
@@ -173,37 +162,27 @@ fn host_of(url: &str) -> Option<&str> {
 mod tests {
     use super::*;
 
-    fn env_without_identity() -> Environment {
-        Environment {
-            name: "demo-local".into(),
-            replica_url: "http://127.0.0.1:4943".into(),
-            canisters: Vec::new(),
-            identity: None,
-            identities: Vec::new(),
-            artifacts: Vec::new(),
-        }
+    #[test]
+    fn the_cache_key_distinguishes_identities_within_one_environment() {
+        assert_ne!(
+            cache_key("local", "alice"),
+            cache_key("local", "bob"),
+            "two identities in one environment must not share an agent"
+        );
+        assert_ne!(
+            cache_key("local", "alice"),
+            cache_key("staging", "alice"),
+            "one identity in two environments must not share an agent"
+        );
+        assert_eq!(cache_key("local", "alice"), cache_key("local", "alice"));
     }
 
-    // Since Task 3, `IdentityRef` can represent every icp identity kind
-    // honestly (including `keyring`), so `env.identity == None` no longer
-    // hides a keyring-backed default behind "unusable" — it means no
-    // identity store was found at all. This test no longer asserts the
-    // message names "keyring" (it doesn't apply to this case any more);
-    // see `identity_for`'s doc comment for why.
-    #[tokio::test]
-    async fn no_identity_fails_fast_and_names_the_environment_and_the_fix() {
-        let error = identity_for(&env_without_identity())
-            .await
-            .err()
-            .expect("no identity configured should be an error");
-        let text = error.explanation();
-        assert!(
-            text.contains("demo-local"),
-            "expected the environment name in the error, got: {text}"
-        );
-        assert!(
-            text.contains("icp identity") && text.contains(".icp/"),
-            "expected the actionable fix (icp identity / .icp/ config) in the error, got: {text}"
+    #[test]
+    fn the_cache_key_cannot_be_confused_by_a_separator_in_a_name() {
+        assert_ne!(
+            cache_key("local:alice", "bob"),
+            cache_key("local", "alice:bob"),
+            "a name containing the separator must not collide with another pair"
         );
     }
 

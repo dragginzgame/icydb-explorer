@@ -80,12 +80,21 @@ async fn query_dto(
     canister: Principal,
     sql: &str,
 ) -> Result<ResultDto, AppError> {
-    let agent = pool.get(environment).await?;
-    let identity = environment
-        .identity
-        .as_ref()
-        .map_or("<none>", |identity_ref| identity_ref.name.as_str());
-    let result = run_query(&agent, canister, sql, identity).await?;
+    // Task 5 re-keyed `AgentPool::get` by `(environment, identity)`, so a
+    // caller must now supply the identity explicitly. This still always
+    // uses the environment's *default* identity — Task 6 threads the
+    // user-selected identity through the command surface (and relocates
+    // the "no usable identity" message here, where the selection will be
+    // known); this is the minimal change needed to keep the build green
+    // until then.
+    let identity_ref = environment.identity.as_ref().ok_or_else(|| {
+        AppError::Agent(format!(
+            "no usable identity is available for environment \"{}\"",
+            environment.name
+        ))
+    })?;
+    let agent = pool.get(environment, identity_ref).await?;
+    let result = run_query(&agent, canister, sql, identity_ref.name.as_str()).await?;
     result_to_dto(result)
 }
 
@@ -126,7 +135,15 @@ pub async fn canister_tree(
         )));
     }
 
-    let agent = pool.get(environment).await?;
+    // See `query_dto`'s comment: same temporary "use the environment's
+    // default identity" shim, pending Task 6's threading.
+    let identity_ref = environment.identity.as_ref().ok_or_else(|| {
+        AppError::Agent(format!(
+            "no usable identity is available for environment \"{}\"",
+            environment.name
+        ))
+    })?;
+    let agent = pool.get(environment, identity_ref).await?;
     let mut forest = Vec::with_capacity(environment.canisters.len());
     for named in &environment.canisters {
         let root = parse_principal(&named.id)?;
