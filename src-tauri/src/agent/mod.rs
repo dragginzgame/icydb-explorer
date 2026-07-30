@@ -131,6 +131,32 @@ fn host_of(url: &str) -> Option<&str> {
 mod tests {
     use super::*;
 
+    fn env_without_identity() -> Environment {
+        Environment {
+            name: "demo-local".into(),
+            replica_url: "http://127.0.0.1:4943".into(),
+            root_canister_id: None,
+            identity: None,
+            artifacts: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn no_identity_fails_fast_and_names_the_environment_and_the_fix() {
+        let error = identity_for(&env_without_identity())
+            .err()
+            .expect("no identity configured should be an error");
+        let text = error.explanation();
+        assert!(
+            text.contains("demo-local"),
+            "expected the environment name in the error, got: {text}"
+        );
+        assert!(
+            text.contains("dfx identity") && text.contains(".icp/"),
+            "expected the actionable fix (dfx identity / .icp/ config) in the error, got: {text}"
+        );
+    }
+
     #[test]
     fn mainnet_boundary_hosts_are_not_local() {
         assert!(!is_local_replica("https://ic0.app"));
