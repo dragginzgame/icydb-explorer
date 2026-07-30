@@ -208,8 +208,12 @@ icydb = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 
 [build-dependencies]
-icydb-build = { workspace = true }
+icydb = { workspace = true }
 ```
+
+`icydb` — not `icydb-build` — belongs in `[build-dependencies]`: the `icydb::build`
+facade is the advertised downstream build-script API, and `icydb-build` is an
+implementation crate behind it.
 
 - [ ] **Step 3: Create `fixture/icydb.toml`**
 
@@ -230,10 +234,21 @@ ic = false
 - [ ] **Step 4: Create `fixture/build.rs`**
 
 ```rust
-fn main() {
-    icydb_build::build().expect("icydb build failed");
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    icydb::build::build_configured_canister!((), "crate::Canister", "fixture")
+
+    Ok(())
 }
 ```
+
+The macro takes `($canister_ty, $canister_path, $canister_name)` and expands to a
+`?` call, so `main` must return `Result`. `()` is the correct type argument from a
+build script, which cannot name its own crate's types. `$canister_name` must equal
+the `icydb.toml` key (`fixture`) — a mismatch silently falls back to SQL-disabled
+defaults, which is the failure Step 6 exists to catch.
+
+Do not use `icydb_build::build_with_options!`: it bypasses `icydb.toml` entirely and
+the SQL surface config would be ignored.
 
 - [ ] **Step 5: Declare entities covering the interesting value types**
 
