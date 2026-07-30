@@ -10,6 +10,7 @@ use candid::Principal;
 use ic_agent::identity::Secp256k1Identity;
 use ic_agent::Agent;
 
+use icydb_explorer_lib::error::AppError;
 use icydb_explorer_lib::sql::run_query;
 use icydb_explorer_lib::view::{result_to_dto, ResultDto};
 
@@ -156,4 +157,80 @@ async fn select_with_limit_and_no_order_by_is_rejected() {
         unordered.is_err(),
         "expected icydb to reject LIMIT/OFFSET without ORDER BY, got {unordered:?}"
     );
+}
+
+/// The negative counterpart to the four tests above: a canister that never
+/// enabled icydb's SQL surface at all. `dragginz/toko` is exactly this case
+/// — its canisters are built without `features = ["sql"]`, so their candid
+/// exposes at most `icydb_metrics`/`icydb_metrics_reset` (confirmed by
+/// grepping the built `user_hub.did` in that project) and never
+/// `icydb_query`.
+///
+/// This turns the app's single most valuable error message
+/// (`AppError::NoSqlSurface`, the one a new user is likeliest to hit first)
+/// into a permanent regression test rather than a one-off manual
+/// observation. Verified live against `toko`'s `root` canister on its own
+/// running replica before writing this test:
+///
+/// ```text
+/// $ icp canister call root icydb_query '("SHOW ENTITIES")' --environment toko --query --identity anonymous
+/// Error: The replica returned a rejection error: reject code CanisterError, reject message
+/// Error from Canister <root-id>: Canister has no query method 'icydb_query'..
+/// ```
+///
+/// That reject text contains the exact marker
+/// `sql::transport::map_reject_message` matches on
+/// (`"has no query method 'icydb_query'"`), which is what makes this
+/// deterministic rather than a guess about candid shape. No identity/pem is
+/// needed — a method that doesn't exist on the canister rejects any caller,
+/// controller or not, so this builds an anonymous `Agent` rather than
+/// reusing the fixture suite's controller pem.
+async fn connect_toko() -> (Agent, Principal) {
+    let url = std::env::var("ICYDB_EXPLORER_TOKO_URL").expect(
+        "set ICYDB_EXPLORER_TOKO_URL to the toko replica's URL, e.g. http://127.0.0.1:8000",
+    );
+    let canister_text = std::env::var("ICYDB_EXPLORER_TOKO_CANISTER")
+        .expect("set ICYDB_EXPLORER_TOKO_CANISTER to a deployed toko canister id (e.g. root)");
+    let canister = Principal::from_text(canister_text.trim())
+        .expect("ICYDB_EXPLORER_TOKO_CANISTER should be a valid principal");
+
+    let agent = Agent::builder()
+        .with_url(&url)
+        .build()
+        .expect("agent should build offline, without a network call");
+    agent
+        .fetch_root_key()
+        .await
+        .expect("should fetch the toko replica's root key — is its network running?");
+
+    (agent, canister)
+}
+
+#[tokio::test]
+#[ignore = "requires a running toko replica (ICYDB_EXPLORER_TOKO_URL/ICYDB_EXPLORER_TOKO_CANISTER)"]
+async fn run_query_against_a_toko_canister_reports_no_sql_surface() {
+    let (agent, canister) = connect_toko().await;
+    let canister_text = canister.to_text();
+
+    let result = run_query(&agent, canister, "SHOW ENTITIES", "icydb-explorer-test").await;
+
+    match result {
+        Err(AppError::NoSqlSurface { canister: named }) => {
+            assert_eq!(named, canister_text);
+            let text = AppError::NoSqlSurface { canister: named }.explanation();
+            assert!(
+                text.contains(&canister_text),
+                "explanation should name the canister: {text}"
+            );
+            assert!(
+                text.contains(r#"features = ["sql"]"#),
+                "explanation should mention features = [\"sql\"]: {text}"
+            );
+            assert!(
+                text.contains("icydb.toml"),
+                "explanation should mention icydb.toml: {text}"
+            );
+        }
+        other => panic!("expected NoSqlSurface, got {other:?}"),
+    }
 }
