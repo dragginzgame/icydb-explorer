@@ -54,7 +54,7 @@ impl AgentPool {
             return Ok(Arc::clone(agent));
         }
 
-        let identity = identity_for(env)?;
+        let identity = identity_for(env).await?;
 
         let agent = Agent::builder()
             .with_url(&env.replica_url)
@@ -87,25 +87,24 @@ impl AgentPool {
 /// locally and immediately, with a message that says exactly what's
 /// missing, is the clearer failure for the user.
 ///
-/// `None` here does not always mean *no identity is configured at all* —
-/// `discovery::read_default_identity` also reports `None` when a default
-/// identity exists but its `kind` isn't `"pem"` (this app only loads pem
-/// files), which is exactly the case a keyring-backed icp-cli default
-/// produces (verified live: this machine's own user-level default is
-/// `kind: "keyring"`). The message below names both possibilities rather
-/// than asserting the flatly wrong "no identity is configured" in that
-/// case.
-fn identity_for(env: &Environment) -> Result<Box<dyn ic_agent::Identity>, AppError> {
+/// `None` here means *no identity store was found at all* — neither a
+/// project-local `.icp/cli-home/identity/` nor a user-level icp-cli store
+/// (see `discovery::read_default_identity`). It no longer also covers "a
+/// default identity exists but its `kind` isn't loadable": `IdentityRef` can
+/// now represent every kind honestly (`kind`, `unusable_reason`), so a
+/// resolved store's default identity is always `Some`, keyring included —
+/// `load_identity` is what decides whether that identity can actually be
+/// used, surfacing its own `unusable_reason` when it can't.
+async fn identity_for(env: &Environment) -> Result<Box<dyn ic_agent::Identity>, AppError> {
     match &env.identity {
-        Some(identity_ref) => load_identity(identity_ref),
+        Some(identity_ref) => load_identity(identity_ref).await,
         None => Err(AppError::Agent(format!(
             "no usable identity is available for environment \"{}\"; icydb's SQL endpoints \
-             are controller-gated. This means either no default identity is configured, or \
-             the default identity exists but isn't a kind this app can load — it only loads \
-             pem-file identities, so an icp-cli keyring-backed default (a common case) reads \
-             as unusable here. Configure a pem-based identity for this environment (e.g. via \
-             `icp identity new`/`icp identity use`, or this project's own .icp/cli-home/identity/) \
-             before connecting",
+             are controller-gated, so no default identity means no identity store was found \
+             at all — neither a project-local `.icp/cli-home/identity/` nor a user-level \
+             icp-cli store. Configure an identity for this environment (e.g. via `icp identity \
+             new`/`icp identity use`, or this project's own .icp/cli-home/identity/) before \
+             connecting",
             env.name
         ))),
     }
@@ -185,9 +184,16 @@ mod tests {
         }
     }
 
-    #[test]
-    fn no_identity_fails_fast_and_names_the_environment_and_the_fix() {
+    // Since Task 3, `IdentityRef` can represent every icp identity kind
+    // honestly (including `keyring`), so `env.identity == None` no longer
+    // hides a keyring-backed default behind "unusable" — it means no
+    // identity store was found at all. This test no longer asserts the
+    // message names "keyring" (it doesn't apply to this case any more);
+    // see `identity_for`'s doc comment for why.
+    #[tokio::test]
+    async fn no_identity_fails_fast_and_names_the_environment_and_the_fix() {
         let error = identity_for(&env_without_identity())
+            .await
             .err()
             .expect("no identity configured should be an error");
         let text = error.explanation();
@@ -198,10 +204,6 @@ mod tests {
         assert!(
             text.contains("icp identity") && text.contains(".icp/"),
             "expected the actionable fix (icp identity / .icp/ config) in the error, got: {text}"
-        );
-        assert!(
-            text.contains("keyring"),
-            "expected the message to name the keyring-kind-default possibility, got: {text}"
         );
     }
 

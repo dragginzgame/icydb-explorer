@@ -28,5 +28,5 @@ icydb = { workspace = true }
 tokio = { version = "1", features = ["sync", "process", "time"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
 
