@@ -2004,3 +2004,60 @@ git commit -m "docs: add README covering setup, prerequisites, and version pinni
 **Task order.** The error type is Task 3 and discovery is Task 4, so discovery uses `AppError` from its first line. An earlier draft had these reversed with an explicit `String`-to-`AppError` conversion step; that was swapped before execution to remove a needless conversion and the reviewer finding it invited.
 
 **Type consistency fixes applied during review.** Three inconsistencies were found and corrected rather than left for the implementer to hit as compile errors: DTO structs needed `#[serde(rename_all = "camelCase")]` for Task 11's TypeScript field names (`rowCount`, `nextCursor`) to match; `Statement` needed `Copy`/`PartialEq`/`Debug` for the Task 5 tests to compile; and a vestigial `AgentError::CertifiedReject` line in the Task 8 test would not have compiled.
+
+---
+
+## Postmortem
+
+Written after all 13 tasks and the final whole-branch review. Kept because the
+failure pattern is more reusable than the plan itself.
+
+**Seventeen defects in this plan reached an implementer.** Fifteen were wrong API or
+type details; two were design-level; one — the worst — was only findable by running
+the app.
+
+**Every API error came from trusting a README or my own recall instead of reading the
+installed crate.** icydb's own manifest and README both claim `rust-version = 1.88.0`
+while its dependency `icydb-config` declares `1.96.0`. `icydb_build::build()` doesn't
+exist. `OutputValue` lives at `icydb::value`, not `icydb::db::response`.
+`with_identity` won't take a `Box<dyn Identity>`. `Result::expect_err` needs
+`T: Debug`, which `dyn Identity` lacks. None of these are subtle; all of them were
+one grep away. Pre-reading vendored source before each dispatch converted probable
+blocked rounds into clean first attempts for Tasks 2, 6, 7 and 8 — that habit was
+worth more than any other single practice here.
+
+**The two design errors were both about how icydb's read surface actually behaves,**
+and neither was discoverable from types alone. Scalar cursor pagination is
+*rejected* by icydb's SQL subset — `LIMIT`/`OFFSET` is the contract. And `LIMIT`
+requires an explicit `ORDER BY`, which meant the app's own default-LIMIT convenience
+manufactured a guaranteed failure for the commonest console query. The second was
+found by a live replica in Task 10; nothing in the source made it visible.
+
+**The Critical was a generalization from a single sample.** I built `discovery`
+against `toko`'s `.icp/` tree, where the network and the project are both named
+`toko` — so `toko.ids.json` read as "project name" when the convention is *network
+name*. This repo has no `.icp/cli-home/` at all and no `root` key in its mapping. The
+app rendered three blank panes in its own repository.
+
+**It survived thirteen scoped reviews for a structural reason worth naming:** the
+only discovery fixture was hand-authored to match the code's assumptions, and the
+integration tests bypassed discovery via environment variables. No test joined the
+two halves of the branch. A fixture derived from the thing it models would have
+caught it on day one; a fixture derived from the code that consumes it can only ever
+confirm itself. The fix added a harness that reads both real trees on disk.
+
+**What the process caught that a solo pass would not have.** Implementers found four
+defects I had missed entirely — the missing semicolon and `ic-cdk` `links` conflict,
+the serde internally-tagged-newtype panic, `rename_all` not reaching struct-variant
+fields, and `AppError::IntrospectionDisabled` being unreachable for the project's
+entire life. Reviewers caught a `_ =>` arm that would have defeated the version
+firewall, a panic on canister-derived data, a stale-response race, and a test whose
+pass depended on the developer's `$HOME`. Two implementers overrode a specification
+of mine with a better answer and were upheld.
+
+**What to do differently.** Derive fixtures from reality, not from the code that
+reads them. Get something running end to end before building thirteen layers on an
+unverified assumption — the fixture canister earned its cost in Task 10 and would
+have earned more if discovery had been wired to it in Task 4. And treat "I read the
+docs" as a strictly weaker claim than "I read the source", which is itself weaker
+than "I ran it".
