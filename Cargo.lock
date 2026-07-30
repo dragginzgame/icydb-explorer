@@ -1228,7 +1228,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1309,6 +1309,7 @@ name = "fixture-schema"
 version = "0.1.0"
 dependencies = [
  "icydb",
+ "icydb-model",
 ]
 
 [[package]]
@@ -2109,9 +2110,9 @@ dependencies = [
 
 [[package]]
 name = "ic-memory"
-version = "0.11.1"
+version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca665d64a5e16c962499850e268bcc6c23927b2d64fbfee18b430c375f95d343"
+checksum = "7c66256c945be302111688ebcf1d19d505b272f43f897a62739903b476c65236"
 dependencies = [
  "ciborium",
  "ctor 1.0.12",
@@ -2323,46 +2324,30 @@ dependencies = [
 
 [[package]]
 name = "icydb"
-version = "0.202.1"
+version = "0.215.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33fe2d1af792b51ae1ed785b9ab1dc5aa457cb51f0f75d116022ed7a2150eb86"
+checksum = "9455d063872135b2b86a59c1954e4f56863c0387107be1bf0fec48f52af0e0cc"
 dependencies = [
  "candid",
  "ctor 1.0.12",
  "derive_more",
  "ic-cdk",
  "ic-memory",
- "icydb-build",
  "icydb-config",
  "icydb-core",
- "icydb-derive",
  "icydb-diagnostic-code",
  "icydb-schema",
- "icydb-schema-derive",
- "icydb-utils",
  "remain",
  "serde",
 ]
 
 [[package]]
-name = "icydb-build"
-version = "0.202.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c755a277e166135b87a48e5e6290c30a208d65ce798fefe25e7594ece047e94"
-dependencies = [
- "icydb-schema",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "icydb-config"
-version = "0.202.1"
+version = "0.215.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9942493b002d0e041eb33f14148c14b01b9fed1353c45ca2e1602f35c2b07871"
+checksum = "ac3300a0e7f0cd327206f34e8b8391f8dd10a859a55a653bd79b1f3118d67419"
 dependencies = [
- "icydb-build",
+ "icydb-model",
  "serde",
  "thiserror 2.0.19",
  "toml 1.1.4+spec-1.1.0",
@@ -2370,9 +2355,9 @@ dependencies = [
 
 [[package]]
 name = "icydb-core"
-version = "0.202.1"
+version = "0.215.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11356c8988b2ca1369b75851cec372c0f0e0bed44e2f9f1c404af57784c79a11"
+checksum = "e64bb185d1058fd1f1fd16d39714d2e88b293b41b3541348ba1d137502f78d06"
 dependencies = [
  "candid",
  "derive_more",
@@ -2382,8 +2367,7 @@ dependencies = [
  "ic-stable-structures",
  "icrc-ledger-types",
  "icydb-diagnostic-code",
- "icydb-primitives",
- "icydb-utils",
+ "icydb-schema",
  "num-bigint",
  "rand_chacha 0.10.0",
  "remain",
@@ -2397,21 +2381,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "icydb-derive"
-version = "0.202.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bfa5b0f76a81f59caaba8da3ce26d52cdceba47d7711621541a5c477d31923eb"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "icydb-diagnostic-code"
-version = "0.202.1"
+version = "0.215.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b640b20115ba4cd86a17d60e3bab77bf34e61b76df2cc90870fc5e8ffcab5273"
+checksum = "b7e5ed5d50a20eecba4cb0f0b1778941a4d6c3800ea372767039863ced8f088c"
 dependencies = [
  "remain",
 ]
@@ -2442,38 +2415,38 @@ dependencies = [
 ]
 
 [[package]]
-name = "icydb-primitives"
-version = "0.202.1"
+name = "icydb-model"
+version = "0.215.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1c7f37f62c1de981d6db57dd3b31048cba701b7d8d5468e0a177627b2144809"
-
-[[package]]
-name = "icydb-schema"
-version = "0.202.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f75ed97d09d3e61258b905010c636382787adcbc2d4b35db76d617ed64707cc"
+checksum = "e6f35a81d7e85b26ee9826c3e8ee8fa86bcf714158f2f238117ab7d3ad87c318"
 dependencies = [
  "candid",
- "darling",
- "icydb-primitives",
+ "convert_case",
+ "ctor 1.0.12",
+ "icydb-model-macros",
+ "icydb-schema",
+ "proc-macro-crate 3.5.0",
  "proc-macro2",
  "quote",
  "remain",
  "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "syn 3.0.3",
  "thiserror 2.0.19",
 ]
 
 [[package]]
-name = "icydb-schema-derive"
-version = "0.202.1"
+name = "icydb-model-macros"
+version = "0.215.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99d8cc69e9f8524e428376707d69786400aded04e397535fe3d3c721fb4b35bb"
+checksum = "b8d564f479450cedcd712d32f761fa5425b27d254ebbdcfa6bf4f315cd749379"
 dependencies = [
+ "convert_case",
  "darling",
  "derive_more",
- "icydb-core",
  "icydb-schema",
- "icydb-utils",
+ "proc-macro-crate 3.5.0",
  "proc-macro2",
  "quote",
  "remain",
@@ -2482,12 +2455,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "icydb-utils"
-version = "0.202.1"
+name = "icydb-schema"
+version = "0.215.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a412009827cbf155728cadc9031e4b2c060b4b27c9d0739b1e90568a4efbc864"
+checksum = "09dc7ba4e3a1e7767b2c3b7b4ab62de5eaa8a02db659b8f32faf9aaa2d598184"
 dependencies = [
- "convert_case",
+ "candid",
+ "derive_more",
+ "icrc-ledger-types",
+ "num-bigint",
+ "serde",
+ "serde_bytes",
+ "sha2 0.10.9",
+ "thiserror 2.0.19",
+ "time",
+ "ulid",
 ]
 
 [[package]]
@@ -5344,9 +5326,9 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "ulid"
-version = "2.0.1"
+version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39493d572b98fe1d142e132e7a726c50c68121bce84429216a5ec20e1ad7fec5"
+checksum = "947dde63b6d514cc5e044edad4e0ca7261afd1099d16c83d942cb2b2f348689c"
 dependencies = [
  "web-time",
 ]

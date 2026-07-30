@@ -159,7 +159,7 @@ impl AppError {
 
 /// Whether an `icydb::Error` (surfaced here only as `AppError::IcyDb`'s
 /// `message` string) is diagnostic code 5 — `QUERY_UNORDERED_PAGINATION`
-/// (`icydb-diagnostic-code-0.202.1/src/registry.rs`): a statement used
+/// (`icydb-diagnostic-code-0.215.5/src/registry.rs`): a statement used
 /// `LIMIT`/`OFFSET` without an explicit `ORDER BY`. This is the single
 /// most useful `IcyDb` case to give a purpose-written explanation for — a
 /// user typing SQL into the console will hit it the moment they add a
@@ -167,7 +167,7 @@ impl AppError {
 /// also adding an `ORDER BY`.
 ///
 /// `icydb::Error`'s `Display` impl renders as exactly `"E{code}"` (a plain
-/// struct field interpolation, `icydb-0.202.1/src/error.rs`), and 5 is this
+/// struct field interpolation, `icydb-0.215.5/src/error.rs`), and 5 is this
 /// registry's one and only code for unordered pagination, so matching the
 /// full string `"E5"` is exact, not a substring guess.
 fn is_unordered_pagination(message: &str) -> bool {
@@ -255,12 +255,12 @@ mod tests {
     #[test]
     fn other_icydb_errors_use_the_generic_fallback() {
         let text = AppError::IcyDb {
-            code: "Error { code: 183, class: 7, origin: 5 }".into(),
-            message: "E183".into(),
+            code: "Error { code: 179, class: 7, origin: 5 }".into(),
+            message: "E179".into(),
         }
         .explanation();
-        assert!(text.contains("E183"));
-        assert!(text.contains("Error { code: 183, class: 7, origin: 5 }"));
+        assert!(text.contains("E179"));
+        assert!(text.contains("Error { code: 179, class: 7, origin: 5 }"));
     }
 
     #[test]

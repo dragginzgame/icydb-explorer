@@ -97,9 +97,9 @@ least a few of these.
    unconditionally — not falling back to either configured value. Without
    it, `SHOW`/`DESCRIBE`/`EXPLAIN` start failing: this app reports it as
    `AppError::IntrospectionDisabled` (`src-tauri/src/error.rs`), and the
-   underlying rejection is icydb's own diagnostic code 183,
+   underlying rejection is icydb's own diagnostic code 179,
    `RUNTIME_BOUNDARY_SQL_INTROSPECTION_DISABLED`
-   (`icydb-diagnostic-code-0.202.1/src/registry.rs`) — even though
+   (`icydb-diagnostic-code-0.215.5/src/registry.rs`) — even though
    `icydb.toml` says `local = true`.
 
 5. **This app is developed and tested against `icp`'s local replica, and a
