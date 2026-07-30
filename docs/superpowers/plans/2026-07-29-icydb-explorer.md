@@ -982,7 +982,12 @@ mod tests {
 
     #[test]
     fn unknown_algorithm_is_an_error() {
-        let error = load_identity(&reference("rsa9000", "secp256k1.pem")).expect_err("should fail");
+        // `.err().expect(..)` rather than `.expect_err(..)`: the latter is bounded
+        // `T: Debug`, and `Box<dyn Identity>` has no `Debug` impl — ic-agent's
+        // `Identity` trait is only `Send + Sync`.
+        let error = load_identity(&reference("rsa9000", "secp256k1.pem"))
+            .err()
+            .expect("should fail");
         assert!(error.explanation().contains("rsa9000"));
     }
 
