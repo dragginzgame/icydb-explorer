@@ -1417,7 +1417,7 @@ Recurse into each returned child to discover grandchildren, since `canic_caniste
 Run: `cd src-tauri && cargo test`
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add src-tauri/src/topology
@@ -1622,9 +1622,25 @@ npm install -D vitest @testing-library/react @testing-library/jest-dom jsdom
 
 Add to `package.json` scripts: `"test": "vitest run"`. Create `vitest.config.ts` with `test: { environment: "jsdom", globals: true }`.
 
-- [ ] **Step 2: Write `src/api/types.ts`**
+- [ ] **Step 2: Normalize the JSON casing at the boundary**
 
-Mirror the backend DTOs exactly. `ResultDto` is a discriminated union on `type`:
+`view`'s DTOs all carry `#[serde(rename_all = "camelCase")]`, but
+`src-tauri/src/discovery/types.rs` does not — so `list_environments` currently
+returns `replica_url`, `root_canister_id`, `pem_path`, and `did_path` in snake_case
+while every other command returns camelCase. A frontend consuming both would need
+two conventions for no reason.
+
+Add `#[serde(rename_all = "camelCase")]` to `Project`, `Environment`, `IdentityRef`,
+and `CanisterArtifact`. Those four structs are `Serialize`-only, so this changes
+nothing inside Rust — the discovery tests assert on struct fields, not JSON. Run the
+backend suite afterwards to confirm.
+
+`TreeNode`'s fields are all single words, so it needs no change.
+
+- [ ] **Step 3: Write `src/api/types.ts`**
+
+Mirror the backend DTOs exactly. `ResultDto` is a discriminated union on `type`
+with **eight** variants — the backend has `Stores` and `Memory` too:
 
 ```ts
 export type ValueDto = { kind: string; display: string };
@@ -1644,20 +1660,36 @@ export type EntityDto = {
   columns: number; indexes: number; relations: number; schemaVersion: number;
 };
 
+export type StoreDto = { storePath: string; storage: string };
+export type MemoryDto = { tag: string; memoryId: number; storePath: string };
+
 export type ResultDto =
   | ({ type: "rows" } & RowsDto)
   | ({ type: "schema" } & SchemaDto)
   | { type: "entities"; entities: EntityDto[] }
   | { type: "count"; entity: string; rowCount: number }
   | { type: "explain"; entity: string; explain: string }
-  | { type: "indexes"; entity: string; indexes: string[] };
+  | { type: "indexes"; entity: string; indexes: string[] }
+  | { type: "stores"; stores: StoreDto[] }
+  | { type: "memory"; memory: MemoryDto[] };
 
 export type TreeNode = { pid: string; role: string; children: TreeNode[] };
 export type AppErrorDto = { kind: string; explanation: string };
 export type SqlRunDto = { result: ResultDto; limitAppended: boolean };
+
+// `list_environments` returns these; casing depends on Step 2's rename.
+export type IdentityRef = { name: string; algorithm: string; pemPath: string };
+export type CanisterArtifact = { role: string; didPath: string };
+export type Environment = {
+  name: string;
+  replicaUrl: string;
+  rootCanisterId: string | null;
+  identity: IdentityRef | null;
+  artifacts: CanisterArtifact[];
+};
 ```
 
-- [ ] **Step 3: Write the failing `ValueCell` test**
+- [ ] **Step 4: Write the failing `ValueCell` test**
 
 ```tsx
 import { render, screen } from "@testing-library/react";
@@ -1684,25 +1716,35 @@ test("renders principals and ulids in a monospace font", () => {
 });
 ```
 
-- [ ] **Step 4: Run to verify it fails**
+- [ ] **Step 5: Run to verify it fails**
 
 Run: `npm test`
 Expected: FAIL — cannot resolve `./ValueCell`.
 
-- [ ] **Step 5: Implement `ValueCell.tsx`**
+- [ ] **Step 6: Implement `ValueCell.tsx`**
 
 Switch on `kind`. Numeric kinds (`int`, `int128`, `intbig`, `nat`, `nat128`, `natbig`, `float32`, `float64`, `decimal`) get `text-right tabular-nums`. Identifier kinds (`principal`, `ulid`, `subaccount`, `account`, `blob`) get `font-mono text-xs`. `null` renders the literal text `null` in a muted italic style so an empty cell is distinguishable from an empty string. Everything else renders `display` as-is, truncated with `truncate` and a `title` attribute carrying the full value.
 
-- [ ] **Step 6: Run to verify it passes**
+- [ ] **Step 7: Run to verify it passes**
 
 Run: `npm test`
 Expected: PASS, 4 tests.
 
-- [ ] **Step 7: Implement `src/api/commands.ts`**
+- [ ] **Step 8: Implement `src/api/commands.ts`**
 
-Thin typed wrappers over `invoke` from `@tauri-apps/api/core`, one per Task 10 command. Each catches and rethrows the backend error as `AppErrorDto` so callers can render `explanation` directly.
+Thin typed wrappers over `invoke` from `@tauri-apps/api/core`, one per Task 10
+command. Each catches and rethrows the backend error as `AppErrorDto` so callers can
+render `explanation` directly.
 
-- [ ] **Step 8: Commit**
+Match the real command signatures, which are:
+`list_environments()`, `canister_tree(env)`, `list_tables(env, canister)`,
+`describe_table(env, canister, entity)`, `fetch_rows(env, canister, entity, offset)`,
+`run_sql(env, canister, sql)`. Note `fetch_rows` takes an **offset**, not a cursor —
+scalar paging is `LIMIT`/`OFFSET` (see Task 10). Tauri converts snake_case command
+names and argument names to camelCase on the JS side; confirm the exact argument
+casing `invoke` expects rather than assuming.
+
+- [ ] **Step 9: Commit**
 
 ```bash
 git add src/api src/components/ValueCell.tsx src/components/ValueCell.test.tsx package.json vitest.config.ts
