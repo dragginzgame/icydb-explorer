@@ -56,17 +56,42 @@ impl AgentPool {
     /// is reported as `AppError::ReplicaUnreachable` naming the URL, not a
     /// generic agent error, so that someone whose replica isn't running can
     /// tell what's wrong at a glance.
+    ///
+    /// The pool-wide lock is held only for the cache-hit check and the final
+    /// insert — never across `load_identity` or `fetch_root_key`. It used to
+    /// be held across both, which was harmless while `load_identity` was a
+    /// microsecond `fs::read`, but keyring identities now shell out to `icp
+    /// identity export` under a 20-second timeout (see `export.rs`): holding
+    /// a pool-wide lock across that would stall every other in-flight
+    /// command in the app for up to 20 seconds whenever anyone selected a
+    /// password-protected identity. Building the agent (and, for local
+    /// replicas, fetching the root key) now happens with the lock released,
+    /// so a slow or stuck build for one `(env, identity)` pair never blocks
+    /// lookups or builds for any other pair, or even a second concurrent
+    /// call for the *same* pair. The trade-off: two callers racing to build
+    /// the same never-yet-cached pair for the first time can each build a
+    /// redundant `Agent` before the second one's insert loses to `entry`'s
+    /// `or_insert_with` and its extra `Agent` is simply dropped. That's an
+    /// acceptable, rare cost (one extra identity load, once, ever, per
+    /// pair) — a world away from a 20-second app-wide freeze.
     pub async fn get(
         &self,
         env: &Environment,
         identity: &IdentityRef,
     ) -> Result<Arc<Agent>, AppError> {
         let key = cache_key(&env.name, &identity.name);
-        let mut agents = self.agents.lock().await;
-        if let Some(agent) = agents.get(&key) {
-            return Ok(Arc::clone(agent));
+
+        {
+            let agents = self.agents.lock().await;
+            if let Some(agent) = agents.get(&key) {
+                return Ok(Arc::clone(agent));
+            }
         }
 
+        // Lock released for the slow part: `load_identity` may shell out to
+        // `icp identity export` (up to `EXPORT_TIMEOUT`), and `fetch_root_key`
+        // below is a network round trip. Neither should be able to block an
+        // unrelated `(env, identity)` pair's lookup.
         let boxed_identity = load_identity(identity).await?;
 
         let agent = Agent::builder()
@@ -75,6 +100,12 @@ impl AgentPool {
             .build()
             .map_err(|e| AppError::Agent(e.to_string()))?;
 
+        // Local-only, as before: `fetch_root_key` must run for local
+        // replicas (their root key isn't known to the agent until fetched)
+        // and must not run against mainnet. Unchanged by the locking
+        // rework — still gated on `is_local_replica`, and a failure here is
+        // still reported as `AppError::ReplicaUnreachable` naming the URL,
+        // not a generic agent error.
         if is_local_replica(&env.replica_url) {
             agent
                 .fetch_root_key()
@@ -85,8 +116,16 @@ impl AgentPool {
         }
 
         let agent = Arc::new(agent);
-        agents.insert(key, Arc::clone(&agent));
-        Ok(agent)
+
+        // Re-acquire only to insert. If another caller already built and
+        // inserted the same pair while this one was building (the race
+        // described above), `entry().or_insert_with` keeps the winner's
+        // `Agent` and this call's fresh one is dropped — every caller still
+        // ends up with the single cached `Arc<Agent>` for this pair from
+        // this point on.
+        let mut agents = self.agents.lock().await;
+        let cached = agents.entry(key).or_insert_with(|| Arc::clone(&agent));
+        Ok(Arc::clone(cached))
     }
 }
 
