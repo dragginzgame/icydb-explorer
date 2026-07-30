@@ -1904,25 +1904,87 @@ icp start --background
 npm run tauri dev
 ```
 
-Confirm by direct observation, not assumption: the fixture canister appears in the tree, `demo_row` and `demo_child` appear in the table list, the schema panel shows the Ulid primary key, the grid shows seeded rows with type-aware alignment, and `SELECT * FROM demo_child` runs in the console.
+Confirm the app builds, launches, and stays up with no runtime errors in its
+output — in particular no "command not found", which is what a mis-cased `invoke`
+argument or a stale command name would produce.
+
+**Be honest about the limits of this step.** Visually confirming that panes render
+correctly requires seeing the window. If you cannot observe it, say so plainly in
+your report and list exactly what you did and did not verify. Do **not** write
+"confirmed the tree appears" unless you actually saw it. An honest "launched
+cleanly; could not visually inspect panes" is worth far more here than a
+confident claim I can't trust — and the integration tests plus the component
+tests already cover the underlying behaviour.
+
+- [ ] **Step 1b: Verify the frontend renders, without Tauri**
+
+`npm run dev` serves the frontend alone. `invoke` fails outside the Tauri runtime,
+so every pane will show an error — but that itself verifies something worth
+verifying: that the layout renders, that `ErrorBanner` displays a full explanation
+rather than clipping it, and that a failed command degrades to a visible error
+instead of a blank pane or a crash. Note what you observe.
 
 - [ ] **Step 2: Verify the read-only rejection path**
 
-Type `DELETE FROM demo_row` in the console and confirm the rejection appears without a canister call, and that its wording does not claim the app blocked a write for safety.
+The classifier and its copy are already unit-tested, so what needs confirming here
+is the wiring: that `run_sql` returns the rejection without a network round trip and
+the console surfaces the explanation intact. If you can drive the GUI, type
+`DELETE FROM demo_row` and confirm it. If you cannot, verify the same path through
+the command layer instead and say which you did.
+
+Either way, re-read the rendered rejection copy and confirm it describes what this
+explorer supports rather than claiming the app blocked or protected anything.
 
 - [ ] **Step 3: Verify the no-SQL-surface path against toko**
 
-toko does not enable the SQL surface, which makes it the ideal negative test:
+`dragginz/toko` does not enable the SQL surface — its built candid exposes only
+`icydb_metrics` — which makes it the ideal negative test for the error most users
+will hit first.
 
-```bash
-cd /Users/remcodes/projects/dragginz/toko && icp start --background
-```
+Prefer an automated check over a manual one: add an integration test, gated
+`#[ignore]` like the others, that calls `run_query` against a toko canister and
+asserts the error is `NoSqlSurface` whose explanation names the canister and both
+`features = ["sql"]` and `icydb.toml`. That makes the most valuable error message in
+the app a permanent regression test rather than a one-off observation.
 
-Point the explorer at toko's project root and select a canister. Confirm the `NoSqlSurface` explanation appears, naming the canister and the required `features = ["sql"]` and `icydb.toml`. This is the error most users will hit first, so it must read as actionable guidance.
+This needs a toko replica, which may not be reachable. If it isn't, say so and
+report what you tried — do not fabricate the result, and do not weaken the
+assertion to make something pass.
 
 - [ ] **Step 4: Write `README.md`**
 
-Cover: what the app does; the prerequisite that target canisters need `features = ["sql"]` plus an `icydb.toml` (with the read-only config from `fixture/icydb.toml` as the example); that endpoints are controller-gated so the identity must be a controller; that `introspection.ic = false` means mainnet schema browsing is unavailable until a canister opts in; how to run the fixture; and that `icydb` is pinned to `=0.202.1` with `src-tauri/src/view/` being the module to update on a version bump.
+Cover what the app does, then the operational knowledge this project paid to learn.
+Several of these were discovered by hitting them, not by reading docs, and are not
+written down anywhere else — they are the most valuable part of the README:
+
+1. **Target canisters must opt into the SQL surface.** `features = ["sql"]` on the
+   canister's icydb dependency, plus an `icydb.toml`. Use `fixture/icydb.toml` as the
+   worked example.
+2. **The canister crate needs its own `[features] default = ["sql"]`.** The generated
+   glue is `#[cfg(feature = "sql")]` evaluated in the *consuming* crate, and Cargo does
+   not forward a dependency's features. Without this the canister compiles and simply
+   has no `icydb_query`.
+3. **Schema declarations must live in a separate crate** from the canister, listed in
+   **both** `[dependencies]` and `[build-dependencies]`, with `use <schema> as _;` in
+   `build.rs`. icydb's `#[ctor]` registration only fires in a process that links the
+   compiled entity code, and a build script is compiled before its own crate's
+   `lib.rs`. Otherwise codegen fails with `PathNotFound`.
+4. **Set `ICYDB_BUILD_TARGET=local` when building the fixture**, or rebuilds silently
+   lose introspection and `SHOW`/`DESCRIBE` start failing.
+5. **Use `icp`'s local replica, not `dfx`'s.** dfx's bundled replica does not implement
+   the `/api/v3/.../query` endpoint `ic-agent` 0.48 requires.
+6. **`LIMIT` requires an explicit `ORDER BY`.** icydb rejects unordered pagination
+   (`UnorderedPagination`). This is why `fetch_rows` orders by the primary key and why
+   the console does not auto-append a `LIMIT` to an unordered statement.
+7. **Endpoints are controller-gated**, so the configured identity must be a controller
+   of the target canister.
+8. **`introspection.ic = false` is the default**, so mainnet schema browsing is
+   unavailable until a canister opts in.
+9. **`icydb` is pinned `=0.202.1`**, and `src-tauri/src/view/` is the module to update
+   on a version bump — that boundary is why a bump doesn't reach the frontend.
+
+Also document how to run the fixture end to end, and that scalar paging is
+`LIMIT`/`OFFSET` because icydb's SQL subset rejects scalar cursors.
 
 - [ ] **Step 5: Commit**
 
