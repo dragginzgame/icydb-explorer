@@ -13,6 +13,11 @@
 - `icydb` and `icydb-build` are pinned exactly: `icydb = { version = "=0.202.1", features = ["sql-explain"] }`. Never relax to a caret range — `SqlQueryResult` is version-coupled.
 - Rust toolchain: **1.96.0**, pinned in `rust-toolchain.toml`. icydb's own manifest and README both claim 1.88.0, but its dependency `icydb-config@0.202.1` declares `rust-version = "1.96.0"`, so 1.96.0 is the real floor for the tree. Verified: the backend builds clean on 1.96.0 and fails to resolve on 1.88.0.
 - The app is **read-only**. It must never call `icydb_ddl` or `icydb_update`, and must only use `ic-agent`'s query calls, never update calls.
+- **`LIMIT` requires an explicit `ORDER BY`.** icydb's planner rejects an unordered
+  paginated read with `PolicyPlanError::UnorderedPagination` ("Pagination requires an
+  explicit ordering"). Confirmed against a live replica: `SELECT * FROM demo_row LIMIT 10`
+  is rejected. Any SQL this app constructs with a `LIMIT` must carry an `ORDER BY`, and
+  the app must never append a `LIMIT` to a statement that lacks one.
 - The frontend must never import, mirror, or hand-decode an icydb type. All icydb→JSON translation happens in `src-tauri/src/view/`.
 - icydb's catalog description structs have **private fields with accessors** (`entity_name()`, `store_path()`, `storage()`, `columns()`, `indexes()`, `relations()`, `schema_version()`). Read them via accessors.
 - Identities come from icp's own store (`.icp/cli-home/identity/`), **not** dfx's. Read the algorithm from `identity_list.json`; do not assume.
@@ -710,7 +715,21 @@ Expected: FAIL — `apply_default_limit` not found.
 
 - [ ] **Step 7: Implement `limit.rs`**
 
-Only act on `Statement::Select`. Strip a trailing `;` and surrounding whitespace, then check for a `LIMIT` keyword case-insensitively as a whole word; if absent, append ` LIMIT <default>` and set `limit_appended = true`.
+Only act on `Statement::Select`. Strip a trailing `;` and surrounding whitespace, then
+check for a `LIMIT` keyword case-insensitively as a whole word; if absent, append
+` LIMIT <default>` and set `limit_appended = true`.
+
+**But only when the statement already has an `ORDER BY`.** icydb rejects an unordered
+`LIMIT` with `UnorderedPagination`, so appending one to a bare
+`SELECT * FROM demo_row` would manufacture a statement guaranteed to fail — the
+app's own convenience feature producing an error. Detect `ORDER BY` the same
+whole-word, case-insensitive way; if it is absent, return the statement untouched
+with `limit_appended = false` and let icydb apply its own bounds.
+
+Injecting an `ORDER BY` instead was considered and rejected: it needs the entity's
+primary key (an extra round trip) and correct placement relative to `WHERE`/`GROUP BY`
+in arbitrary user SQL, which means parsing. Not worth it for a console where the user
+can type four more words — and `AppError` explains the rule when icydb rejects it.
 
 - [ ] **Step 8: Run to verify it passes**
 
@@ -848,7 +867,7 @@ mod tests {
     #[test]
     fn count_maps_to_count_dto() {
         let result = SqlQueryResult::Count { entity: "demo_row".into(), row_count: 3 };
-        match result_to_dto(result) {
+        match result_to_dto(result).unwrap() {
             ResultDto::Count { entity, row_count } => {
                 assert_eq!(entity, "demo_row");
                 assert_eq!(row_count, 3);
@@ -863,7 +882,7 @@ mod tests {
             entity: "demo_row".into(),
             indexes: vec!["by_parent".into()],
         };
-        match result_to_dto(result) {
+        match result_to_dto(result).unwrap() {
             ResultDto::Indexes { entity, indexes } => {
                 assert_eq!(entity, "demo_row");
                 assert_eq!(indexes, vec!["by_parent".to_string()]);
@@ -1431,7 +1450,14 @@ Each command resolves the environment via `discovery`, gets an `Agent` from `Age
 
 - `list_tables` → `"SHOW ENTITIES"`
 - `describe_table` → `format!("DESCRIBE {entity}")`
-- `fetch_rows` → `format!("SELECT * FROM {entity} LIMIT 100 OFFSET {offset}")`
+- `fetch_rows` → `format!("SELECT * FROM {entity} ORDER BY {pk} LIMIT 100 OFFSET {offset}")`
+
+  The `ORDER BY` is mandatory, not stylistic — see the Global Constraints. `{pk}` comes
+  from the entity's primary key, which means `fetch_rows` must learn it first via
+  `DESCRIBE {entity}` (`EntitySchemaDescription::primary_key()`). That is a second round
+  trip per page; accept it rather than guessing a column name. Do not cache it yet —
+  if paging proves slow in practice, caching the describe result per (canister, entity)
+  is the obvious follow-up, but adding it now is speculative.
 
 **Scalar paging is `LIMIT`/`OFFSET`, not cursors.** icydb's SQL subset contract
 (`docs/contracts/SQL_SUBSET.md`) is explicit:
@@ -1473,8 +1499,8 @@ State: `.manage(AgentPool::new())` and `.manage(Project)` in `main.rs`; register
 #[ignore = "requires a local replica with the fixture canister installed"]
 async fn show_entities_lists_the_fixture_entities() {
     let (agent, canister) = connect().await;
-    let result = run_query(&agent, canister, "SHOW ENTITIES").await.expect("query should succeed");
-    let dto = result_to_dto(result);
+    let result = run_query(&agent, canister, "SHOW ENTITIES", "test").await.expect("query should succeed");
+    let dto = result_to_dto(result).unwrap();
     match dto {
         ResultDto::Entities(entities) => {
             let names: Vec<&str> = entities.iter().map(|e| e.name.as_str()).collect();
@@ -1488,8 +1514,10 @@ async fn show_entities_lists_the_fixture_entities() {
 #[ignore = "requires a local replica with the fixture canister installed"]
 async fn select_returns_typed_values_for_every_seeded_column() {
     let (agent, canister) = connect().await;
-    let result = run_query(&agent, canister, "SELECT * FROM demo_row LIMIT 10").await.unwrap();
-    match result_to_dto(result) {
+    let result = run_query(&agent, canister, "SELECT * FROM demo_row ORDER BY id LIMIT 10", "test")
+        .await
+        .unwrap();
+    match result_to_dto(result).unwrap() {
         ResultDto::Rows(rows) => {
             assert!(!rows.rows.is_empty(), "fixture should be seeded");
             let kinds: Vec<&str> = rows.rows[0].iter().map(|v| v.kind.as_str()).collect();
@@ -1505,8 +1533,8 @@ async fn select_returns_typed_values_for_every_seeded_column() {
 #[ignore = "requires a local replica with the fixture canister installed"]
 async fn describe_reports_the_primary_key() {
     let (agent, canister) = connect().await;
-    let result = run_query(&agent, canister, "DESCRIBE demo_row").await.unwrap();
-    match result_to_dto(result) {
+    let result = run_query(&agent, canister, "DESCRIBE demo_row", "test").await.unwrap();
+    match result_to_dto(result).unwrap() {
         ResultDto::Schema(schema) => {
             assert!(schema.columns.iter().any(|c| c.primary_key), "expected a primary key column");
         }
