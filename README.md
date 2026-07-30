@@ -93,8 +93,12 @@ least a few of these.
    select a *build-time* policy keyed off this env var; when it's unset,
    icydb resolves to an "unknown" build target and disables introspection
    unconditionally — not falling back to either configured value. Without
-   it, `SHOW`/`DESCRIBE`/`EXPLAIN` start failing with
-   `SqlIntrospectionDisabled` even though `icydb.toml` says `local = true`.
+   it, `SHOW`/`DESCRIBE`/`EXPLAIN` start failing: this app reports it as
+   `AppError::IntrospectionDisabled` (`src-tauri/src/error.rs`), and the
+   underlying rejection is icydb's own diagnostic code 183,
+   `RUNTIME_BOUNDARY_SQL_INTROSPECTION_DISABLED`
+   (`icydb-diagnostic-code-0.202.1/src/registry.rs`) — even though
+   `icydb.toml` says `local = true`.
 
 5. **Use `icp`'s local replica, not `dfx`'s.** `ic-agent = "0.48"` (pinned in
    `src-tauri/Cargo.toml`) always POSTs queries to
@@ -135,12 +139,17 @@ least a few of these.
    canister owner has to opt in explicitly for mainnet schema browsing to be
    available at all.
 
-9. **`icydb` is pinned exactly** (`icydb = { version = "=0.202.1", features
-   = ["sql-explain"] }` in the workspace `Cargo.toml`), because
-   `SqlQueryResult`/`OutputValue` shapes are version-coupled and icydb moves
-   fast. `src-tauri/src/view/` is the one module that translates icydb's
-   types into this app's stable frontend DTOs — it is the only module that
-   should need to change on a version bump, which is also why the frontend
+9. **`icydb` is pinned exactly, in exactly one place.** The workspace root
+   `Cargo.toml`'s `[workspace.dependencies]` declares
+   `icydb = { version = "=0.202.1", features = ["sql-explain"] }`; every
+   crate in this workspace (`src-tauri`, `fixture`, `fixture-schema`)
+   depends on it via `icydb = { workspace = true }`, so there is exactly one
+   version string to bump, not one per crate that could silently drift out
+   of sync. This matters because `SqlQueryResult`/`OutputValue` shapes are
+   version-coupled and icydb moves fast. `src-tauri/src/view/` is the one
+   module that translates icydb's types into this app's stable frontend
+   DTOs — it is the only module that should need to change on a version
+   bump, which is also why the frontend
    never sees an icydb type directly.
 
 ## Running the fixture end to end
