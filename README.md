@@ -15,7 +15,7 @@ below.
 
 ```
 React/Vite/Tailwind  ──tauri invoke──▶  Rust backend  ──ic-agent──▶  canister.icydb_query
-   (plain JSON DTOs)                    (icydb =0.202.1)
+   (plain JSON DTOs)                    (icydb =0.215.5)
 ```
 
 ## What this app does and does not do
@@ -171,7 +171,7 @@ least a few of these.
 
 9. **`icydb` is pinned exactly, in exactly one place.** The workspace root
    `Cargo.toml`'s `[workspace.dependencies]` declares
-   `icydb = { version = "=0.202.1", features = ["sql-explain"] }`; every
+   `icydb = { version = "=0.215.5", features = ["sql-explain"] }`; every
    crate in this workspace (`src-tauri`, `fixture`, `fixture-schema`)
    depends on it via `icydb = { workspace = true }`, so there is exactly one
    version string to bump, not one per crate that could silently drift out
@@ -181,6 +181,27 @@ least a few of these.
    DTOs — it is the only module that should need to change on a version
    bump, which is also why the frontend
    never sees an icydb type directly.
+
+   **What the `0.202.1` → `0.215.5` bump (thirteen minor versions) actually
+   cost:** exactly two compile errors in the app itself, one at each
+   designated boundary — `error[E0004]` on a non-exhaustive `SqlQueryResult`
+   match in `src-tauri/src/view/mod.rs`, and TypeScript's `never`-typed
+   exhaustiveness guard in `src/App.tsx` — both naming precisely what a new
+   `SqlQueryResult` variant (`ShowConstraints`) required. That's the
+   version-firewall design working as intended. The cost landed almost
+   entirely on the test fixture instead: `icydb::design` relocated to a new
+   `icydb-model` crate, the `#[entity]`/`#[store]`/`field!` macro grammar
+   changed shape, managed `created_at`/`updated_at` timestamps went from
+   automatic to opt-in, `db!()` became fallible, and `DbSession::insert`
+   was replaced by a typed-adapter write path — five separate migration
+   steps in `fixture-schema/` and `fixture/`, none of them touching
+   `src-tauri/`. One consequence of the macro grammar change worth flagging
+   explicitly: `#[entity]` no longer accepts an entity-level `name`, so the
+   fixture's entities are now identified by their Rust struct names
+   (`DemoRow`, `DemoChild`) rather than the snake_case names
+   (`demo_row`, `demo_child`) they used to declare — see the note under
+   [Testing](#testing) about what that changed for this repo's own
+   ignored live tests.
 
 ## Running the fixture end to end
 
@@ -364,6 +385,26 @@ npm test
 npm run build
 npx tsc --noEmit
 ```
+
+**Known gap as of the `0.215.5` bump.** Four of the ignored live tests in
+`src-tauri/tests/integration.rs` (`show_entities_lists_the_fixture_entities`,
+`select_returns_typed_values_for_every_seeded_column`,
+`describe_reports_the_primary_key`, and
+`explicit_order_by_and_limit_still_works_when_introspection_is_disabled`)
+still write `demo_row` in their SQL literals and assertions. Since `#[entity]`
+dropped its entity-level `name` (see item 9 above), the fixture's live entity
+name is now `DemoRow`, and these four fail against a freshly rebuilt fixture
+with a store/runtime-unsupported error (icydb error code 23) rather than
+whatever they were written to check. Verified directly: the identical query
+text with `DemoRow` substituted for `demo_row` succeeds and returns real
+data. `select_with_limit_and_no_order_by_is_rejected` still reports `ok`
+against the stale name, but for the wrong reason — it only asserts
+`is_err()`, and an unknown-entity error satisfies that just as well as the
+intended missing-`ORDER BY` rejection (icydb error code 5) would have, so a
+green result there does not currently prove the pagination policy is
+enforced. This is a test-fixture staleness left over from the bump, not a
+regression in `src-tauri/`; the app's own decoding path (`sql::run_query`,
+`view::result_to_dto`) was confirmed working live against `DemoRow`.
 
 The integration suite includes one deliberately negative test,
 `run_query_against_a_toko_canister_reports_no_sql_surface`, that asserts
