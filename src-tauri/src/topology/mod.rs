@@ -22,7 +22,10 @@ use crate::error::AppError;
 
 /// Assembles a flat list of `CanisterInfo` (gathered from possibly several
 /// canisters' `canic_canister_children` calls) into a `TreeNode` rooted at
-/// `root`.
+/// `root`, labeled with `root_role` (the name discovery gave this canister —
+/// a mapping entry's key, e.g. `"fixture"` or `"root"` — not a synthetic
+/// `"root"` literal, since discovery treats every mapping entry as a forest
+/// root in its own right).
 ///
 /// Nodes are indexed by their declared `parent_pid` so each node's children
 /// can be looked up directly rather than re-scanning the whole list at
@@ -43,7 +46,7 @@ use crate::error::AppError;
 /// returned, which is exactly the "invisible database" failure this module
 /// exists to avoid — the same reasoning that makes an absent-parent orphan
 /// attach to root applies equally to a present-but-unplaceable one.
-pub fn build_tree(root: &str, infos: Vec<CanisterInfo>) -> TreeNode {
+pub fn build_tree(root: &str, root_role: &str, infos: Vec<CanisterInfo>) -> TreeNode {
     let known: HashSet<String> = infos.iter().map(|info| info.pid.to_text()).collect();
 
     let mut children_of: HashMap<String, Vec<CanisterInfo>> = HashMap::new();
@@ -78,7 +81,7 @@ pub fn build_tree(root: &str, infos: Vec<CanisterInfo>) -> TreeNode {
 
     TreeNode {
         pid: root.to_string(),
-        role: "root".to_string(),
+        role: root_role.to_string(),
         children,
     }
 }
@@ -107,7 +110,11 @@ fn build_children(
                 return None;
             }
             let children = build_children(&pid, children_of, visited);
-            Some(TreeNode { pid, role: info.role, children })
+            Some(TreeNode {
+                pid,
+                role: info.role,
+                children,
+            })
         })
         .collect()
 }
@@ -123,7 +130,10 @@ fn build_children(
 /// other reason (a genuine `CanicError`, a transport failure, a decode
 /// failure) is a real error and is surfaced as `AppError::Agent`, not
 /// swallowed.
-pub async fn fetch_children(agent: &Agent, canister: Principal) -> Result<Vec<CanisterInfo>, AppError> {
+pub async fn fetch_children(
+    agent: &Agent,
+    canister: Principal,
+) -> Result<Vec<CanisterInfo>, AppError> {
     let mut visited = HashSet::new();
     visited.insert(canister);
     fetch_descendants(agent, canister, &mut visited).await
@@ -165,16 +175,37 @@ async fn fetch_descendants(
 /// failure: a transport error, a reject for a reason other than "method
 /// not found", a `CanicError` returned by the canister itself, or a decode
 /// failure.
+///
+/// `canic_canister_children`'s response is untrusted, canister-supplied
+/// data (like everything else this module decodes from it) — a hostile or
+/// buggy canister could report `total: u64::MAX` while always returning a
+/// non-empty page, which would otherwise loop forever, with
+/// `fetch_descendants` then recursing into every fabricated pid it
+/// produces. Both `MAX_PAGES` (an iteration cap) and `MAX_ENTRIES` (an
+/// accumulated-entry cap) bound the damage: either one being exceeded ends
+/// the walk with a clear error instead of an unbounded network loop. Both
+/// limits are generous relative to any real fleet this app expects to
+/// browse.
 async fn fetch_direct_children(
     agent: &Agent,
     canister: Principal,
 ) -> Result<Option<Vec<CanisterInfo>>, AppError> {
     const LIMIT: u64 = 100;
+    const MAX_PAGES: u32 = 1_000;
+    const MAX_ENTRIES: usize = 100_000;
+
     let mut offset = 0u64;
     let mut entries = Vec::new();
+    let mut pages = 0u32;
 
     loop {
-        let request = PageRequest { offset, limit: LIMIT };
+        pages += 1;
+        check_pagination_bounds(pages, entries.len(), MAX_PAGES, MAX_ENTRIES, &canister)?;
+
+        let request = PageRequest {
+            offset,
+            limit: LIMIT,
+        };
         let arg = Encode!(&request).map_err(|e| AppError::Parse(e.to_string()))?;
 
         let bytes = match agent
@@ -199,6 +230,8 @@ async fn fetch_direct_children(
 
         let got = page.entries.len() as u64;
         entries.extend(page.entries);
+        check_pagination_bounds(pages, entries.len(), MAX_PAGES, MAX_ENTRIES, &canister)?;
+
         offset += got;
 
         if offset >= page.total || got == 0 {
@@ -207,6 +240,34 @@ async fn fetch_direct_children(
     }
 
     Ok(Some(entries))
+}
+
+/// Pure guard checked on every page of `fetch_direct_children`'s loop: errors
+/// as soon as either bound is exceeded, so the async loop above stays a thin
+/// caller and this decision is independently unit-testable without a live
+/// agent.
+fn check_pagination_bounds(
+    pages: u32,
+    entries_len: usize,
+    max_pages: u32,
+    max_entries: usize,
+    canister: &Principal,
+) -> Result<(), AppError> {
+    if pages > max_pages {
+        return Err(AppError::Agent(format!(
+            "canic_canister_children on {} did not terminate within {max_pages} pages; \
+             aborting rather than paging indefinitely",
+            canister.to_text()
+        )));
+    }
+    if entries_len > max_entries {
+        return Err(AppError::Agent(format!(
+            "canic_canister_children on {} returned more than {max_entries} entries; \
+             aborting rather than accumulating an unbounded amount of canister-supplied data",
+            canister.to_text()
+        )));
+    }
+    Ok(())
 }
 
 /// Distinguishes "this canister has no `canic_canister_children` method"
@@ -247,6 +308,38 @@ mod tests {
         }
     }
 
+    fn principal_for_bounds_test() -> Principal {
+        Principal::from_slice(&[1u8; 10])
+    }
+
+    #[test]
+    fn within_bounds_is_ok() {
+        assert!(
+            check_pagination_bounds(1, 0, 1_000, 100_000, &principal_for_bounds_test()).is_ok()
+        );
+        assert!(
+            check_pagination_bounds(1_000, 100_000, 1_000, 100_000, &principal_for_bounds_test())
+                .is_ok(),
+            "the bounds themselves are inclusive, not off-by-one"
+        );
+    }
+
+    #[test]
+    fn exceeding_the_page_cap_is_an_error_naming_the_canister() {
+        let canister = principal_for_bounds_test();
+        let error = check_pagination_bounds(1_001, 0, 1_000, 100_000, &canister)
+            .expect_err("should error past the page cap");
+        assert!(error.explanation().contains(&canister.to_text()));
+    }
+
+    #[test]
+    fn exceeding_the_entry_cap_is_an_error_naming_the_canister() {
+        let canister = principal_for_bounds_test();
+        let error = check_pagination_bounds(1, 100_001, 1_000, 100_000, &canister)
+            .expect_err("should error past the entry cap");
+        assert!(error.explanation().contains(&canister.to_text()));
+    }
+
     #[test]
     fn missing_canic_method_is_classified_as_no_endpoint() {
         let error = reject("IC0302: Canister has no query method 'canic_canister_children'");
@@ -281,11 +374,8 @@ mod tests {
 
     #[test]
     fn nests_children_under_their_parent() {
-        let infos = vec![
-            info(2, "user_hub", Some(1)),
-            info(3, "user_shard", Some(2)),
-        ];
-        let tree = build_tree(&principal(1).to_text(), infos);
+        let infos = vec![info(2, "user_hub", Some(1)), info(3, "user_shard", Some(2))];
+        let tree = build_tree(&principal(1).to_text(), "root", infos);
         assert_eq!(tree.children.len(), 1);
         assert_eq!(tree.children[0].role, "user_hub");
         assert_eq!(tree.children[0].children[0].role, "user_shard");
@@ -293,20 +383,28 @@ mod tests {
 
     #[test]
     fn attaches_parentless_canisters_to_the_root() {
-        let tree = build_tree(&principal(1).to_text(), vec![info(9, "orphan", None)]);
+        let tree = build_tree(
+            &principal(1).to_text(),
+            "root",
+            vec![info(9, "orphan", None)],
+        );
         assert_eq!(tree.children.len(), 1);
         assert_eq!(tree.children[0].role, "orphan");
     }
 
     #[test]
     fn tolerates_a_parent_that_is_not_in_the_list() {
-        let tree = build_tree(&principal(1).to_text(), vec![info(9, "stray", Some(77))]);
+        let tree = build_tree(
+            &principal(1).to_text(),
+            "root",
+            vec![info(9, "stray", Some(77))],
+        );
         assert_eq!(tree.children.len(), 1, "stray should still be reachable");
     }
 
     #[test]
     fn empty_input_yields_a_root_with_no_children() {
-        let tree = build_tree(&principal(1).to_text(), vec![]);
+        let tree = build_tree(&principal(1).to_text(), "root", vec![]);
         assert_eq!(tree.role, "root");
         assert!(tree.children.is_empty());
     }
@@ -328,7 +426,11 @@ mod tests {
         // reaches it (nothing under root points at it), so without the
         // sweep it would silently vanish; if the cycle guard were broken,
         // building this tree would hang instead of returning.
-        let tree = build_tree(&principal(1).to_text(), vec![info(9, "loopy", Some(9))]);
+        let tree = build_tree(
+            &principal(1).to_text(),
+            "root",
+            vec![info(9, "loopy", Some(9))],
+        );
 
         let pids = collect_pids(&tree);
         let loopy = principal(9).to_text();
@@ -345,12 +447,20 @@ mod tests {
         // disconnected from root. Both must still surface under root
         // exactly once each, not vanish and not duplicate.
         let infos = vec![info(10, "a", Some(11)), info(11, "b", Some(10))];
-        let tree = build_tree(&principal(1).to_text(), infos);
+        let tree = build_tree(&principal(1).to_text(), "root", infos);
 
         let pids = collect_pids(&tree);
         let a = principal(10).to_text();
         let b = principal(11).to_text();
-        assert_eq!(pids.iter().filter(|pid| **pid == a).count(), 1, "pid 10 should appear exactly once, got: {pids:?}");
-        assert_eq!(pids.iter().filter(|pid| **pid == b).count(), 1, "pid 11 should appear exactly once, got: {pids:?}");
+        assert_eq!(
+            pids.iter().filter(|pid| **pid == a).count(),
+            1,
+            "pid 10 should appear exactly once, got: {pids:?}"
+        );
+        assert_eq!(
+            pids.iter().filter(|pid| **pid == b).count(),
+            1,
+            "pid 11 should appear exactly once, got: {pids:?}"
+        );
     }
 }

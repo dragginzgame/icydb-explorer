@@ -7,8 +7,10 @@
 
 mod classify;
 mod limit;
+mod rows;
 mod transport;
 
 pub use classify::{classify, Statement};
 pub use limit::{apply_default_limit, LimitedSql};
+pub use rows::{rows_sql, unordered_rows_sql};
 pub use transport::{map_reject_message, run_query};

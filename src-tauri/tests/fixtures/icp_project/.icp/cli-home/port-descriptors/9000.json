@@ -1,0 +1,5 @@
+{
+  "v": "1",
+  "network": "staging",
+  "gateway": { "fixed": true, "port": 9000, "host": "localhost", "ip": "127.0.0.1" }
+}

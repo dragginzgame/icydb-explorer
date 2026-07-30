@@ -35,9 +35,11 @@ const genericError = (explanation: string): AppErrorDto => ({ kind: "unknown", e
 function App() {
   const [environments, setEnvironments] = useState<Environment[]>([]);
   const [environmentsError, setEnvironmentsError] = useState<AppErrorDto | null>(null);
+  const [environmentsLoaded, setEnvironmentsLoaded] = useState(false);
   const [env, setEnv] = useState<string | null>(null);
 
-  const [tree, setTree] = useState<TreeNode | null>(null);
+  // A forest, not a single tree: see `Environment.canisters`'s doc comment.
+  const [forest, setForest] = useState<TreeNode[] | null>(null);
   const [treeError, setTreeError] = useState<AppErrorDto | null>(null);
   const [canister, setCanister] = useState<string | null>(null);
 
@@ -55,21 +57,29 @@ function App() {
 
   const [sqlError, setSqlError] = useState<AppErrorDto | undefined>(undefined);
   const [sqlLimitAppended, setSqlLimitAppended] = useState(false);
+  const [sqlOrderByMissing, setSqlOrderByMissing] = useState(false);
   const [sqlResult, setSqlResult] = useState<ResultDto | null>(null);
 
-  // Discover the configured environments once on launch.
+  // Discover the configured environments once on launch. `listEnvironments`
+  // returns the whole `Project`, whose `error` field carries a `discover()`
+  // failure (e.g. no `.icp/` at all) rather than that failure being
+  // indistinguishable from "this project just has no environments yet" —
+  // see `Project`'s doc comment. Both are rendered explicitly below rather
+  // than as a silent blank pane.
   useEffect(() => {
     listEnvironments()
-      .then((discovered) => {
-        setEnvironments(discovered);
-        if (discovered.length > 0) {
-          setEnv(discovered[0].name);
+      .then((project) => {
+        setEnvironments(project.environments);
+        setEnvironmentsError(project.error);
+        if (project.environments.length > 0) {
+          setEnv(project.environments[0].name);
         }
       })
-      .catch((error: AppErrorDto) => setEnvironmentsError(error));
+      .catch((error: AppErrorDto) => setEnvironmentsError(error))
+      .finally(() => setEnvironmentsLoaded(true));
   }, []);
 
-  // The fleet tree is the only way canisters are discovered at all — a
+  // The fleet forest is the only way canisters are discovered at all — a
   // failure to load it must be visible, never a silently empty tree.
   //
   // `cancelled` guards every `setState` below against a stale response: if
@@ -77,7 +87,7 @@ function App() {
   // `cancelled` to true so the in-flight promise's `.then`/`.catch` becomes
   // a no-op instead of clobbering whatever the newer selection already set.
   useEffect(() => {
-    setTree(null);
+    setForest(null);
     setTreeError(null);
     setCanister(null);
     if (!env) return;
@@ -85,7 +95,7 @@ function App() {
     canisterTree(env)
       .then((result) => {
         if (cancelled) return;
-        setTree(result);
+        setForest(result);
       })
       .catch((error: AppErrorDto) => {
         if (cancelled) return;
@@ -206,19 +216,34 @@ function App() {
       });
   }, [env, canister, entity, offset]);
 
+  // The only async path with no staleness guard before this fix: switching
+  // canisters while a console query is still in flight could otherwise land
+  // an old canister's result under the newly-selected one's label. Reuses
+  // `selectionRef` (env/canister only — the console has no `entity` of its
+  // own) rather than a second cancellation mechanism, matching `loadMore`'s
+  // pattern.
   const handleRunSql = useCallback(
     (sql: string) => {
       if (!env || !canister) return;
+      const requestEnv = env;
+      const requestCanister = canister;
+      const isStale = () =>
+        selectionRef.current.env !== requestEnv || selectionRef.current.canister !== requestCanister;
+
       setSqlError(undefined);
       setSqlResult(null);
-      runSql(env, canister, sql)
+      runSql(requestEnv, requestCanister, sql)
         .then((run) => {
+          if (isStale()) return;
           setSqlResult(run.result);
           setSqlLimitAppended(run.limitAppended);
+          setSqlOrderByMissing(run.orderByMissing);
         })
         .catch((error: AppErrorDto) => {
+          if (isStale()) return;
           setSqlError(error);
           setSqlLimitAppended(false);
+          setSqlOrderByMissing(false);
         });
     },
     [env, canister],
@@ -254,11 +279,25 @@ function App() {
         </div>
       )}
 
+      {/* An explicit empty state, not a silently blank window: a `discover()`
+          failure of Critical 1's own class (a project layout this app
+          doesn't understand) must be visible, not indistinguishable from a
+          project that simply hasn't been deployed yet. */}
+      {environmentsLoaded && environments.length === 0 && !environmentsError && (
+        <div className="p-2">
+          <p className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
+            No environments were found in this project&apos;s <code>.icp/</code> layout. Deploy
+            it (e.g. <code>icp network start</code>, <code>icp canister create</code>,{" "}
+            <code>icp canister install</code>) and relaunch this app.
+          </p>
+        </div>
+      )}
+
       <div className="flex flex-1 overflow-hidden">
         <aside className="w-64 shrink-0 overflow-auto border-r p-2">
           <h2 className="mb-2 text-xs font-semibold uppercase text-gray-500">Canisters</h2>
           {treeError && <ErrorBanner error={treeError} />}
-          {tree && <CanisterTree tree={tree} selectedPid={canister} onSelect={setCanister} />}
+          {forest && <CanisterTree trees={forest} selectedPid={canister} onSelect={setCanister} />}
         </aside>
 
         <aside className="w-72 shrink-0 overflow-auto border-r p-2">
@@ -290,7 +329,12 @@ function App() {
 
           <div className="mt-4 shrink-0 border-t pt-2">
             <h2 className="mb-2 text-xs font-semibold uppercase text-gray-500">SQL console</h2>
-            <SqlConsole onRun={handleRunSql} error={sqlError} limitAppended={sqlLimitAppended} />
+            <SqlConsole
+              onRun={handleRunSql}
+              error={sqlError}
+              limitAppended={sqlLimitAppended}
+              orderByMissing={sqlOrderByMissing}
+            />
             {sqlResult && (
               <div className="mt-2 max-h-64 overflow-auto">
                 <SqlResultView result={sqlResult} />

@@ -20,19 +20,31 @@ function entity(name: string): EntityDto {
 }
 
 test("a stale canister's tables never overwrite a newer selection", async () => {
-  const tree: TreeNode = {
-    pid: "root-id",
-    role: "root",
-    children: [
-      { pid: "aaaaa-aa", role: "canister-a", children: [] },
-      { pid: "bbbbb-bb", role: "canister-b", children: [] },
-    ],
-  };
+  const forest: TreeNode[] = [
+    {
+      pid: "root-id",
+      role: "root",
+      children: [
+        { pid: "aaaaa-aa", role: "canister-a", children: [] },
+        { pid: "bbbbb-bb", role: "canister-b", children: [] },
+      ],
+    },
+  ];
 
-  vi.mocked(commands.listEnvironments).mockResolvedValue([
-    { name: "local", replicaUrl: "http://localhost", rootCanisterId: "root-id", identity: null, artifacts: [] },
-  ]);
-  vi.mocked(commands.canisterTree).mockResolvedValue(tree);
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/project",
+    error: null,
+    environments: [
+      {
+        name: "local",
+        replicaUrl: "http://localhost",
+        canisters: [{ name: "root", id: "root-id" }],
+        identity: null,
+        artifacts: [],
+      },
+    ],
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue(forest);
 
   const forA = deferred<ResultDto>();
   const forB = deferred<ResultDto>();
@@ -68,4 +80,87 @@ test("a stale canister's tables never overwrite a newer selection", async () => 
 
   expect(screen.getByText("table_b")).toBeDefined();
   expect(screen.queryByText("table_a")).toBeNull();
+});
+
+test("shows an explicit empty state when discovery finds no environments and no error", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/project",
+    error: null,
+    environments: [],
+  });
+
+  render(<App />);
+
+  await screen.findByText(/no environments were found/i);
+});
+
+test("shows the discovery error rather than a silent blank pane", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/project",
+    error: { kind: "io", explanation: "not an .icp project layout" },
+    environments: [],
+  });
+
+  render(<App />);
+
+  await screen.findByText(/not an \.icp project layout/i);
+  // The empty-state hint is specific to "genuinely nothing deployed yet" —
+  // it must not also render alongside a real discovery error.
+  expect(screen.queryByText(/no environments were found/i)).toBeNull();
+});
+
+test("a stale SQL console run never overwrites a newer canister's result", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/project",
+    error: null,
+    environments: [
+      {
+        name: "local",
+        replicaUrl: "http://localhost",
+        canisters: [{ name: "root", id: "root-id" }],
+        identity: null,
+        artifacts: [],
+      },
+    ],
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    {
+      pid: "root-id",
+      role: "root",
+      children: [
+        { pid: "aaaaa-aa", role: "canister-a", children: [] },
+        { pid: "bbbbb-bb", role: "canister-b", children: [] },
+      ],
+    },
+  ]);
+  vi.mocked(commands.listTables).mockResolvedValue({ type: "entities", entities: [] });
+
+  const forA = deferred<{ result: ResultDto; limitAppended: boolean; orderByMissing: boolean }>();
+  const forB = deferred<{ result: ResultDto; limitAppended: boolean; orderByMissing: boolean }>();
+  vi.mocked(commands.runSql).mockImplementation((_env, canisterId) => {
+    if (canisterId === "aaaaa-aa") return forA.promise;
+    if (canisterId === "bbbbb-bb") return forB.promise;
+    throw new Error(`unexpected canister ${canisterId}`);
+  });
+
+  render(<App />);
+
+  await screen.findByText("canister-a");
+  fireEvent.click(screen.getByText("canister-a"));
+  fireEvent.change(screen.getByRole("textbox"), { target: { value: "SELECT 1" } });
+  fireEvent.click(screen.getByRole("button", { name: /run/i }));
+
+  // Switch canisters and re-run before A's runSql resolves.
+  fireEvent.click(screen.getByText("canister-b"));
+  fireEvent.click(screen.getByRole("button", { name: /run/i }));
+
+  forB.resolve({ result: { type: "count", entity: "b_row", rowCount: 2 }, limitAppended: false, orderByMissing: false });
+  await screen.findByText(/b_row/);
+
+  // A's stale response arrives after B's has already rendered.
+  forA.resolve({ result: { type: "count", entity: "a_row", rowCount: 1 }, limitAppended: false, orderByMissing: false });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  expect(screen.getByText(/b_row/)).toBeDefined();
+  expect(screen.queryByText(/a_row/)).toBeNull();
 });

@@ -1,21 +1,25 @@
 import type { TreeNode } from "../api/types";
 
-// The fleet tree is how canisters are discovered at all: in a canic project
-// only the root canister's id is on disk, every hub/shard/instance exists
-// only in root's live topology. So this is the primary navigation, not
-// decoration.
+// The fleet forest is how canisters are discovered at all: `.icp/cache/
+// mappings/<network>.ids.json` is a name→id map with no guaranteed single
+// root (a canic fleet like toko has only `root`; a plain project may list
+// its canisters directly, with no root at all), so `trees` renders one root
+// per mapping entry rather than assuming there's exactly one. This is the
+// primary navigation, not decoration.
 export function CanisterTree({
-  tree,
+  trees,
   selectedPid,
   onSelect,
 }: {
-  tree: TreeNode;
+  trees: TreeNode[];
   selectedPid: string | null;
   onSelect: (pid: string) => void;
 }) {
   return (
     <ul className="text-sm">
-      <CanisterTreeNode node={tree} selectedPid={selectedPid} onSelect={onSelect} depth={0} />
+      {trees.map((tree) => (
+        <CanisterTreeNode key={tree.pid} node={tree} selectedPid={selectedPid} onSelect={onSelect} depth={0} />
+      ))}
     </ul>
   );
 }

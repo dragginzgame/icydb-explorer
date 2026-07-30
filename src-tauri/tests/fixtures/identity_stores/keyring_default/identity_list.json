@@ -1,0 +1,13 @@
+{
+  "v": 1,
+  "identities": {
+    "default": {
+      "kind": "keyring",
+      "principal": "4773j-66d63-ojsup-pra54-4uto5-kxmpd-lizbp-nk6et-uvn4p-chybm-nae",
+      "algorithm": "secp256k1"
+    },
+    "anonymous": {
+      "kind": "anonymous"
+    }
+  }
+}

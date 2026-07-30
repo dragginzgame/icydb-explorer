@@ -1,0 +1,14 @@
+{
+  "v": 1,
+  "identities": {
+    "demo-local": {
+      "kind": "pem",
+      "format": "plaintext",
+      "algorithm": "secp256k1",
+      "principal": "j524y-jtmzv-omb6g-wh6rn-mxhkh-dzg5v-ct2r5-2s742-rvyxm-jgqmi-xqe"
+    },
+    "anonymous": {
+      "kind": "anonymous"
+    }
+  }
+}

@@ -1,15 +1,28 @@
 use crate::error::AppError;
 
-use super::types::{CanisterArtifact, Environment, IdentityRef, Project};
+use super::types::{CanisterArtifact, Environment, IdentityRef, NamedCanister, Project};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 /// Read a project's `.icp/` layout and build up its `Project` description:
-/// which environments exist, what replica each points at, the root
-/// canister id (if deployed), the default identity, and the canister
-/// artifacts (`.did` files) available locally.
+/// which environments (networks) exist, what replica each points at, the
+/// named canisters deployed to it (a forest of mapping entries, not a
+/// single root — see `types::Environment`), the default identity, and the
+/// canister artifacts (`.did` files) available locally.
+///
+/// **The layout varies between projects.** icp-cli's own project-local
+/// `cli-home/` (identities, port-descriptors) is present in some projects
+/// (verified against `dragginz/toko`) and entirely absent in others
+/// (verified against this repo, whose `.icp/` has only `cache/`). Both
+/// shapes are handled here: `.icp/cache/networks/<network>/descriptor.json`
+/// is the primary source of an environment's replica URL, with
+/// `.icp/cli-home/port-descriptors/*.json` as a fallback for networks not
+/// already found that way; identity resolution likewise prefers a
+/// project-local `cli-home/identity/` store and falls back to the
+/// user-level one icp-cli keeps outside any project.
 pub fn discover(project_root: &Path) -> Result<Project, AppError> {
     let icp_dir = project_root.join(".icp");
     if !icp_dir.is_dir() {
@@ -20,13 +33,35 @@ pub fn discover(project_root: &Path) -> Result<Project, AppError> {
         )));
     }
 
-    let root_canister_id = read_root_canister_id(&icp_dir, project_root)?;
     let identity = read_default_identity(&icp_dir)?;
-    let environments = read_environments(&icp_dir, &root_canister_id, &identity)?;
+    let networks = read_networks(&icp_dir)?;
+    // Only allow `read_canisters`'s "just use the only mapping file, whatever
+    // it's named" fallback when there is exactly one network in this
+    // project. With several networks and only one mapping file that
+    // matches none of them by name, there is no way to tell which network
+    // that file belongs to — guessing would risk attaching one network's
+    // canisters to another, which is worse than the honest "no canisters
+    // found yet" this falls back to instead. See `read_canisters`'s doc
+    // comment for why the fallback exists at all.
+    let allow_mapping_fallback = networks.len() == 1;
+
+    let mut environments = Vec::with_capacity(networks.len());
+    for network in networks {
+        let canisters = read_canisters(&icp_dir, &network.name, allow_mapping_fallback)?;
+        let artifacts = read_artifacts(&icp_dir, &network.name)?;
+        environments.push(Environment {
+            name: network.name,
+            replica_url: network.replica_url,
+            canisters,
+            identity: identity.clone(),
+            artifacts,
+        });
+    }
 
     Ok(Project {
         root: project_root.to_path_buf(),
         environments,
+        error: None,
     })
 }
 
@@ -65,61 +100,240 @@ fn list_dir(dir: &Path) -> Result<Vec<PathBuf>, AppError> {
     Ok(entries)
 }
 
-/// Step 5.3: find `.icp/cache/mappings/*.ids.json`, preferring the file
-/// whose stem matches the project directory's name, else the first one
-/// found, and read its `root` key.
-fn read_root_canister_id(icp_dir: &Path, project_root: &Path) -> Result<Option<String>, AppError> {
-    let mappings_dir = icp_dir.join("cache").join("mappings");
-    let candidates: Vec<(String, PathBuf)> = list_dir(&mappings_dir)?
-        .into_iter()
-        .filter_map(|path| {
-            let stem = path
-                .file_name()?
-                .to_str()?
-                .strip_suffix(".ids.json")?
-                .to_string();
-            Some((stem, path))
-        })
-        .collect();
+/// One network's replica connection details, parsed from either a
+/// `cache/networks/<network>/descriptor.json` or a
+/// `cli-home/port-descriptors/<port>.json` file — both carry the same JSON
+/// shape (`network`, `gateway.{ip,port}`).
+struct NetworkDescriptor {
+    name: String,
+    replica_url: String,
+}
 
-    let project_name = project_root
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
-    let chosen = candidates
-        .iter()
-        .find(|(stem, _)| stem == project_name)
-        .or_else(|| candidates.first());
+/// Finds every environment (network) this project's `.icp/` layout
+/// declares.
+///
+/// Primary source: one `descriptor.json` per subdirectory of
+/// `.icp/cache/networks/`, keyed by the network name recorded inside it (in
+/// practice, also the subdirectory's own name). Fallback:
+/// `.icp/cli-home/port-descriptors/*.json`, same shape, used only for
+/// networks not already found via the primary source — `cli-home/` is
+/// present in some projects (toko) and absent in others (this repo).
+fn read_networks(icp_dir: &Path) -> Result<Vec<NetworkDescriptor>, AppError> {
+    let mut networks = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
 
-    let path = match chosen {
-        Some((_, path)) => path,
-        None => return Ok(None),
-    };
+    let cache_networks_dir = icp_dir.join("cache").join("networks");
+    for entry in list_dir(&cache_networks_dir)? {
+        if !entry.is_dir() {
+            continue;
+        }
+        let descriptor_path = entry.join("descriptor.json");
+        if !descriptor_path.is_file() {
+            continue;
+        }
+        let descriptor = parse_descriptor(&descriptor_path)?;
+        seen.insert(descriptor.name.clone());
+        networks.push(descriptor);
+    }
 
+    let port_descriptors_dir = icp_dir.join("cli-home").join("port-descriptors");
+    for path in list_dir(&port_descriptors_dir)? {
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let descriptor = parse_descriptor(&path)?;
+        if seen.insert(descriptor.name.clone()) {
+            networks.push(descriptor);
+        }
+    }
+
+    networks.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(networks)
+}
+
+/// Parses the JSON shape shared by `cache/networks/<network>/descriptor.json`
+/// and `cli-home/port-descriptors/<port>.json`: `network` (string) and
+/// `gateway.{ip,port}`.
+fn parse_descriptor(path: &Path) -> Result<NetworkDescriptor, AppError> {
     let value = read_json(path)?;
-    let root = value.get("root").and_then(Value::as_str).ok_or_else(|| {
+    let name = value
+        .get("network")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            AppError::Parse(format!(
+                "{} is missing a \"network\" string field",
+                path.display()
+            ))
+        })?
+        .to_string();
+
+    let gateway = value.get("gateway").ok_or_else(|| {
         AppError::Parse(format!(
-            "{} is missing a \"root\" string field",
+            "{} is missing a \"gateway\" object",
+            path.display()
+        ))
+    })?;
+    let ip = gateway.get("ip").and_then(Value::as_str).ok_or_else(|| {
+        AppError::Parse(format!(
+            "{} gateway is missing an \"ip\" string field",
+            path.display()
+        ))
+    })?;
+    let port = gateway.get("port").and_then(Value::as_u64).ok_or_else(|| {
+        AppError::Parse(format!(
+            "{} gateway is missing a \"port\" number field",
             path.display()
         ))
     })?;
 
-    Ok(Some(root.to_string()))
+    Ok(NetworkDescriptor {
+        name,
+        replica_url: format!("http://{ip}:{port}"),
+    })
 }
 
-/// Step 5.4: read the default identity's name from `identity_defaults.json`,
-/// look it up in `identity_list.json` for its algorithm, and point at its
-/// pem file under `cli-home/identity/keys/`. An identity whose `kind` is
-/// not `"pem"` (e.g. `"anonymous"`) resolves to `None` rather than an
-/// error, since it simply has no pem to load.
+/// Reads a `.icp/cache/mappings/*.ids.json` file as the name→canister-id
+/// map it is: every entry is a distinct named canister (a forest of tree
+/// roots — see `types::Environment`'s doc comment), not a single hardcoded
+/// `root`. A project with no mapping file yet (undeployed) yields an empty
+/// list rather than an error.
+///
+/// **The mapping filename's own naming convention is not fully settled.**
+/// This repo's real mapping file is `local.ids.json` — keyed by the
+/// *network* name, as this app's design intends. But a real `dragginz/toko`
+/// checkout's mapping file is `toko.ids.json` — keyed by the *project
+/// directory name* (`toko`), even though its network is also `local`,
+/// directly contradicting a network-name-only rule. Nothing else in either
+/// tree (no `icp.yaml` field, no descriptor value) explains the difference;
+/// the most likely cause is a naming-convention change across icp-cli
+/// versions between when each `.icp/` was created, but that could not be
+/// confirmed. So this tries `<network>.ids.json` first, and — since every
+/// real project observed so far has exactly one mapping file regardless of
+/// what it's named — falls back to the lexicographically-first
+/// `*.ids.json` file in the mappings directory if that exact name isn't
+/// there — but *only* when `allow_fallback` says this is safe (the caller
+/// passes `true` only when the project has exactly one network at all, so
+/// there's no ambiguity about which network a misnamed lone mapping file
+/// belongs to). A project with several genuinely distinct mapping files and
+/// no exact network-name match would see none of them via the fallback;
+/// that's a real limitation, disclosed rather than silently resolved by a
+/// guess that happens to work for both known trees but would misattribute
+/// canisters in a multi-network project.
+fn read_canisters(
+    icp_dir: &Path,
+    network: &str,
+    allow_fallback: bool,
+) -> Result<Vec<NamedCanister>, AppError> {
+    let mappings_dir = icp_dir.join("cache").join("mappings");
+    let exact = mappings_dir.join(format!("{network}.ids.json"));
+
+    let path = if exact.is_file() {
+        exact
+    } else if allow_fallback {
+        let mut candidates: Vec<PathBuf> = list_dir(&mappings_dir)?
+            .into_iter()
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.ends_with(".ids.json"))
+            })
+            .collect();
+        candidates.sort();
+        match candidates.into_iter().next() {
+            Some(path) => path,
+            None => return Ok(Vec::new()),
+        }
+    } else {
+        return Ok(Vec::new());
+    };
+
+    let value = read_json(&path)?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| AppError::Parse(format!("{} is not a JSON object", path.display())))?;
+
+    let mut canisters: Vec<NamedCanister> = object
+        .iter()
+        .filter_map(|(name, id)| {
+            id.as_str().map(|id| NamedCanister {
+                name: name.clone(),
+                id: id.to_string(),
+            })
+        })
+        .collect();
+    canisters.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(canisters)
+}
+
+/// Resolves the identity to use across this project's environments.
+///
+/// Prefers a project-local `.icp/cli-home/identity/` store when present
+/// (verified against toko); falls back to icp-cli's user-level store
+/// (`~/Library/Application Support/org.dfinity.icp-cli/identity/` on
+/// macOS, derived from `$HOME` rather than hardcoded) when no project-local
+/// store exists (this repo's actual shape). Neither existing is not an
+/// error: a project need not have deployed anything yet.
 fn read_default_identity(icp_dir: &Path) -> Result<Option<IdentityRef>, AppError> {
-    let identity_dir = icp_dir.join("cli-home").join("identity");
+    let project_local = icp_dir.join("cli-home").join("identity");
+    if identity_store_present(&project_local) {
+        return read_identity_from_store(&project_local);
+    }
+
+    if let Some(user_level) = user_level_identity_dir() {
+        if identity_store_present(&user_level) {
+            return read_identity_from_store(&user_level);
+        }
+    }
+
+    Ok(None)
+}
+
+fn identity_store_present(identity_dir: &Path) -> bool {
+    identity_dir.join("identity_defaults.json").is_file()
+        && identity_dir.join("identity_list.json").is_file()
+}
+
+/// icp-cli's own identity store, kept outside any project. Verified present
+/// on this machine at exactly this path, with the same
+/// `identity_defaults.json`/`identity_list.json` shape as a project-local
+/// `cli-home/identity/` — but its default identity's `kind` was `"keyring"`,
+/// not `"pem"` (this repo has no project-local identity at all, so this is
+/// the path actually exercised for it). `read_identity_from_store` already
+/// treats a non-`"pem"` kind as "no identity to load" rather than an error,
+/// which is the correct degradation here too: this app has no keyring
+/// integration (loading a pem is the only mechanism it implements), so a
+/// keyring-backed identity is reported as absent rather than guessed at.
+#[cfg(target_os = "macos")]
+fn user_level_identity_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(
+        PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join("org.dfinity.icp-cli")
+            .join("identity"),
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn user_level_identity_dir() -> Option<PathBuf> {
+    // icp-cli's user-level store location on Linux/Windows was not
+    // available to verify against a real installation; rather than guess
+    // at a path, this app simply finds no user-level identity there. A
+    // project-local `cli-home/identity/` still works on every platform.
+    None
+}
+
+/// Reads the default identity's name from `identity_dir/identity_defaults.json`,
+/// looks it up in `identity_dir/identity_list.json` for its algorithm, and
+/// points at its pem file under `identity_dir/keys/`. An identity whose
+/// `kind` is not `"pem"` (e.g. `"anonymous"`, or icp-cli's user-level
+/// `"keyring"` default) resolves to `None` rather than an error, since it
+/// simply has no pem file for this app to load.
+fn read_identity_from_store(identity_dir: &Path) -> Result<Option<IdentityRef>, AppError> {
     let defaults_path = identity_dir.join("identity_defaults.json");
     let list_path = identity_dir.join("identity_list.json");
-
-    if !defaults_path.is_file() || !list_path.is_file() {
-        return Ok(None);
-    }
 
     let defaults = read_json(&defaults_path)?;
     let default_name = defaults
@@ -178,69 +392,10 @@ fn read_default_identity(icp_dir: &Path) -> Result<Option<IdentityRef>, AppError
     }))
 }
 
-/// Step 5.2: each `.icp/cli-home/port-descriptors/*.json` file describes
-/// one environment.
-fn read_environments(
-    icp_dir: &Path,
-    root_canister_id: &Option<String>,
-    identity: &Option<IdentityRef>,
-) -> Result<Vec<Environment>, AppError> {
-    let port_descriptors_dir = icp_dir.join("cli-home").join("port-descriptors");
-
-    let mut environments = Vec::new();
-    for path in list_dir(&port_descriptors_dir)? {
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-
-        let value = read_json(&path)?;
-        let name = value
-            .get("network")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                AppError::Parse(format!(
-                    "{} is missing a \"network\" string field",
-                    path.display()
-                ))
-            })?
-            .to_string();
-
-        let gateway = value.get("gateway").ok_or_else(|| {
-            AppError::Parse(format!(
-                "{} is missing a \"gateway\" object",
-                path.display()
-            ))
-        })?;
-        let ip = gateway.get("ip").and_then(Value::as_str).ok_or_else(|| {
-            AppError::Parse(format!(
-                "{} gateway is missing an \"ip\" string field",
-                path.display()
-            ))
-        })?;
-        let port = gateway.get("port").and_then(Value::as_u64).ok_or_else(|| {
-            AppError::Parse(format!(
-                "{} gateway is missing a \"port\" number field",
-                path.display()
-            ))
-        })?;
-        let replica_url = format!("http://{ip}:{port}");
-
-        let artifacts = read_artifacts(icp_dir, &name)?;
-
-        environments.push(Environment {
-            name,
-            replica_url,
-            root_canister_id: root_canister_id.clone(),
-            identity: identity.clone(),
-            artifacts,
-        });
-    }
-
-    Ok(environments)
-}
-
-/// Step 5.5: each subdirectory of `.icp/<env>/canisters/` is one locally
-/// built canister artifact, named for its role, holding `<role>.did`.
+/// Each subdirectory of `.icp/<env>/canisters/` is one locally built
+/// canister artifact, named for its role, holding `<role>.did`. Not every
+/// project builds per-role artifacts this way (this repo's fixture does
+/// not), so a missing directory yields an empty list rather than an error.
 fn read_artifacts(icp_dir: &Path, env_name: &str) -> Result<Vec<CanisterArtifact>, AppError> {
     let canisters_dir = icp_dir.join(env_name).join("canisters");
 
@@ -265,13 +420,24 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    fn fixture() -> Project {
+    /// This repo's own real project layout: `.icp/cache/` only, no
+    /// `cli-home/` at all. Modeled on it directly (not hand-authored to fit
+    /// the code) — see `tests/fixtures/icp_project_no_cli_home/`.
+    fn no_cli_home_fixture() -> Project {
+        discover(Path::new("tests/fixtures/icp_project_no_cli_home"))
+            .expect("discovery should succeed")
+    }
+
+    /// toko's real project layout: `cache/networks/<n>/descriptor.json`
+    /// *and* a project-local `cli-home/` (port-descriptors + identity) —
+    /// see `tests/fixtures/icp_project/`.
+    fn with_cli_home_fixture() -> Project {
         discover(Path::new("tests/fixtures/icp_project")).expect("discovery should succeed")
     }
 
     #[test]
-    fn finds_the_local_environment() {
-        let project = fixture();
+    fn finds_the_local_environment_with_no_cli_home() {
+        let project = no_cli_home_fixture();
         let names: Vec<&str> = project
             .environments
             .iter()
@@ -281,39 +447,120 @@ mod tests {
     }
 
     #[test]
-    fn builds_replica_url_from_gateway() {
-        let env = &fixture().environments[0];
+    fn builds_replica_url_from_cache_networks_descriptor() {
+        let env = &no_cli_home_fixture().environments[0];
+        assert_eq!(env.replica_url, "http://127.0.0.1:4943");
+    }
+
+    #[test]
+    fn reads_every_mapping_entry_with_no_hardcoded_root() {
+        let env = &no_cli_home_fixture().environments[0];
+        let names: Vec<&str> = env.canisters.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["fixture"]);
+        assert_eq!(env.canisters[0].id, "4caro-hl777-77775-aaaba-cai");
+    }
+
+    #[test]
+    fn no_cli_home_means_no_identity_and_no_error() {
+        let env = &no_cli_home_fixture().environments[0];
+        assert!(env.identity.is_none());
+    }
+
+    #[test]
+    fn with_cli_home_builds_replica_url_from_gateway() {
+        let env = &with_cli_home_fixture().environments[0];
         assert_eq!(env.replica_url, "http://127.0.0.1:8000");
     }
 
     #[test]
-    fn reads_root_canister_id_from_ids_mapping() {
-        let env = &fixture().environments[0];
-        assert_eq!(
-            env.root_canister_id.as_deref(),
-            Some("igqk7-g3777-77774-qaaba-cai")
-        );
+    fn with_cli_home_reads_the_root_mapping_entry() {
+        let env = &with_cli_home_fixture().environments[0];
+        assert_eq!(env.canisters.len(), 1);
+        assert_eq!(env.canisters[0].name, "root");
+        assert_eq!(env.canisters[0].id, "igqk7-g3777-77774-qaaba-cai");
     }
 
     #[test]
-    fn resolves_default_identity_with_algorithm_and_pem_path() {
-        let env = &fixture().environments[0];
+    fn with_cli_home_resolves_default_identity_with_algorithm_and_pem_path() {
+        let env = &with_cli_home_fixture().environments[0];
         let identity = env.identity.as_ref().expect("identity should resolve");
         assert_eq!(identity.name, "demo-local");
         assert_eq!(identity.algorithm, "secp256k1");
         assert!(identity.pem_path.ends_with("keys/demo-local.pem"));
     }
 
+    /// The fixture's `staging` network exists only as
+    /// `cli-home/port-descriptors/9000.json` — there is no matching
+    /// `cache/networks/staging/descriptor.json` — so finding it proves the
+    /// fallback source is actually consulted, not just the primary one.
     #[test]
-    fn lists_canister_artifacts_by_role() {
-        let env = &fixture().environments[0];
+    fn finds_a_network_known_only_via_the_port_descriptor_fallback() {
+        let project = with_cli_home_fixture();
+        let staging = project
+            .environments
+            .iter()
+            .find(|e| e.name == "staging")
+            .expect("staging network should be found via the port-descriptor fallback");
+        assert_eq!(staging.replica_url, "http://127.0.0.1:9000");
+        assert!(
+            staging.canisters.is_empty(),
+            "staging has no mapping file yet"
+        );
+    }
+
+    #[test]
+    fn with_cli_home_lists_canister_artifacts_by_role() {
+        let env = &with_cli_home_fixture().environments[0];
         let mut roles: Vec<&str> = env.artifacts.iter().map(|a| a.role.as_str()).collect();
         roles.sort_unstable();
         assert_eq!(roles, vec!["root", "user_hub"]);
     }
 
+    /// Models toko's real, observed shape directly (see `read_canisters`'s
+    /// doc comment): a mapping file whose name matches neither the network
+    /// nor any project directory name this test controls. The exact-match
+    /// path (`<network>.ids.json`) misses, so this proves the
+    /// lexicographic-first fallback is actually reached, not just declared.
+    #[test]
+    fn falls_back_to_the_only_mapping_file_when_its_name_does_not_match_the_network() {
+        let project = discover(Path::new(
+            "tests/fixtures/icp_project_mismatched_mapping_name",
+        ))
+        .expect("discovery should succeed");
+        let env = &project.environments[0];
+        assert_eq!(env.canisters.len(), 1);
+        assert_eq!(env.canisters[0].name, "root");
+        assert_eq!(env.canisters[0].id, "igqk7-g3777-77774-qaaba-cai");
+    }
+
     #[test]
     fn missing_icp_directory_is_an_error_not_a_panic() {
         assert!(discover(Path::new("tests/fixtures/does_not_exist")).is_err());
+    }
+
+    /// A non-`"pem"` default identity (e.g. icp-cli's user-level
+    /// `"keyring"` default, or `"anonymous"`) resolves to `None` rather than
+    /// an error — this app only implements pem loading.
+    #[test]
+    fn non_pem_identity_kind_resolves_to_none() {
+        let dir = Path::new("tests/fixtures/identity_stores/keyring_default");
+        assert!(identity_store_present(dir));
+        assert_eq!(read_identity_from_store(dir).unwrap(), None);
+    }
+
+    /// `read_identity_from_store` is the same function used for both a
+    /// project-local `cli-home/identity/` and the user-level fallback store
+    /// — this fixture models the user-level shape directly (no `keys/`
+    /// subdirectory backing the keyring entry) to prove the fallback path
+    /// works structurally without depending on this machine's real
+    /// `$HOME`.
+    #[test]
+    fn user_level_shaped_store_with_pem_identity_still_resolves() {
+        let dir = Path::new("tests/fixtures/identity_stores/pem_default");
+        let identity = read_identity_from_store(dir)
+            .unwrap()
+            .expect("pem identity should resolve");
+        assert_eq!(identity.name, "demo-local");
+        assert_eq!(identity.algorithm, "secp256k1");
     }
 }

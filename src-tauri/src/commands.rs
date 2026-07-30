@@ -18,7 +18,7 @@ use tauri::State;
 use crate::agent::AgentPool;
 use crate::discovery::{Environment, Project};
 use crate::error::AppError;
-use crate::sql::{apply_default_limit, classify, run_query};
+use crate::sql::{apply_default_limit, classify, rows_sql, run_query, unordered_rows_sql};
 use crate::topology::{build_tree, fetch_children, TreeNode};
 use crate::view::{result_to_dto, ResultDto};
 
@@ -37,6 +37,12 @@ const DEFAULT_ROW_LIMIT: u32 = 100;
 pub struct SqlRunDto {
     pub result: ResultDto,
     pub limit_appended: bool,
+    /// Set when this was a `SELECT` with no `ORDER BY`, so no default
+    /// `LIMIT` was appended even though the statement was otherwise
+    /// unbounded — see `sql::apply_default_limit`. Lets the console hint at
+    /// the fix instead of the user finding out only after a round trip to
+    /// the canister.
+    pub order_by_missing: bool,
 }
 
 /// Finds the configured `Environment` named `name`, or a clear error rather
@@ -83,33 +89,51 @@ async fn query_dto(
     result_to_dto(result)
 }
 
-/// Lists the environments this project's `.icp/` layout declares. Cannot
-/// fail: it only ever reads already-discovered, in-memory state.
+/// Returns the discovered project: its environments, and — critically —
+/// any error `discover()` hit while reading `.icp/` (see `Project`'s doc
+/// comment). Cannot fail as a command: it only ever reads already-computed,
+/// in-memory state, but the state itself may record a discovery failure,
+/// which is exactly what the frontend needs to render an explicit failed
+/// state instead of a silently empty one.
 #[tauri::command]
-pub fn list_environments(project: State<'_, Project>) -> Vec<Environment> {
-    project.environments.clone()
+pub fn list_environments(project: State<'_, Project>) -> Project {
+    project.inner().clone()
 }
 
-/// Walks the canic-orchestrated fleet rooted at `env`'s root canister and
-/// returns it as a `TreeNode`.
+/// Walks the canic-orchestrated fleet rooted at each of `env`'s named
+/// canisters and returns the resulting **forest** — one `TreeNode` per
+/// mapping entry, not a single tree.
+///
+/// `.icp/cache/mappings/<network>.ids.json` names every canister the
+/// project's discovery layer found, and none of them is privileged as "the"
+/// root: a canic fleet like toko's has only a `root` entry (the rest of the
+/// fleet exists only in its live topology), while a plain project like this
+/// repo's fixture lists its canisters directly with no root at all. So every
+/// named canister gets its own tree walk; one that exposes no `canic_*`
+/// endpoints simply comes back as a childless leaf (see
+/// `topology::fetch_children`'s doc comment).
 #[tauri::command]
 pub async fn canister_tree(
     env: String,
     project: State<'_, Project>,
     pool: State<'_, AgentPool>,
-) -> Result<TreeNode, AppError> {
+) -> Result<Vec<TreeNode>, AppError> {
     let environment = find_environment(&project, &env)?;
-    let root_text = environment.root_canister_id.as_ref().ok_or_else(|| {
-        AppError::Io(format!(
-            "environment \"{env}\" has no root canister id yet; deploy the project before \
-             browsing its topology"
-        ))
-    })?;
-    let root = parse_principal(root_text)?;
+    if environment.canisters.is_empty() {
+        return Err(AppError::Io(format!(
+            "environment \"{env}\" has no canisters yet; deploy the project before browsing \
+             its topology"
+        )));
+    }
 
     let agent = pool.get(environment).await?;
-    let infos = fetch_children(&agent, root).await?;
-    Ok(build_tree(root_text, infos))
+    let mut forest = Vec::with_capacity(environment.canisters.len());
+    for named in &environment.canisters {
+        let root = parse_principal(&named.id)?;
+        let infos = fetch_children(&agent, root).await?;
+        forest.push(build_tree(&named.id, &named.name, infos));
+    }
+    Ok(forest)
 }
 
 /// `SHOW ENTITIES` against `canister`.
@@ -162,12 +186,21 @@ pub async fn describe_table(
 /// every real call, for every entity, not just this fixture's. Since
 /// `fetch_rows` isn't handed a column to order by, this looks up the
 /// entity's primary-key column(s) via `DESCRIBE` first (icydb requires
-/// every entity to declare one) and orders by those; ordering by any
-/// column is sufficient to satisfy the planner (confirmed live: ordering
-/// by a non-unique column also works), the primary key is simply always
-/// available. The empty-primary-key fallback below cannot occur for a
-/// valid icydb schema, but is kept so a malformed one fails with the
-/// canister's own clear rejection rather than a panic.
+/// every entity to declare one) and orders by those via `sql::rows_sql`
+/// (ordering by any column is sufficient to satisfy the planner — confirmed
+/// live: ordering by a non-unique column also works).
+///
+/// **`introspection.ic = false` (icydb's own default for IC/mainnet
+/// builds) makes that `DESCRIBE` fail with `AppError::IntrospectionDisabled`
+/// before any row is ever fetched** — `SHOW`/`DESCRIBE`/`EXPLAIN` are
+/// unavailable, but plain `SELECT` is not, so row browsing must not be
+/// blind to that distinction. This specific error is caught here and
+/// switched to `sql::unordered_rows_sql`: an unordered, unbounded `SELECT`
+/// (no primary key was derivable, and icydb rejects any `LIMIT`/`OFFSET`
+/// with no `ORDER BY`, so a bounded page isn't achievable either). Any
+/// other `DESCRIBE` failure — a genuinely unreachable replica, a
+/// non-controller identity, etc — still propagates as before; only the
+/// introspection-disabled case gets this fallback.
 #[tauri::command]
 pub async fn fetch_rows(
     env: String,
@@ -181,24 +214,23 @@ pub async fn fetch_rows(
     let canister_id = parse_principal(&canister)?;
 
     let describe_sql = format!("DESCRIBE {entity}");
-    let described = query_dto(&pool, environment, canister_id, &describe_sql).await?;
-    let order_by = match described {
-        ResultDto::Schema(schema) => schema
-            .columns
-            .iter()
-            .filter(|column| column.primary_key)
-            .map(|column| column.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", "),
-        _ => String::new(),
-    };
-
-    let sql = if order_by.is_empty() {
-        format!("SELECT * FROM {entity} LIMIT {DEFAULT_ROW_LIMIT} OFFSET {offset}")
-    } else {
-        format!(
-            "SELECT * FROM {entity} ORDER BY {order_by} LIMIT {DEFAULT_ROW_LIMIT} OFFSET {offset}"
-        )
+    let sql = match query_dto(&pool, environment, canister_id, &describe_sql).await {
+        Ok(ResultDto::Schema(schema)) => {
+            let pk_columns: Vec<String> = schema
+                .columns
+                .iter()
+                .filter(|column| column.primary_key)
+                .map(|column| column.name.clone())
+                .collect();
+            rows_sql(&entity, &pk_columns, DEFAULT_ROW_LIMIT, offset)
+        }
+        // An unexpected (non-Schema) shape from DESCRIBE: fall back to the
+        // same "no primary key derivable" path `rows_sql` already handles,
+        // rather than inventing a new error for a case that cannot occur
+        // against a well-behaved canister.
+        Ok(_) => rows_sql(&entity, &[], DEFAULT_ROW_LIMIT, offset),
+        Err(AppError::IntrospectionDisabled) => unordered_rows_sql(&entity),
+        Err(other) => return Err(other),
     };
 
     query_dto(&pool, environment, canister_id, &sql).await
@@ -229,5 +261,6 @@ pub async fn run_sql(
     Ok(SqlRunDto {
         result,
         limit_appended: limited.limit_appended,
+        order_by_missing: limited.order_by_missing,
     })
 }

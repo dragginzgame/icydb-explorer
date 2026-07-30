@@ -19,7 +19,7 @@
 // like an `AppErrorDto` (e.g. Tauri's own IPC-level failures) is normalized
 // into one rather than left as an opaque string or `Error`.
 import { invoke } from "@tauri-apps/api/core";
-import type { AppErrorDto, Environment, ResultDto, SqlRunDto, TreeNode } from "./types";
+import type { AppErrorDto, Project, ResultDto, SqlRunDto, TreeNode } from "./types";
 
 function isAppErrorDto(error: unknown): error is AppErrorDto {
   return (
@@ -38,17 +38,19 @@ function toAppErrorDto(error: unknown): AppErrorDto {
   return { kind: "unknown", explanation };
 }
 
-export async function listEnvironments(): Promise<Environment[]> {
+export async function listEnvironments(): Promise<Project> {
   try {
-    return await invoke<Environment[]>("list_environments");
+    return await invoke<Project>("list_environments");
   } catch (error) {
     throw toAppErrorDto(error);
   }
 }
 
-export async function canisterTree(env: string): Promise<TreeNode> {
+/** Returns a forest — one `TreeNode` per named canister in the
+ * environment's mapping, not a single tree (see `Environment.canisters`). */
+export async function canisterTree(env: string): Promise<TreeNode[]> {
   try {
-    return await invoke<TreeNode>("canister_tree", { env });
+    return await invoke<TreeNode[]>("canister_tree", { env });
   } catch (error) {
     throw toAppErrorDto(error);
   }

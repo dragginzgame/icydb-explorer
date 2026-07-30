@@ -1,6 +1,5 @@
 use serde::ser::SerializeMap;
 use serde::{Serialize, Serializer};
-use thiserror::Error;
 
 /// The single error type returned by every backend module.
 ///
@@ -8,49 +7,55 @@ use thiserror::Error;
 /// configuration problems, not bugs — so `explanation()` is written to
 /// tell an operator what to check or change, not just to restate what
 /// went wrong.
-#[derive(Debug, Error)]
+///
+/// `Display` (below) delegates to `explanation()` rather than a second,
+/// separately-maintained set of per-variant strings: the two describing
+/// the same error used to be able to drift apart (e.g. `Rejected`'s old
+/// `Display` read "statement rejected: {0}", blunter than `explanation()`'s
+/// read-only framing), and whichever text a future call site reaches for —
+/// `.to_string()`/`{}` or `.explanation()` — should say the same thing.
+#[derive(Debug, Clone)]
 pub enum AppError {
     /// A local I/O failure (reading config, dfx state, etc).
-    #[error("io error: {0}")]
     Io(String),
 
     /// A parse failure (candid, JSON, TOML, etc).
-    #[error("parse error: {0}")]
     Parse(String),
 
     /// An ic-agent transport/call failure not covered by a more specific
     /// variant below.
-    #[error("agent error: {0}")]
     Agent(String),
 
     /// The target canister has no `icydb_query` method: the SQL surface
     /// was never enabled.
-    #[error("canister {canister} has no SQL surface")]
     NoSqlSurface { canister: String },
 
     /// The canister exposes SQL but was built with introspection disabled,
     /// so SHOW/DESCRIBE/EXPLAIN are unavailable.
-    #[error("introspection is disabled on this canister")]
     IntrospectionDisabled,
 
     /// The identity used is not a controller of the canister, and icydb's
     /// SQL endpoints are controller-gated.
-    #[error("identity {identity} is not a controller of this canister")]
     NotController { identity: String },
 
     /// The configured replica could not be reached.
-    #[error("could not reach replica at {url}")]
     ReplicaUnreachable { url: String },
 
     /// An error returned by icydb itself, surfaced verbatim.
-    #[error("icydb error {code}: {message}")]
     IcyDb { code: String, message: String },
 
     /// A statement was rejected by the explorer's read-only statement
     /// classifier.
-    #[error("statement rejected: {0}")]
     Rejected(String),
 }
+
+impl std::fmt::Display for AppError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.explanation())
+    }
+}
+
+impl std::error::Error for AppError {}
 
 impl AppError {
     /// Operator-facing explanation: what happened, and — where the cause
@@ -154,7 +159,9 @@ mod tests {
 
     #[test]
     fn no_sql_surface_explains_the_required_config() {
-        let error = AppError::NoSqlSurface { canister: "user_hub".into() };
+        let error = AppError::NoSqlSurface {
+            canister: "user_hub".into(),
+        };
         let text = error.explanation();
         assert!(text.contains("user_hub"));
         assert!(text.contains(r#"features = ["sql"]"#));
@@ -170,14 +177,20 @@ mod tests {
 
     #[test]
     fn not_controller_names_the_identity_used() {
-        let text = AppError::NotController { identity: "demo-local".into() }.explanation();
+        let text = AppError::NotController {
+            identity: "demo-local".into(),
+        }
+        .explanation();
         assert!(text.contains("demo-local"));
         assert!(text.contains("controller"));
     }
 
     #[test]
     fn replica_unreachable_names_the_url_tried() {
-        let text = AppError::ReplicaUnreachable { url: "http://127.0.0.1:8000".into() }.explanation();
+        let text = AppError::ReplicaUnreachable {
+            url: "http://127.0.0.1:8000".into(),
+        }
+        .explanation();
         assert!(text.contains("http://127.0.0.1:8000"));
     }
 
@@ -221,6 +234,39 @@ mod tests {
     fn serializes_with_kind_and_explanation() {
         let json = serde_json::to_value(AppError::IntrospectionDisabled).unwrap();
         assert_eq!(json["kind"], "introspectionDisabled");
-        assert!(json["explanation"].as_str().unwrap().contains("introspection"));
+        assert!(json["explanation"]
+            .as_str()
+            .unwrap()
+            .contains("introspection"));
+    }
+
+    /// `Display` must delegate to `explanation()` so the two cannot drift
+    /// apart — checked across every variant, not just one, since the whole
+    /// point is that this holds everywhere.
+    #[test]
+    fn display_matches_explanation_for_every_variant() {
+        let errors = vec![
+            AppError::Io("disk full".to_string()),
+            AppError::Parse("bad json".to_string()),
+            AppError::Agent("transport failed".to_string()),
+            AppError::NoSqlSurface {
+                canister: "user_hub".into(),
+            },
+            AppError::IntrospectionDisabled,
+            AppError::NotController {
+                identity: "demo-local".into(),
+            },
+            AppError::ReplicaUnreachable {
+                url: "http://127.0.0.1:4943".into(),
+            },
+            AppError::IcyDb {
+                code: "Error { code: 5 }".into(),
+                message: "E5".into(),
+            },
+            AppError::Rejected("INSERT is not available".into()),
+        ];
+        for error in errors {
+            assert_eq!(error.to_string(), error.explanation());
+        }
     }
 }

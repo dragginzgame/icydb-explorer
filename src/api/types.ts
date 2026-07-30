@@ -56,24 +56,48 @@ export type ResultDto =
 
 /** A node in the canic-orchestrated fleet topology (see
  * `src-tauri/src/topology/types.rs::TreeNode`). Field names are all single
- * words, so no camelCase rename applies. */
+ * words, so no camelCase rename applies. `canisterTree` returns an array of
+ * these — a forest, one tree per named canister in the environment's
+ * mapping, not a single root. */
 export type TreeNode = { pid: string; role: string; children: TreeNode[] };
 
 /** The backend's single error shape (see `src-tauri/src/error.rs::AppError`).
  * `explanation` is operator-facing prose safe to render directly. */
 export type AppErrorDto = { kind: string; explanation: string };
 
-/** The frontend-facing result of `run_sql`: the query's `ResultDto` plus
- * whether the backend silently appended a `LIMIT` the user didn't type. */
-export type SqlRunDto = { result: ResultDto; limitAppended: boolean };
+/** The frontend-facing result of `run_sql`: the query's `ResultDto`, plus
+ * whether the backend silently appended a `LIMIT` the user didn't type, plus
+ * whether no `LIMIT` was appended specifically because the statement has no
+ * `ORDER BY` (icydb rejects `LIMIT`/`OFFSET` without one). */
+export type SqlRunDto = { result: ResultDto; limitAppended: boolean; orderByMissing: boolean };
 
-// `list_environments` returns these (see `src-tauri/src/discovery/types.rs`).
+// `list_environments` returns a `Project` (see `src-tauri/src/discovery/types.rs`).
 export type IdentityRef = { name: string; algorithm: string; pemPath: string };
 export type CanisterArtifact = { role: string; didPath: string };
+
+/** One entry from `.icp/cache/mappings/<network>.ids.json`: a name the
+ * project (or canic) gave a canister, and the id it resolved to. Every
+ * entry is a forest root in its own right — see `Environment`'s doc
+ * comment and `canisterTree`'s return shape. */
+export type NamedCanister = { name: string; id: string };
+
 export type Environment = {
   name: string;
   replicaUrl: string;
-  rootCanisterId: string | null;
+  /** A forest, not a single root: `.icp/cache/mappings/<network>.ids.json`
+   * is a name→id map with no guaranteed `root` entry (a canic fleet like
+   * toko has only `root`; a plain project may list its canisters directly
+   * with no root at all). `canisterTree(env)` walks each entry. */
+  canisters: NamedCanister[];
   identity: IdentityRef | null;
   artifacts: CanisterArtifact[];
+};
+
+/** The discovered project. `error` carries a `discover()` failure (e.g. no
+ * `.icp/` directory at all) — `null` both on success and on a merely
+ * undeployed project (zero environments, no error is not a failure). */
+export type Project = {
+  root: string;
+  environments: Environment[];
+  error: AppErrorDto | null;
 };

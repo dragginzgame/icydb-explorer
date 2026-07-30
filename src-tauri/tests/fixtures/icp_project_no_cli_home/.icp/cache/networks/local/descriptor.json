@@ -1,0 +1,11 @@
+{
+  "v": "1",
+  "network": "local",
+  "network-dir": "/tmp/icp_project_no_cli_home/.icp/cache/networks/local",
+  "gateway": {
+    "fixed": true,
+    "port": 4943,
+    "host": "localhost",
+    "ip": "127.0.0.1"
+  }
+}

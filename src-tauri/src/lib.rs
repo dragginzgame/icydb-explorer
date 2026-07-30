@@ -13,14 +13,22 @@ use discovery::Project;
 /// directory. A project that hasn't been deployed yet (no `.icp/` at all)
 /// is not a reason to refuse to start the app — it just means
 /// `list_environments` comes back empty and every other command reports a
-/// clear "no such environment" error until the project is deployed. So a
-/// `discover` failure here falls back to an empty `Project` rather than
-/// panicking or propagating.
+/// clear "no such environment" error until the project is deployed.
+///
+/// A `discover()` failure here (e.g. the `.icp/` directory itself is
+/// missing or unreadable) still falls back to an empty `Project` rather
+/// than panicking or propagating — the app should still start and let the
+/// user see what's wrong — but the error itself is now kept on `Project`
+/// (see its doc comment) rather than discarded. Silently swallowing it here
+/// was itself a real bug: a `discover()` regression and "this project
+/// simply has no environments yet" used to be indistinguishable to the
+/// frontend, both rendering as a quiet empty list.
 fn discover_project() -> Project {
     let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    discovery::discover(&root).unwrap_or(Project {
+    discovery::discover(&root).unwrap_or_else(|error| Project {
         root,
         environments: Vec::new(),
+        error: Some(error),
     })
 }
 
