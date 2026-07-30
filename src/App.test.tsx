@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import App from "./App";
 import * as commands from "./api/commands";
 import type { EntityDto, IdentityRef, ResultDto, TreeNode } from "./api/types";
@@ -178,4 +178,55 @@ test("a stale SQL console run never overwrites a newer canister's result", async
 
   expect(screen.getByText(/b_row/)).toBeDefined();
   expect(screen.queryByText(/a_row/)).toBeNull();
+});
+
+test("switching environments re-derives the identity for the new environment", async () => {
+  // Two environments whose `identities` lists don't overlap by name: if the
+  // app carried "alice" over into "ic" instead of re-deriving, `ic`'s
+  // `canisterTree` call would be made with an identity that doesn't even
+  // exist there.
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/project",
+    error: null,
+    environments: [
+      {
+        name: "local",
+        replicaUrl: "http://localhost",
+        canisters: [{ name: "root", id: "root-id" }],
+        identity: null,
+        identities: [
+          { name: "alice", algorithm: "secp256k1", kind: "keyring", pemPath: null, unusableReason: null },
+        ],
+        artifacts: [],
+      },
+      {
+        name: "ic",
+        replicaUrl: "https://icp0.io",
+        canisters: [{ name: "root", id: "root-id-2" }],
+        identity: null,
+        identities: [
+          { name: "carol", algorithm: "secp256k1", kind: "keyring", pemPath: null, unusableReason: null },
+        ],
+        artifacts: [],
+      },
+    ],
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([]);
+
+  render(<App />);
+
+  await waitFor(() => {
+    expect(commands.canisterTree).toHaveBeenCalledWith("local", "alice");
+  });
+
+  fireEvent.change(screen.getByDisplayValue("local"), { target: { value: "ic" } });
+
+  await waitFor(() => {
+    expect(commands.canisterTree).toHaveBeenCalledWith("ic", "carol");
+  });
+  // Never re-uses "local"'s identity for "ic" — that name isn't even in
+  // "ic"'s `identities`, so a carried-over selection would either fail
+  // obscurely at the backend or (worse) silently resolve to the wrong
+  // identity if a same-named one happened to exist there.
+  expect(commands.canisterTree).not.toHaveBeenCalledWith("ic", "alice");
 });

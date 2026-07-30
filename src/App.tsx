@@ -34,6 +34,29 @@ const DEFAULT_ROW_LIMIT = 100;
 
 const genericError = (explanation: string): AppErrorDto => ({ kind: "unknown", explanation });
 
+// The initial-selection rule: the configured default wins if it's usable,
+// otherwise fall back to the first usable entry in `identities` rather
+// than leaving the session stuck on an identity the backend would reject
+// (or, worse, silently picking an unusable one). `unusableReason` is read
+// verbatim — never re-derived from `kind`.
+//
+// This isn't only "initial": it's re-applied by the effect below every
+// time `env` changes, not just on first load. An identity name carried
+// over from the previous environment is only meaningful by coincidence —
+// `identities` is per-environment, and a same-named identity in the new
+// environment may be unusable (or simply absent) even though it was fine a
+// moment ago. Re-deriving from scratch avoids both silently querying with
+// a stale identity `find_identity` would still resolve by name, and
+// surfacing an obscure agent-level failure instead of a clear one.
+function initialIdentityFor(environment: Environment): string | null {
+  const configured = environment.identity;
+  if (configured && configured.unusableReason === null) {
+    return configured.name;
+  }
+  const fallback = environment.identities.find((candidate) => candidate.unusableReason === null);
+  return fallback ? fallback.name : null;
+}
+
 function App() {
   const [environments, setEnvironments] = useState<Environment[]>([]);
   const [environmentsError, setEnvironmentsError] = useState<AppErrorDto | null>(null);
@@ -83,26 +106,33 @@ function App() {
         if (project.environments.length > 0) {
           const firstEnvironment = project.environments[0];
           setEnv(firstEnvironment.name);
-
-          // The configured default wins if it's usable. Otherwise fall back
-          // to the first usable entry in `identities` rather than leaving
-          // the session stuck on an identity the backend would reject (or,
-          // worse, silently picking an unusable one) — `unusableReason` is
-          // read verbatim, never re-derived from `kind`.
-          const configured = firstEnvironment.identity;
-          if (configured && configured.unusableReason === null) {
-            setIdentity(configured.name);
-          } else {
-            const fallback = firstEnvironment.identities.find(
-              (candidate) => candidate.unusableReason === null,
-            );
-            setIdentity(fallback ? fallback.name : null);
-          }
+          setIdentity(initialIdentityFor(firstEnvironment));
         }
       })
       .catch((error: AppErrorDto) => setEnvironmentsError(error))
       .finally(() => setEnvironmentsLoaded(true));
   }, []);
+
+  // The one place `env` changes after the initial load: re-derives
+  // `identity` via `initialIdentityFor` in the *same* handler, rather than
+  // in a separate effect keyed on `env`. A separate effect would still be
+  // correct eventually, but for one render in between it would leave `env`
+  // already updated while `identity` (a different piece of state) still
+  // held the previous environment's value — and the forest effect below,
+  // which depends on both, would fire in that window with a real
+  // (env, identity) pair that's simply wrong: the new environment paired
+  // with an identity that may not even be in its `identities` list. Setting
+  // both here, in one synchronous handler, means React batches them into a
+  // single commit, so no effect ever observes that mismatched combination.
+  const handleSelectEnvironment = useCallback(
+    (name: string) => {
+      const nextEnvironment = environments.find((candidate) => candidate.name === name);
+      setEnv(name);
+      setIdentity(nextEnvironment ? initialIdentityFor(nextEnvironment) : null);
+      setIdentityError(null);
+    },
+    [environments],
+  );
 
   // The fleet forest is the only way canisters are discovered at all — a
   // failure to load it must be visible, never a silently empty tree.
@@ -320,7 +350,7 @@ function App() {
         {environments.length > 0 && (
           <select
             value={env ?? ""}
-            onChange={(event) => setEnv(event.target.value)}
+            onChange={(event) => handleSelectEnvironment(event.target.value)}
             className="rounded border px-2 py-1 text-sm"
           >
             {environments.map((environment) => (

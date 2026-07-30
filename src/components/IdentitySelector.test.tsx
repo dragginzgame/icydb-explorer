@@ -21,7 +21,13 @@ test("disables identities the app cannot load", () => {
 
 test("gives the reason an identity is unusable", () => {
   render(<IdentitySelector identities={[keyring, future]} selected="default" onSelect={() => {}} />);
-  expect(screen.getByRole("option", { name: /delegation/ })).toBeDefined();
+  // Asserts against the actual `unusableReason` text, not `/delegation/` —
+  // that substring also appears in the `(kind)` portion of the label, so it
+  // would still match even if the reason were never appended at all.
+  // Displaying the reason is the entire point of this option, so the
+  // assertion has to depend on the reason string surviving, not just on
+  // `kind` (which every option, usable or not, already renders).
+  expect(screen.getByRole("option", { name: /cannot be exported as a PEM/ })).toBeDefined();
 });
 
 test("renders nothing rather than an empty control when there are no identities", () => {
