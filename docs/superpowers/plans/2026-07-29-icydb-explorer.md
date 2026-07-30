@@ -745,6 +745,8 @@ git commit -m "feat: add read-only statement classifier and default LIMIT"
   - `pub struct ColumnDto { pub name: String, pub type_name: String, pub primary_key: bool, pub optional: bool }`
   - `pub struct SchemaDto { pub entity: String, pub columns: Vec<ColumnDto>, pub indexes: Vec<String> }`
   - `pub struct EntityDto { pub name: String, pub store_path: String, pub storage: String, pub columns: u32, pub indexes: u32, pub relations: u32, pub schema_version: u32 }`
+  - `pub struct StoreDto { pub store_path: String, pub storage: String }`
+  - `pub struct MemoryDto { pub tag: String, pub memory_id: u8, pub store_path: String }`
   - `pub enum ResultDto { Rows(RowsDto), Schema(SchemaDto), Entities(Vec<EntityDto>), Count { entity: String, row_count: u32 }, Explain { entity: String, explain: String }, Indexes { entity: String, indexes: Vec<String> }, Stores(Vec<StoreDto>), Memory(Vec<MemoryDto>) }` — `Serialize` as internally tagged with `"type"`
   - `pub fn result_to_dto(result: SqlQueryResult) -> ResultDto`
 
@@ -758,7 +760,7 @@ Every `OutputValue` variant must map. Write one assertion per variant so a new i
 #[cfg(test)]
 mod tests {
     use super::*;
-    use icydb::db::response::OutputValue;
+    use icydb::value::OutputValue;
 
     #[test]
     fn maps_scalar_variants_to_kind_and_display() {
@@ -807,11 +809,9 @@ mod tests {
 Run: `cd src-tauri && cargo test view::value`
 Expected: FAIL — `value_to_dto` not found.
 
-**If the import path is wrong,** find the correct re-export before writing code:
-
-```bash
-grep -rn "OutputValue" ~/.cargo/registry/src/*/icydb-0.202.1/src/db/response/
-```
+`OutputValue` lives at `icydb::value::OutputValue` (`icydb-0.202.1/src/lib.rs:99-101`),
+**not** under `icydb::db::response` — that module exports
+`render_output_value_text` but not the value type itself.
 
 - [ ] **Step 3: Implement `value.rs`**
 
@@ -880,11 +880,22 @@ Derive `Clone, Debug, Serialize` on every DTO. `ResultDto` carries
 `rowCount`, `nextCursor`, `typeName`, `primaryKey`, `storePath`, `schemaVersion`.
 Match `SqlQueryResult` exhaustively.
 
-`schema.rs` reads icydb's catalog structs **through their accessors** — `entity_name()`, `store_path()`, `storage()`, `columns()`, `indexes()`, `relations()`, `schema_version()` — because the fields are private. Confirm the accessor names on `EntityFieldDescription` and `EntitySchemaDescription` before writing:
+`schema.rs` reads icydb's catalog and describe structs **through their accessors**,
+because every field on them is private. The verified sets:
 
-```bash
-grep -rn "impl EntityFieldDescription" -A30 ~/.cargo/registry/src/*/icydb-core-0.202.1/src/db/catalog.rs
-```
+- `EntityFieldDescription`: `name()`, `slot() -> Option<u16>`, `kind()`, `nullable()`, `primary_key()`, `queryable()`, `origin()`
+- `EntitySchemaDescription`: `entity_path()`, `entity_name()`, `primary_key()`, `primary_key_fields()`, `fields()`, `indexes()`, `relations()`
+- `EntityIndexDescription`: `name()`, `unique()`, `fields()`, `origin()`
+- `EntityCatalogDescription`: `entity_name()`, `entity_path()`, `store_path()`, `storage()`, `columns()`, `indexes()`, `relations()`, `schema_version()`
+- `StoreCatalogDescription`: `store_path()`, `storage()`
+- `MemoryCatalogDescription`: `tag()`, `memory_id() -> u8`, `store_path()`
+
+`ColumnDto` maps from `EntityFieldDescription` as: `name` ← `name()`,
+`type_name` ← `kind()`, `primary_key` ← `primary_key()`, `optional` ← `nullable()`.
+
+`RowProjectionOutput`, by contrast, has **public** fields (`entity`, `columns`,
+`rows`, `row_count`) and no `next_cursor` — only `SqlGroupedRowsOutput` carries a
+cursor, so `RowsDto.next_cursor` is `None` for a `Projection`.
 
 The `Explain` variant is behind icydb's `sql-explain` feature, which the Global Constraints enable, so match it unconditionally.
 
