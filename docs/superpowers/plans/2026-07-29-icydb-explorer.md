@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - `icydb` and `icydb-build` are pinned exactly: `icydb = { version = "=0.202.1", features = ["sql-explain"] }`. Never relax to a caret range — `SqlQueryResult` is version-coupled.
-- Rust minimum supported version: **1.88.0** (required by icydb's dependencies).
+- Rust toolchain: **1.96.0**, pinned in `rust-toolchain.toml`. icydb's own manifest and README both claim 1.88.0, but its dependency `icydb-config@0.202.1` declares `rust-version = "1.96.0"`, so 1.96.0 is the real floor for the tree. Verified: the backend builds clean on 1.96.0 and fails to resolve on 1.88.0.
 - The app is **read-only**. It must never call `icydb_ddl` or `icydb_update`, and must only use `ic-agent`'s query calls, never update calls.
 - The frontend must never import, mirror, or hand-decode an icydb type. All icydb→JSON translation happens in `src-tauri/src/view/`.
 - icydb's catalog description structs have **private fields with accessors** (`entity_name()`, `store_path()`, `storage()`, `columns()`, `indexes()`, `relations()`, `schema_version()`). Read them via accessors.
@@ -100,7 +100,7 @@ Create `rust-toolchain.toml`:
 
 ```toml
 [toolchain]
-channel = "1.88.0"
+channel = "1.96.0"
 components = ["rustfmt", "clippy"]
 ```
 
@@ -196,7 +196,7 @@ icydb-build = "=0.202.1"
 name = "icydb-explorer-fixture"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.88.0"
+rust-version = "1.96.0"
 
 [lib]
 crate-type = ["cdylib"]
