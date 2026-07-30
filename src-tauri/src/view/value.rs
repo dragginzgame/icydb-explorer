@@ -110,4 +110,82 @@ mod tests {
         assert_eq!(dto.kind, "map");
         assert!(dto.display.contains('k') && dto.display.contains('9'));
     }
+
+    /// The spec's testing table mandates every `OutputValue` variant be
+    /// covered, not just a convenient subset — before this test, 9 of 24
+    /// were exercised here, and the four variants the spec calls out as
+    /// motivating type-aware rendering at all (`ulid`, `principal`,
+    /// `decimal`, `timestamp`) were asserted only in the replica-gated
+    /// integration test, i.e. never in a suite that runs without a live
+    /// canister. Table-driven over all 24 so a future icydb release adding
+    /// a 25th variant (which `kind_of`'s exhaustive match already forces to
+    /// be handled) also gets a test case added here, not just a match arm.
+    #[test]
+    fn every_output_value_variant_maps_to_its_own_kind() {
+        use icydb::types::{
+            Account, Date, Decimal, Duration, Float32, Float64, IntBig, NatBig, Principal,
+            Subaccount, Timestamp, Ulid,
+        };
+        use icydb::value::OutputValueEnum;
+
+        let principal = Principal::anonymous();
+
+        // `OutputValueEnum`'s fields are private with no public constructor
+        // outside icydb itself (only a `pub(crate) from_catalog_parts`) —
+        // but it derives `serde::Deserialize`, so this builds one the same
+        // way any other cross-boundary payload is decoded, without needing
+        // icydb to expose a test-only constructor.
+        let enum_value: OutputValueEnum = serde_json::from_value(serde_json::json!({
+            "variant": "active",
+            "path": null,
+            "payload": null,
+        }))
+        .expect("OutputValueEnum should deserialize for testing");
+
+        let cases: Vec<(OutputValue, &str)> = vec![
+            (
+                OutputValue::Account(Account::new(principal, None::<Subaccount>)),
+                "account",
+            ),
+            (OutputValue::Blob(vec![1, 2, 3]), "blob"),
+            (OutputValue::Bool(true), "bool"),
+            (OutputValue::Date(Date::new(2024, 1, 1)), "date"),
+            (OutputValue::Decimal(Decimal::new(1050, 2)), "decimal"),
+            (OutputValue::Duration(Duration::from(60u64)), "duration"),
+            (OutputValue::Enum(enum_value), "enum"),
+            (OutputValue::Float32(Float32::from(1i32)), "float32"),
+            (OutputValue::Float64(Float64::from(1i32)), "float64"),
+            (OutputValue::Int64(-7), "int"),
+            (OutputValue::Int128(-7i128), "int128"),
+            (OutputValue::IntBig(IntBig::from(-7i64)), "intbig"),
+            (OutputValue::List(vec![OutputValue::Nat64(1)]), "list"),
+            (
+                OutputValue::Map(vec![(OutputValue::Text("k".into()), OutputValue::Nat64(1))]),
+                "map",
+            ),
+            (OutputValue::Null, "null"),
+            (OutputValue::Principal(principal), "principal"),
+            (
+                OutputValue::Subaccount(Subaccount::from(principal)),
+                "subaccount",
+            ),
+            (OutputValue::Text("hi".into()), "text"),
+            (OutputValue::Timestamp(Timestamp::from(0u64)), "timestamp"),
+            (OutputValue::Nat64(7), "nat"),
+            (OutputValue::Nat128(7u128), "nat128"),
+            (OutputValue::NatBig(NatBig::from(7u64)), "natbig"),
+            (OutputValue::Ulid(Ulid::generate()), "ulid"),
+            (OutputValue::Unit, "unit"),
+        ];
+
+        assert_eq!(
+            cases.len(),
+            24,
+            "this list itself must cover all 24 OutputValue variants"
+        );
+
+        for (value, expected_kind) in cases {
+            assert_eq!(value_to_dto(&value).kind, expected_kind, "value: {value:?}");
+        }
+    }
 }
