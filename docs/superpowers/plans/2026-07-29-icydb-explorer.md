@@ -747,7 +747,13 @@ git commit -m "feat: add read-only statement classifier and default LIMIT"
   - `pub struct EntityDto { pub name: String, pub store_path: String, pub storage: String, pub columns: u32, pub indexes: u32, pub relations: u32, pub schema_version: u32 }`
   - `pub struct StoreDto { pub store_path: String, pub storage: String }`
   - `pub struct MemoryDto { pub tag: String, pub memory_id: u8, pub store_path: String }`
-  - `pub enum ResultDto { Rows(RowsDto), Schema(SchemaDto), Entities(Vec<EntityDto>), Count { entity: String, row_count: u32 }, Explain { entity: String, explain: String }, Indexes { entity: String, indexes: Vec<String> }, Stores(Vec<StoreDto>), Memory(Vec<MemoryDto>) }` — `Serialize` as internally tagged with `"type"`
+  - `pub enum ResultDto { Rows(RowsDto), Schema(SchemaDto), Entities { entities: Vec<EntityDto> }, Count { entity: String, row_count: u32 }, Explain { entity: String, explain: String }, Indexes { entity: String, indexes: Vec<String> }, Stores { stores: Vec<StoreDto> }, Memory { memory: Vec<MemoryDto> } }` — `Serialize` as internally tagged with `"type"`
+
+    **The three collection variants must be struct variants, not newtype variants.**
+    An internally-tagged enum cannot inject its tag into a JSON array, so
+    `Entities(Vec<EntityDto>)` panics at serialize time. `Rows(RowsDto)` and
+    `Schema(SchemaDto)` are fine as newtype variants because their payloads
+    serialize as maps, which the tag can be added to.
   - `pub fn result_to_dto(result: SqlQueryResult) -> ResultDto`
 
 **This is the load-bearing module.** It is the only place icydb shapes are translated. When icydb bumps, this is what changes.
@@ -874,11 +880,22 @@ Expected: FAIL — `result_to_dto` not found.
 
 - [ ] **Step 7: Implement `dto.rs`, `schema.rs`, and `mod.rs`**
 
-Derive `Clone, Debug, Serialize` on every DTO. `ResultDto` carries
-`#[serde(tag = "type", rename_all = "camelCase")]`; each struct DTO carries
+Derive `Clone, Debug, Serialize` on every DTO. Each struct DTO carries
 `#[serde(rename_all = "camelCase")]` so field names reach the frontend as
 `rowCount`, `nextCursor`, `typeName`, `primaryKey`, `storePath`, `schemaVersion`.
-Match `SqlQueryResult` exhaustively.
+
+`ResultDto` needs **three** serde attributes, not two:
+
+```rust
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+```
+
+`rename_all` on an enum renames only the *variant* names. Fields inside struct
+variants — `row_count` on `Count`, for instance — are untouched by it, so without
+`rename_all_fields` they reach the frontend as `row_count` and Task 11's types
+silently fail to match.
+
+Match `SqlQueryResult` exhaustively, with no `_ =>` arm.
 
 `schema.rs` reads icydb's catalog and describe structs **through their accessors**,
 because every field on them is private. The verified sets:
