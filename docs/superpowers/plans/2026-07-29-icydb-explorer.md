@@ -1014,10 +1014,27 @@ Hold a `tokio::sync::Mutex<HashMap<String, Arc<Agent>>>` keyed by environment na
 ```rust
 let agent = Agent::builder()
     .with_url(&env.replica_url)
-    .with_identity(load_identity(identity)?)
+    .with_boxed_identity(load_identity(identity)?)
     .build()
     .map_err(|e| AppError::Agent(e.to_string()))?;
 ```
+
+**Use `with_boxed_identity`, not `with_identity`.** `with_identity` is bounded
+`I: 'static + Identity`, and ic-agent has no `impl Identity for Box<dyn Identity>` —
+so passing the boxed identity to it does not compile. ic-agent provides
+`with_boxed_identity(Box<dyn Identity>)` for exactly this case (there is also
+`with_arc_identity` if an `Arc` is more convenient).
+
+Verified ic-agent 0.48.1 API surface, so no need to re-check:
+
+- `ic_agent::Identity` is the trait; `sender() -> Result<Principal, String>`
+- `ic_agent::identity::Secp256k1Identity::from_pem_file<P: AsRef<Path>>(p) -> Result<Self, PemError>`
+- `ic_agent::identity::BasicIdentity::from_pem_file` — this is the ed25519 loader
+- `ic_agent::identity::Prime256v1Identity::from_pem_file` also exists, if a p256 pem
+  ever turns up; not required by this task
+- `from_pem_file` needs ic-agent's `pem` feature, which is **on by default**
+- `Agent::builder().with_url(impl Into<String>)…build() -> Result<Agent, AgentError>`
+- `agent.fetch_root_key() -> Result<(), AgentError>`, async
 
 Then, for any non-mainnet replica URL, call `agent.fetch_root_key().await` and map failure to `AppError::ReplicaUnreachable { url: env.replica_url.clone() }` — an unreachable local replica is the single most likely failure in daily use, and it must not surface as a generic agent error. Treat a URL whose host is not `ic0.app`/`icp-api.io` as local.
 
