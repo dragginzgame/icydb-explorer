@@ -263,7 +263,96 @@ git commit -m "feat: add fixture canister exposing read-only icydb SQL surface"
 
 ---
 
-## Task 3: Discovery — parse `.icp/`
+## Task 3: Error type with purpose-written explanations
+
+**Files:**
+- Create: `src-tauri/src/error.rs`
+- Test: `src-tauri/src/error.rs` (inline `#[cfg(test)]`)
+
+**Interfaces:**
+- Consumes: nothing
+- Produces:
+  - `pub enum AppError { Io(String), Parse(String), Agent(String), NoSqlSurface { canister: String }, IntrospectionDisabled, NotController { identity: String }, ReplicaUnreachable { url: String }, IcyDb { code: String, message: String }, Rejected(String) }`
+  - `impl AppError { pub fn explanation(&self) -> String }`
+  - `impl serde::Serialize for AppError` producing `{ "kind": "...", "explanation": "..." }`
+
+- [ ] **Step 1: Write the failing test**
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_sql_surface_explains_the_required_config() {
+        let error = AppError::NoSqlSurface { canister: "user_hub".into() };
+        let text = error.explanation();
+        assert!(text.contains("user_hub"));
+        assert!(text.contains(r#"features = ["sql"]"#));
+        assert!(text.contains("icydb.toml"));
+    }
+
+    #[test]
+    fn introspection_disabled_explains_the_ic_flag() {
+        let text = AppError::IntrospectionDisabled.explanation();
+        assert!(text.contains("introspection"));
+        assert!(text.contains("ic = false"));
+    }
+
+    #[test]
+    fn not_controller_names_the_identity_used() {
+        let text = AppError::NotController { identity: "demo-local".into() }.explanation();
+        assert!(text.contains("demo-local"));
+        assert!(text.contains("controller"));
+    }
+
+    #[test]
+    fn replica_unreachable_names_the_url_tried() {
+        let text = AppError::ReplicaUnreachable { url: "http://127.0.0.1:8000".into() }.explanation();
+        assert!(text.contains("http://127.0.0.1:8000"));
+    }
+
+    #[test]
+    fn serializes_with_kind_and_explanation() {
+        let json = serde_json::to_value(AppError::IntrospectionDisabled).unwrap();
+        assert_eq!(json["kind"], "introspectionDisabled");
+        assert!(json["explanation"].as_str().unwrap().contains("introspection"));
+    }
+}
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `cd src-tauri && cargo test error`
+Expected: FAIL — `AppError` not found.
+
+- [ ] **Step 3: Implement `error.rs`**
+
+Define the enum with `thiserror::Error`, then `explanation()` returning the operator-facing text. Required content per variant:
+
+- `NoSqlSurface { canister }` — state that `canister` has no `icydb_query` method, that the SQL surface is not enabled, and that enabling it means adding `features = ["sql"]` to the canister's icydb dependency plus an `icydb.toml`. This mirrors the recovery hint icydb-cli emits for the same condition.
+- `IntrospectionDisabled` — state that `SHOW`/`DESCRIBE`/`EXPLAIN` are unavailable because the canister was built with `introspection` `ic = false`, and that this is a build-time configuration choice owned by the canister, not a failure of the explorer.
+- `NotController { identity }` — state which identity was used and that icydb's SQL endpoints are controller-gated.
+- `ReplicaUnreachable { url }` — state the URL that was tried.
+- `IcyDb { code, message }` — surface both verbatim.
+
+Implement `Serialize` manually as a two-field map: `kind` (lowerCamelCase variant name) and `explanation`.
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `cd src-tauri && cargo test error`
+Expected: PASS, 5 tests.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src-tauri/src/error.rs
+git commit -m "feat: add AppError with operator-facing explanations"
+```
+
+---
+
+## Task 4: Discovery — parse `.icp/`
 
 **Files:**
 - Create: `src-tauri/src/discovery/mod.rs`, `src-tauri/src/discovery/types.rs`, `src-tauri/src/discovery/icp_dir.rs`
@@ -271,7 +360,7 @@ git commit -m "feat: add fixture canister exposing read-only icydb SQL surface"
 - Test: `src-tauri/src/discovery/icp_dir.rs` (inline `#[cfg(test)]`)
 
 **Interfaces:**
-- Consumes: nothing
+- Consumes: `AppError` (Task 3)
 - Produces:
   - `pub struct Project { pub root: PathBuf, pub environments: Vec<Environment> }`
   - `pub struct Environment { pub name: String, pub replica_url: String, pub root_canister_id: Option<String>, pub identity: Option<IdentityRef>, pub artifacts: Vec<CanisterArtifact> }`
@@ -430,7 +519,7 @@ Implement `discover` to, in order:
 4. Read `identity_defaults.json` → `default`, look it up in `identity_list.json` → `algorithm`, and set `pem_path` to `.icp/cli-home/identity/keys/<name>.pem`. If the entry's `kind` is not `pem`, leave `identity` as `None`.
 5. List `.icp/<env>/canisters/*/` directories; each becomes a `CanisterArtifact` with `role` = directory name and `did_path` = `<dir>/<role>.did`.
 
-Every filesystem read that can fail must map into `AppError` (Task 4) — no `unwrap` on IO or JSON. Until Task 4 lands, use `Result<_, String>` and change the alias in Task 4.
+Every filesystem read that can fail must map into `AppError` (Task 3) — no `unwrap` on IO or JSON. Map IO failures to `AppError::Io` and JSON failures to `AppError::Parse`.
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
@@ -446,105 +535,6 @@ git commit -m "feat: discover environments, ids, and identity from .icp"
 
 ---
 
-## Task 4: Error type with purpose-written explanations
-
-**Files:**
-- Create: `src-tauri/src/error.rs`
-- Modify: `src-tauri/src/discovery/icp_dir.rs` (swap `String` errors for `AppError`)
-- Test: `src-tauri/src/error.rs` (inline `#[cfg(test)]`)
-
-**Interfaces:**
-- Consumes: nothing
-- Produces:
-  - `pub enum AppError { Io(String), Parse(String), Agent(String), NoSqlSurface { canister: String }, IntrospectionDisabled, NotController { identity: String }, ReplicaUnreachable { url: String }, IcyDb { code: String, message: String }, Rejected(String) }`
-  - `impl AppError { pub fn explanation(&self) -> String }`
-  - `impl serde::Serialize for AppError` producing `{ "kind": "...", "explanation": "..." }`
-
-- [ ] **Step 1: Write the failing test**
-
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn no_sql_surface_explains_the_required_config() {
-        let error = AppError::NoSqlSurface { canister: "user_hub".into() };
-        let text = error.explanation();
-        assert!(text.contains("user_hub"));
-        assert!(text.contains(r#"features = ["sql"]"#));
-        assert!(text.contains("icydb.toml"));
-    }
-
-    #[test]
-    fn introspection_disabled_explains_the_ic_flag() {
-        let text = AppError::IntrospectionDisabled.explanation();
-        assert!(text.contains("introspection"));
-        assert!(text.contains("ic = false"));
-    }
-
-    #[test]
-    fn not_controller_names_the_identity_used() {
-        let text = AppError::NotController { identity: "demo-local".into() }.explanation();
-        assert!(text.contains("demo-local"));
-        assert!(text.contains("controller"));
-    }
-
-    #[test]
-    fn replica_unreachable_names_the_url_tried() {
-        let text = AppError::ReplicaUnreachable { url: "http://127.0.0.1:8000".into() }.explanation();
-        assert!(text.contains("http://127.0.0.1:8000"));
-    }
-
-    #[test]
-    fn serializes_with_kind_and_explanation() {
-        let json = serde_json::to_value(AppError::IntrospectionDisabled).unwrap();
-        assert_eq!(json["kind"], "introspectionDisabled");
-        assert!(json["explanation"].as_str().unwrap().contains("introspection"));
-    }
-}
-```
-
-- [ ] **Step 2: Run the tests to verify they fail**
-
-Run: `cd src-tauri && cargo test error`
-Expected: FAIL — `AppError` not found.
-
-- [ ] **Step 3: Implement `error.rs`**
-
-Define the enum with `thiserror::Error`, then `explanation()` returning the operator-facing text. Required content per variant:
-
-- `NoSqlSurface { canister }` — state that `canister` has no `icydb_query` method, that the SQL surface is not enabled, and that enabling it means adding `features = ["sql"]` to the canister's icydb dependency plus an `icydb.toml`. This mirrors the recovery hint icydb-cli emits for the same condition.
-- `IntrospectionDisabled` — state that `SHOW`/`DESCRIBE`/`EXPLAIN` are unavailable because the canister was built with `introspection` `ic = false`, and that this is a build-time configuration choice owned by the canister, not a failure of the explorer.
-- `NotController { identity }` — state which identity was used and that icydb's SQL endpoints are controller-gated.
-- `ReplicaUnreachable { url }` — state the URL that was tried.
-- `IcyDb { code, message }` — surface both verbatim.
-
-Implement `Serialize` manually as a two-field map: `kind` (lowerCamelCase variant name) and `explanation`.
-
-- [ ] **Step 4: Run the tests to verify they pass**
-
-Run: `cd src-tauri && cargo test error`
-Expected: PASS, 5 tests.
-
-- [ ] **Step 5: Convert discovery to `AppError`**
-
-Replace `Result<_, String>` with `Result<_, AppError>` throughout `discovery/`, mapping IO failures to `AppError::Io` and JSON failures to `AppError::Parse`.
-
-- [ ] **Step 6: Verify the whole suite still passes**
-
-Run: `cd src-tauri && cargo test`
-Expected: PASS, 11 tests.
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add src-tauri/src/error.rs src-tauri/src/discovery
-git commit -m "feat: add AppError with operator-facing explanations"
-```
-
----
-
 ## Task 5: Statement classifier and default LIMIT
 
 **Files:**
@@ -552,7 +542,7 @@ git commit -m "feat: add AppError with operator-facing explanations"
 - Test: inline `#[cfg(test)]` in both files
 
 **Interfaces:**
-- Consumes: `AppError` (Task 4)
+- Consumes: `AppError` (Task 3)
 - Produces:
   - `#[derive(Clone, Copy, Debug, Eq, PartialEq)] pub enum Statement { Select, Show, Describe, Explain }` — `Copy` and `PartialEq`/`Debug` are required by the tests below, which compare variants with `assert_eq!` and pass them by value in loops
   - `pub fn classify(sql: &str) -> Result<Statement, AppError>` — `Err(AppError::Rejected(_))` for anything else
@@ -866,7 +856,7 @@ git commit -m "feat: add view layer translating SqlQueryResult to frontend DTOs"
 - Test: inline `#[cfg(test)]` in `identity.rs`
 
 **Interfaces:**
-- Consumes: `Environment`, `IdentityRef` (Task 3); `AppError` (Task 4)
+- Consumes: `Environment`, `IdentityRef` (Task 4); `AppError` (Task 3)
 - Produces:
   - `pub fn load_identity(identity: &IdentityRef) -> Result<Box<dyn ic_agent::Identity>, AppError>`
   - `pub struct AgentPool { /* private */ }`
@@ -964,7 +954,7 @@ git commit -m "feat: add agent pool and pem identity loading"
 - Test: inline `#[cfg(test)]` in `transport.rs`
 
 **Interfaces:**
-- Consumes: `AgentPool` (Task 7), `AppError` (Task 4), `classify`/`apply_default_limit` (Task 5)
+- Consumes: `AgentPool` (Task 7), `AppError` (Task 3), `classify`/`apply_default_limit` (Task 5)
 - Produces:
   - `pub async fn run_query(agent: &Agent, canister: Principal, sql: &str) -> Result<SqlQueryResult, AppError>`
   - `pub fn map_call_error(error: &AgentError, canister: &str, identity: &str) -> AppError`
@@ -1083,7 +1073,7 @@ git commit -m "feat: add icydb_query transport with diagnostic error mapping"
 - Test: inline `#[cfg(test)]` in `mod.rs`
 
 **Interfaces:**
-- Consumes: `AgentPool` (Task 7), `AppError` (Task 4)
+- Consumes: `AgentPool` (Task 7), `AppError` (Task 3)
 - Produces:
   - `pub struct CanisterInfo { pub pid: Principal, pub role: String, pub created_at: u64, pub module_hash: Option<Vec<u8>>, pub parent_pid: Option<Principal> }`
   - `pub struct TreeNode { pub pid: String, pub role: String, pub children: Vec<TreeNode> }`
@@ -1633,10 +1623,10 @@ git commit -m "docs: add README covering setup, prerequisites, and version pinni
 
 ## Self-Review Notes
 
-**Spec coverage.** Every spec section maps to a task: feasibility → Task 1 Step 4 (the icydb-links-on-host check); prerequisite/fixture canister → Task 2; discovery inputs → Task 3; architecture and module table → Tasks 3–10; read-only enforcement → Task 5 plus Task 8 Step 5 (query calls only); SQL console → Tasks 5 and 12; paging → Tasks 10 and 12; error handling (all four cases) → Tasks 4 and 8; testing table (all five scopes) → Tasks 3, 6, 5, 10, 11–12; out-of-scope items → absent by construction; known risks → Task 13 Step 4 documents the version pin and both configuration constraints.
+**Spec coverage.** Every spec section maps to a task: feasibility → Task 1 Step 4 (the icydb-links-on-host check); prerequisite/fixture canister → Task 2; discovery inputs → Task 4; architecture and module table → Tasks 3–10; read-only enforcement → Task 5 plus Task 8 Step 5 (query calls only); SQL console → Tasks 5 and 12; paging → Tasks 10 and 12; error handling (all four cases) → Tasks 3 and 8; testing table (all five scopes) → Tasks 4, 6, 5, 10, 11–12; out-of-scope items → absent by construction; known risks → Task 13 Step 4 documents the version pin and both configuration constraints.
 
 **Deliberate verification steps.** Three places instruct the implementer to confirm a signature against the installed crate before writing code, rather than trusting this plan: the `OutputValue` import path (Task 6 Step 2), the catalog accessor names (Task 6 Step 7), and icydb's cursor syntax (Task 10 Step 1). These are the details most likely to have shifted between icydb releases, and a wrong guess would surface as a confusing compile error. Task 2 Step 5 likewise directs the implementer to icydb's own tests for entity-macro syntax instead of inventing it.
 
-**Known ordering constraint.** Task 3 writes `Result<_, String>` and Task 4 converts it to `AppError`. This is deliberate: it keeps discovery independently testable rather than blocking it on the error type, and Task 4 Step 5 makes the conversion an explicit step rather than leaving it implied.
+**Task order.** The error type is Task 3 and discovery is Task 4, so discovery uses `AppError` from its first line. An earlier draft had these reversed with an explicit `String`-to-`AppError` conversion step; that was swapped before execution to remove a needless conversion and the reviewer finding it invited.
 
 **Type consistency fixes applied during review.** Three inconsistencies were found and corrected rather than left for the implementer to hit as compile errors: DTO structs needed `#[serde(rename_all = "camelCase")]` for Task 11's TypeScript field names (`rowCount`, `nextCursor`) to match; `Statement` needed `Copy`/`PartialEq`/`Debug` for the Task 5 tests to compile; and a vestigial `AgentError::CertifiedReject` line in the Task 8 test would not have compiled.
