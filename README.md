@@ -33,8 +33,10 @@ React/Vite/Tailwind  ──tauri invoke──▶  Rust backend  ──ic-agent�
 - Rust **1.96.0** (pinned in `rust-toolchain.toml`; installing via `rustup`
   in this project's directory will pick it up automatically).
 - Node.js and npm (any version compatible with the `package.json` deps).
-- The **`icp` CLI**, not `dfx`. This matters and is not interchangeable —
-  see item 5 below.
+- The **`icp` CLI**. This app is developed and tested against `icp`'s local
+  replica; a `dfx start` replica has not been made to work here — see item 5
+  below for what was actually observed, and why that's a note rather than a
+  hard rule about every dfx release.
 - A target canister with icydb's SQL surface enabled — see the next section.
   This repo ships a working example (`fixture/`) if you just want to see the
   app run.
@@ -100,15 +102,25 @@ least a few of these.
    (`icydb-diagnostic-code-0.202.1/src/registry.rs`) — even though
    `icydb.toml` says `local = true`.
 
-5. **Use `icp`'s local replica, not `dfx`'s.** `ic-agent = "0.48"` (pinned in
-   `src-tauri/Cargo.toml`) always POSTs queries to
-   `/api/v3/canister/<id>/query`. `dfx`'s bundled replica (as of the version
-   available while building this) does not implement that endpoint at all —
-   it 404s — while `icp`'s network-launcher replica does. This is a real,
-   confirmed tooling-version mismatch, not a preference: pointing this app
-   (or its integration tests) at a `dfx start` replica will make every query
-   call fail with a bare HTTP 404, regardless of whether the canister itself
-   is fine.
+5. **This app is developed and tested against `icp`'s local replica, and a
+   `dfx start` replica has not been made to work.** `ic-agent = "0.48"`
+   (pinned in `src-tauri/Cargo.toml`) always POSTs queries to
+   `/api/v3/canister/<id>/query`.
+
+   **Corrected 2026-07-30 (icydb author review, Step 4d):** an earlier
+   version of this note stated categorically that `dfx`'s replica cannot
+   work because it lacks that endpoint. That generalised too far from a
+   single observation: the IC HTTP interface spec admits both v2 and v3
+   query routes, and there is no authoritative basis here for rejecting
+   *every* dfx replica. What was actually observed, on this machine, on
+   2026-07-29, against `dfx 0.30.0-beta.2`: every `icydb_query` call against
+   a `dfx start` replica returned a bare HTTP 404 on that endpoint, while
+   `icp`'s network-launcher replica served it normally. That is a
+   single-machine, single-version data point, not a verified rule about
+   every dfx release. `icp`'s replica is what this app and its integration
+   tests are actually verified against; treat any given `dfx start` replica
+   as untested rather than assumed-incompatible, and report back if you get
+   one working.
 
 6. **`LIMIT` requires an explicit `ORDER BY`.** icydb's query planner rejects
    any `LIMIT`/`OFFSET` window that has no `ORDER BY` at all
@@ -125,13 +137,19 @@ least a few of these.
    accepted, and a scalar `SELECT`'s `Projection` payload carries no cursor
    field at all.
 
-   When that `DESCRIBE` itself fails because introspection is disabled (see
-   item 8 below), `fetch_rows` falls back to an unordered, unbounded
-   `SELECT` rather than propagating the introspection error — no primary
-   key is derivable in that case, and icydb would reject a `LIMIT`/`OFFSET`
-   window with no `ORDER BY` anyway, so a bounded page isn't achievable
-   either. Row browsing therefore still works with introspection off; only
-   paging (and, separately, `SHOW`/`DESCRIBE`/`EXPLAIN` themselves) don't.
+   **Corrected 2026-07-30 (icydb author review, Step 4c):** when that
+   `DESCRIBE` itself fails because introspection is disabled (see item 8
+   below), `fetch_rows` now returns a clear error
+   (`AppError::RowPagingRequiresIntrospection`) rather than falling back to
+   an unordered, unbounded `SELECT` the way an earlier version of this app
+   did. That fallback was a real defect: the generated-SQL lane `fetch_rows`
+   runs on is trusted/admin and intentionally bypasses public-read
+   admission, so an unbounded read there was exactly the wrong place to
+   relax anything, regardless of whether pagination was achievable. **Row
+   browsing is therefore *unavailable* on a canister with introspection
+   disabled — not merely schema-blind** — until you type an explicit
+   `ORDER BY ... LIMIT ...` yourself in the SQL console, which needs no
+   `DESCRIBE` and so is unaffected by introspection being off.
 
 7. **Endpoints are controller-gated.** `icydb_query` requires the calling
    identity to be a controller of the target canister. The identity this
@@ -144,10 +162,12 @@ least a few of these.
    `EXPLAIN` are enabled by default on local builds and *disabled* by
    default on IC (mainnet) builds. A canister deployed to mainnet with no
    explicit `icydb.toml` override will report `IntrospectionDisabled` for
-   schema-browsing statements even though plain `SELECT` still works (see
-   item 6 above for exactly how row browsing degrades in that case); the
-   canister owner has to opt in explicitly for mainnet schema browsing to be
-   available at all.
+   schema-browsing statements — and, per item 6 above, this app's automatic
+   row browsing is unavailable too, since it depends on `DESCRIBE` to build
+   an `ORDER BY`. A hand-written, explicitly ordered `SELECT` in the SQL
+   console still works, since it needs no `DESCRIBE`. The canister owner has
+   to opt in explicitly for mainnet schema browsing (and this app's row
+   browsing) to be available at all.
 
 9. **`icydb` is pinned exactly, in exactly one place.** The workspace root
    `Cargo.toml`'s `[workspace.dependencies]` declares
@@ -217,25 +237,94 @@ outside the Tauri runtime), but that's still a meaningful check: the layout
 should render, and the error should show up as a full, readable explanation
 in the UI rather than a blank pane, a silent failure, or a crash.
 
+## Identities
+
+This app reads identities straight out of `icp`'s own identity store — never
+`dfx`'s — via `icp identity list`/`icp identity export`, and its selector
+lists every identity that store declares, not just the default.
+
+**Selection is session-only.** On launch, the app starts from whatever `icp
+identity default` currently resolves to. Choosing a different identity from
+the selector changes which identity this app's own queries use for the rest
+of that running session; it does not touch `icp`'s own configured default.
+Restart the app and it starts from `icp identity default` again.
+
+`icp` identities come in three storage kinds (`icp identity new --storage
+<kind>`), and this app's support differs by kind:
+
+| Storage kind | Works here? |
+|---|---|
+| `plaintext` | Yes — the pem is read straight off disk. |
+| `keyring` | Yes — exported non-interactively via `icp identity export` and never written to disk; see `src-tauri/src/agent/export.rs`. |
+| `password` | **No.** `icp identity export` prompts interactively for the password, which this app has no way to supply. The export attempt times out after 20s with an explanatory error rather than hanging indefinitely — use a `plaintext` or `keyring` identity instead. |
+
+The selector also disables (with the reason shown inline) any identity this
+app otherwise cannot use — most notably `anonymous`, since `icydb_query` is
+controller-gated and the anonymous identity is never a controller of
+anything.
+
+Three key algorithms are supported: `secp256k1`, `ed25519`, and
+`prime256v1` (the three `icp identity import --assert-key-type` accepts). An
+identity using any other algorithm reports a clear "unsupported algorithm"
+error naming it, rather than failing silently.
+
 ## Read-only, and where that guarantee actually lives
 
-This app only ever issues query calls to `icydb_query`, and its SQL console
-classifies input client-side, accepting only `SELECT`/`SHOW`/`DESCRIBE`/
-`EXPLAIN` before it ever reaches the network. **That classifier is a UX
-affordance, not a security boundary** — it exists so a user who types `DELETE
-FROM ...` gets an immediate, specific explanation instead of a confusing
-round-trip failure, not to protect anything. The actual guarantee is the
-target canister's own `icydb.toml` (`readonly = true`), which means
-`icydb_update` and `icydb_ddl` are never generated as endpoints in the first
-place — there is nothing for this app, or any other caller, to invoke even
-if it tried. If a canister is *not* configured `readonly = true`, this app's
-own restraint is the only thing keeping it read-only, and that is a property
-of this app's code, not of the canister you're pointing it at.
+**Corrected 2026-07-30, following a review by the icydb author.** An earlier
+version of this section, and of the design spec, said the target canister's
+own `icydb.toml` (`readonly = true`) *is* the security boundary. That was
+wrong, and wrong in the dangerous direction: `icydb-config`'s `emit.rs`
+wires `readonly`, `ddl`, `fixtures`, and `update` as **four independent
+switches** (`with_sql_readonly_enabled`, `with_sql_ddl_enabled`,
+`with_sql_fixtures_enabled`, `with_sql_update_policy`). Setting
+`readonly = true` only controls whether `icydb_query` is generated — it does
+**not** disable `icydb_ddl`, `icydb_update`, or fixtures. A canister with
+`readonly = true` and `ddl` left unset still has `icydb_ddl` generated. A
+reader who followed the old text, set `readonly = true`, and left the rest
+default would have believed they were protected when they weren't.
+
+The real guarantee — and it is a stronger one — is what this app already
+does: **it calls only `icydb_query`, a query method whose dispatcher rejects
+any mutation statement, and query calls cannot persist canister state.**
+That's a property of IC query calls themselves, not a courtesy this app is
+choosing to extend. This codebase has exactly two network call sites, both
+`agent.query` (`src-tauri/src/sql/transport.rs`'s call to `icydb_query`, and
+`src-tauri/src/topology/mod.rs`'s call to `canic_canister_children`) —
+neither is, or could silently become, an update call. Confirmed by three
+independent reviews of this codebase, including the one that raised this
+finding.
+
+The SQL console's client-side statement classifier (accepting only
+`SELECT`/`SHOW`/`DESCRIBE`/`EXPLAIN` before anything reaches the network) is a
+**UX affordance, not part of that guarantee** — it exists so a user who types
+`DELETE FROM ...` gets an immediate, specific explanation instead of a
+confusing round-trip failure. Removing it would not make this app able to
+write anything; it would just turn a clear local error into a confusing
+network one.
+
+**Defence in depth, not the boundary itself.** The app's own query-only
+behavior is what actually protects a canister it points at, but it's still
+worth configuring the canister so a *different*, less careful caller can't
+do damage either — that configuration is a second, independent layer, not
+a substitute for the first. For any canister this app is meant to browse,
+we recommend:
+
+```toml
+[canisters.<name>.sql]
+readonly = true
+ddl = false
+update = false
+fixtures = false   # true only for a development fixture, never in production
+```
+
+Setting these narrows what any *other* caller of the same canister can do —
+it does not change what this app can do, since this app was already
+query-only regardless of how the canister is configured.
 
 ## Testing
 
 ```bash
-# Rust unit tests (55 as of this writing) — no replica needed.
+# Rust unit tests (97 as of this writing) — no replica needed.
 cargo test -p icydb-explorer
 
 # Rust integration tests against a live replica — requires the fixture
@@ -278,9 +367,13 @@ the entire reason that boundary exists.
 - **Controller-gated only.** This app is useful only against canisters
   where its configured identity is a controller (item 7 above) — there is
   no support for browsing a canister you don't control.
-- **Mainnet schema browsing is off by default.** `SHOW`/`DESCRIBE`/`EXPLAIN`
-  require a canister to opt into `introspection.ic = true` explicitly (item
-  8 above); plain `SELECT` still works either way.
+- **Mainnet schema browsing — and this app's automatic row browsing — are
+  off by default.** `SHOW`/`DESCRIBE`/`EXPLAIN` require a canister to opt
+  into `introspection.ic = true` explicitly (item 8 above), and so does the
+  table view's automatic paging, since it needs a `DESCRIBE` to build an
+  `ORDER BY`. A hand-written, explicitly ordered `SELECT ... ORDER BY ...
+  LIMIT ...` typed into the SQL console still works either way, since it
+  needs no `DESCRIBE`.
 - **No cross-shard query fan-out.** Sharded entities are browsed one leaf
   canister at a time via the canister tree; this app never invents
   cross-canister query semantics.

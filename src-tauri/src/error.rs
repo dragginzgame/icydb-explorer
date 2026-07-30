@@ -47,6 +47,26 @@ pub enum AppError {
     /// A statement was rejected by the explorer's read-only statement
     /// classifier.
     Rejected(String),
+
+    /// `fetch_rows`'s `DESCRIBE` (used to find a primary key to page by)
+    /// failed with `IntrospectionDisabled`. Introspection off means no
+    /// primary key is discoverable, and icydb rejects any `LIMIT`/`OFFSET`
+    /// window with no explicit `ORDER BY` regardless (see `IcyDb`'s `E5`
+    /// case) — so there is no bounded, ordered page `fetch_rows` can
+    /// construct. Row browsing is *unavailable* here, not merely
+    /// schema-blind; the SQL console remains available for a hand-written,
+    /// explicitly ordered `SELECT`. Replaces an earlier fallback that issued
+    /// an unbounded `SELECT * FROM {entity}` against the trusted/admin SQL
+    /// lane — wrong, since that lane intentionally bypasses the public-read
+    /// admission an unbounded read would need to be safe.
+    RowPagingRequiresIntrospection { entity: String },
+
+    /// `rows_sql` was asked to page an entity with no primary-key columns to
+    /// order by. Every valid icydb entity declares one, so this should be
+    /// unreachable in practice; it exists so a malformed schema fails with a
+    /// clear message rather than emitting a `LIMIT`/`OFFSET` window icydb is
+    /// guaranteed to reject as `UnorderedPagination` anyway.
+    NoOrderableColumns { entity: String },
 }
 
 impl std::fmt::Display for AppError {
@@ -104,6 +124,17 @@ impl AppError {
             AppError::Rejected(reason) => format!(
                 "This explorer is read-only and does not support this statement: {reason}"
             ),
+            AppError::RowPagingRequiresIntrospection { entity } => format!(
+                "Automatic row paging for \"{entity}\" needs introspection to derive an ORDER \
+                 BY, but this canister was built with introspection disabled. Use the SQL \
+                 console with an explicit `ORDER BY ... LIMIT ...` clause to browse this table \
+                 instead."
+            ),
+            AppError::NoOrderableColumns { entity } => format!(
+                "\"{entity}\" declares no primary-key column to order by, so automatic row \
+                 paging cannot construct a valid ORDER BY. Use the SQL console with an explicit \
+                 `ORDER BY ... LIMIT ...` clause to browse this table instead."
+            ),
         }
     }
 
@@ -120,6 +151,8 @@ impl AppError {
             AppError::ReplicaUnreachable { .. } => "replicaUnreachable",
             AppError::IcyDb { .. } => "icyDb",
             AppError::Rejected(_) => "rejected",
+            AppError::RowPagingRequiresIntrospection { .. } => "rowPagingRequiresIntrospection",
+            AppError::NoOrderableColumns { .. } => "noOrderableColumns",
         }
     }
 }
@@ -231,6 +264,29 @@ mod tests {
     }
 
     #[test]
+    fn row_paging_requires_introspection_names_the_entity_and_the_sql_console() {
+        let text = AppError::RowPagingRequiresIntrospection {
+            entity: "demo_row".into(),
+        }
+        .explanation();
+        assert!(text.contains("demo_row"));
+        assert!(text.contains("introspection"));
+        assert!(text.contains("ORDER BY"));
+        assert!(text.contains("SQL console"));
+    }
+
+    #[test]
+    fn no_orderable_columns_names_the_entity_and_the_sql_console() {
+        let text = AppError::NoOrderableColumns {
+            entity: "demo_row".into(),
+        }
+        .explanation();
+        assert!(text.contains("demo_row"));
+        assert!(text.contains("ORDER BY"));
+        assert!(text.contains("SQL console"));
+    }
+
+    #[test]
     fn serializes_with_kind_and_explanation() {
         let json = serde_json::to_value(AppError::IntrospectionDisabled).unwrap();
         assert_eq!(json["kind"], "introspectionDisabled");
@@ -264,6 +320,12 @@ mod tests {
                 message: "E5".into(),
             },
             AppError::Rejected("INSERT is not available".into()),
+            AppError::RowPagingRequiresIntrospection {
+                entity: "demo_row".into(),
+            },
+            AppError::NoOrderableColumns {
+                entity: "demo_row".into(),
+            },
         ];
         for error in errors {
             assert_eq!(error.to_string(), error.explanation());

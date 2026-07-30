@@ -303,6 +303,79 @@ fn read_default_identity(icp_dir: &Path) -> Result<Option<IdentityRef>, AppError
     }
 }
 
+/// icp-cli's user-level identity store: the one this app falls back to when
+/// no project-local `cli-home/identity/` exists (see `resolve_identity_store`
+/// above). Unlike that internal resolver, this always resolves to the
+/// user-level store specifically (never a project-local one) and reports an
+/// error rather than `None` when it isn't actually present — added for
+/// `tests/integration.rs`'s live export test, which needs to know
+/// definitively whether *the* real store this machine's `icp` CLI uses
+/// exists, not just "no project-local override was found".
+pub fn user_level_identity_store() -> Result<PathBuf, AppError> {
+    let dir = user_level_identity_dir().ok_or_else(|| {
+        AppError::Io(
+            "no user-level icp identity store location is known on this platform".to_string(),
+        )
+    })?;
+    if identity_store_present(&dir) {
+        Ok(dir)
+    } else {
+        Err(AppError::Io(format!(
+            "no icp identity store found at {} (missing identity_list.json or \
+             identity_defaults.json)",
+            dir.display()
+        )))
+    }
+}
+
+/// Reads just the configured default identity's *name* out of
+/// `store/identity_defaults.json`, without resolving it against
+/// `read_all_identities` the way `read_identity_from_store` does — split out
+/// so a caller (the live export test) can read the name and look it up
+/// itself, distinguishing "no default configured" from "default configured
+/// but not found in the list" the same way `read_identity_from_store` does
+/// internally.
+pub fn read_default_identity_name(store: &Path) -> Result<String, AppError> {
+    let defaults_path = store.join("identity_defaults.json");
+    let defaults = read_json(&defaults_path)?;
+    defaults
+        .get("default")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| {
+            AppError::Parse(format!(
+                "{} is missing a \"default\" string field",
+                defaults_path.display()
+            ))
+        })
+}
+
+/// Reads the `principal` recorded for identity `name` directly out of
+/// `store/identity_list.json`, bypassing `IdentityRef` entirely.
+///
+/// Added for `tests/integration.rs`'s live export test, which needs
+/// something to check an exported identity's *derived* principal against.
+/// `IdentityRef` deliberately does not carry `principal` itself (see its doc
+/// comment): the UI has no use for it, so widening that serialised type
+/// would add surface with no consumer — a test-only reader here is
+/// preferable.
+pub fn recorded_principal(store: &Path, name: &str) -> Result<String, AppError> {
+    let list_path = store.join("identity_list.json");
+    let list = read_json(&list_path)?;
+    list.get("identities")
+        .and_then(Value::as_object)
+        .and_then(|identities| identities.get(name))
+        .and_then(|entry| entry.get("principal"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| {
+            AppError::Parse(format!(
+                "{} records no \"principal\" for identity \"{name}\"",
+                list_path.display()
+            ))
+        })
+}
+
 /// Reads every identity declared by the resolved store (see
 /// `resolve_identity_store`), for `Environment::identities`. An unresolved
 /// store (no identities configured yet) yields an empty list rather than an
@@ -418,24 +491,14 @@ pub fn read_all_identities(identity_dir: &Path) -> Result<Vec<IdentityRef>, AppE
 /// `IdentityRef` can represent it honestly, so there is no reason left to
 /// pretend it doesn't exist.
 fn read_identity_from_store(identity_dir: &Path) -> Result<Option<IdentityRef>, AppError> {
-    let defaults_path = identity_dir.join("identity_defaults.json");
-    let defaults = read_json(&defaults_path)?;
-    let default_name = defaults
-        .get("default")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            AppError::Parse(format!(
-                "{} is missing a \"default\" string field",
-                defaults_path.display()
-            ))
-        })?;
+    let default_name = read_default_identity_name(identity_dir)?;
 
     let identities = read_all_identities(identity_dir)?;
     match identities.into_iter().find(|i| i.name == default_name) {
         Some(identity) => Ok(Some(identity)),
         None => Err(AppError::Parse(format!(
             "{} names \"{default_name}\" as the default identity, but it is not listed in {}",
-            defaults_path.display(),
+            identity_dir.join("identity_defaults.json").display(),
             identity_dir.join("identity_list.json").display()
         ))),
     }

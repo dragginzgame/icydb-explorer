@@ -189,16 +189,43 @@ accessors rather than field access.
 
 ## Read-only enforcement
 
-Two independent layers, with different strengths:
+**Corrected 2026-07-30, following a review by the icydb author.** This
+section originally read the opposite way round: it named the canister's
+`readonly = true` as "the real security boundary" and the app's own
+query-only behavior as the lesser, UX-only layer. That was wrong, and wrong
+in the dangerous direction. `icydb-config`'s `emit.rs` wires `readonly`,
+`ddl`, `fixtures`, and `update` as **four independent switches** —
+`readonly = true` only controls whether `icydb_query` is generated; it does
+**not** disable `icydb_ddl`, `icydb_update`, or fixtures. A canister
+configured `readonly = true` with `ddl` left unset still has `icydb_ddl`
+generated, so treating `readonly = true` as *the* boundary would leave a
+reader believing a canister was protected when it wasn't.
 
-1. **The canister's `readonly = true`** is the real security boundary —
-   `icydb_update` and `icydb_ddl` are not generated at all.
-2. **The app** calls only `icydb_query`, only via `query_call`, and classifies
-   console statements client-side, rejecting anything that is not
-   `SELECT`/`SHOW`/`DESCRIBE`/`EXPLAIN`.
+The real guarantee, corrected:
 
-Layer 2 is a UX affordance — a fast, clear error instead of a confusing failure —
-not a security control. The app must not imply otherwise in its messaging.
+1. **The app calls only `icydb_query`, only via `query_call`.** This is the
+   actual security-relevant property: a query call cannot persist canister
+   state, and `icydb_query`'s own dispatcher rejects mutation statements
+   regardless of what the caller sends. It is a property of IC query calls
+   themselves, not a courtesy the app extends. Verified: this codebase has
+   exactly two network call sites, both `agent.query` (`sql::transport`'s
+   call to `icydb_query`, and `topology`'s call to `canic_canister_children`)
+   — neither is, or could become, an update call.
+2. **The app's console additionally classifies statements client-side**,
+   rejecting anything that is not `SELECT`/`SHOW`/`DESCRIBE`/`EXPLAIN` before
+   it ever reaches the network. This is a UX affordance — a fast, clear
+   error instead of a confusing round-trip failure — not a second
+   independent security layer. Removing it would not make the app able to
+   write anything; the query-only guarantee above does not depend on it.
+3. **The canister's own `readonly`/`ddl`/`update`/`fixtures` configuration**
+   is defence in depth, not the boundary itself: setting `ddl = false`,
+   `update = false`, and (in production) `fixtures = false` protects against
+   a *different*, less careful caller of the same canister. It narrows what
+   other callers can do; it does not change what this app can do, since the
+   app was already query-only regardless of the canister's configuration.
+
+The app must not imply, in its messaging or its documentation, that the
+canister's own configuration is what makes this app's queries read-only.
 
 ## SQL console
 

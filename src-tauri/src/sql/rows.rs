@@ -2,6 +2,8 @@
 //! order-by derivation and statement-building logic is table-tested here
 //! rather than living untested inline in the command handler.
 
+use crate::error::AppError;
+
 /// Builds the `SELECT` for one page of `entity`'s rows.
 ///
 /// icydb rejects any `LIMIT`/`OFFSET` window with no explicit `ORDER BY`
@@ -10,31 +12,30 @@
 /// the planner, so this orders by `pk_columns` (in the order given) when
 /// there are any.
 ///
-/// `pk_columns` empty is the fallback for a schema this app cannot derive
-/// an ordering from (a malformed entity with no declared primary key, which
-/// cannot occur for a valid icydb schema — every entity must declare one).
-/// It is kept rather than special-cased away so that case fails with the
-/// canister's own clear `UnorderedPagination` rejection instead of a panic.
-pub fn rows_sql(entity: &str, pk_columns: &[String], limit: u32, offset: u32) -> String {
+/// `pk_columns` empty is refused with `AppError::NoOrderableColumns` rather
+/// than falling back to an unordered `SELECT`: a bare `LIMIT`/`OFFSET` with
+/// no `ORDER BY` is something icydb is guaranteed to reject anyway
+/// (`UnorderedPagination`), so silently emitting one would just trade a
+/// clear, local error for a confusing round-trip to the canister. This case
+/// should not occur against a well-formed schema — every icydb entity must
+/// declare a primary key — but a malformed one must fail honestly here
+/// rather than build SQL that can't work.
+pub fn rows_sql(
+    entity: &str,
+    pk_columns: &[String],
+    limit: u32,
+    offset: u32,
+) -> Result<String, AppError> {
     if pk_columns.is_empty() {
-        format!("SELECT * FROM {entity} LIMIT {limit} OFFSET {offset}")
+        Err(AppError::NoOrderableColumns {
+            entity: entity.to_string(),
+        })
     } else {
-        format!(
+        Ok(format!(
             "SELECT * FROM {entity} ORDER BY {} LIMIT {limit} OFFSET {offset}",
             pk_columns.join(", ")
-        )
+        ))
     }
-}
-
-/// Builds an unordered, unbounded `SELECT` for `entity` — used when
-/// introspection is disabled (`AppError::IntrospectionDisabled`), so no
-/// primary key can be derived via `DESCRIBE` in the first place. Unlike
-/// `rows_sql`'s empty-`pk_columns` fallback, this deliberately omits
-/// `LIMIT`/`OFFSET` rather than attaching a window icydb is guaranteed to
-/// reject: with no ordering derivable at all, a bounded page isn't
-/// achievable, so this returns everything in one unordered result instead.
-pub fn unordered_rows_sql(entity: &str) -> String {
-    format!("SELECT * FROM {entity}")
 }
 
 #[cfg(test)]
@@ -43,7 +44,7 @@ mod tests {
 
     #[test]
     fn orders_by_a_single_primary_key_column() {
-        let sql = rows_sql("demo_row", &["id".to_string()], 100, 0);
+        let sql = rows_sql("demo_row", &["id".to_string()], 100, 0).expect("should build SQL");
         assert_eq!(sql, "SELECT * FROM demo_row ORDER BY id LIMIT 100 OFFSET 0");
     }
 
@@ -54,7 +55,8 @@ mod tests {
             &["tenant_id".to_string(), "id".to_string()],
             50,
             10,
-        );
+        )
+        .expect("should build SQL");
         assert_eq!(
             sql,
             "SELECT * FROM demo_row ORDER BY tenant_id, id LIMIT 50 OFFSET 10"
@@ -62,23 +64,42 @@ mod tests {
     }
 
     #[test]
-    fn empty_primary_key_falls_back_to_no_order_by() {
-        let sql = rows_sql("demo_row", &[], 100, 20);
-        assert_eq!(sql, "SELECT * FROM demo_row LIMIT 100 OFFSET 20");
+    fn empty_primary_key_is_refused_rather_than_left_unordered() {
+        let error = rows_sql("demo_row", &[], 100, 20).expect_err("should refuse");
+        match error {
+            AppError::NoOrderableColumns { entity } => assert_eq!(entity, "demo_row"),
+            other => panic!("expected NoOrderableColumns, got {other:?}"),
+        }
     }
 
     #[test]
     fn respects_the_requested_limit_and_offset() {
-        let sql = rows_sql("demo_row", &["id".to_string()], 7, 42);
+        let sql = rows_sql("demo_row", &["id".to_string()], 7, 42).expect("should build SQL");
         assert_eq!(sql, "SELECT * FROM demo_row ORDER BY id LIMIT 7 OFFSET 42");
     }
 
+    /// No code path through `rows_sql` can produce a `SELECT` lacking either
+    /// `ORDER BY` or `LIMIT`: the only success path always emits both, and
+    /// the only other path is a hard error. This is the regression test for
+    /// the removed `unordered_rows_sql` fallback (see git history) — an
+    /// unbounded, unordered `SELECT` must no longer be constructible here at
+    /// all, not merely unused.
     #[test]
-    fn unordered_rows_sql_has_no_limit_offset_or_order_by() {
-        let sql = unordered_rows_sql("demo_row");
-        assert_eq!(sql, "SELECT * FROM demo_row");
-        assert!(!sql.to_uppercase().contains("LIMIT"));
-        assert!(!sql.to_uppercase().contains("OFFSET"));
-        assert!(!sql.to_uppercase().contains("ORDER BY"));
+    fn every_successful_build_has_both_order_by_and_limit() {
+        let cases: Vec<Result<String, AppError>> = vec![
+            rows_sql("demo_row", &["id".to_string()], 100, 0),
+            rows_sql(
+                "demo_row",
+                &["tenant_id".to_string(), "id".to_string()],
+                1,
+                0,
+            ),
+        ];
+        for result in cases {
+            let sql = result.expect("should build SQL");
+            let upper = sql.to_uppercase();
+            assert!(upper.contains("ORDER BY"), "missing ORDER BY: {sql}");
+            assert!(upper.contains("LIMIT"), "missing LIMIT: {sql}");
+        }
     }
 }

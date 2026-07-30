@@ -18,7 +18,7 @@ use tauri::State;
 use crate::agent::AgentPool;
 use crate::discovery::{Environment, IdentityRef, Project};
 use crate::error::AppError;
-use crate::sql::{apply_default_limit, classify, rows_sql, run_query, unordered_rows_sql};
+use crate::sql::{apply_default_limit, classify, rows_sql, run_query};
 use crate::topology::{build_tree, fetch_children, TreeNode};
 use crate::view::{result_to_dto, ResultDto};
 
@@ -256,14 +256,20 @@ pub async fn describe_table(
 /// **`introspection.ic = false` (icydb's own default for IC/mainnet
 /// builds) makes that `DESCRIBE` fail with `AppError::IntrospectionDisabled`
 /// before any row is ever fetched** — `SHOW`/`DESCRIBE`/`EXPLAIN` are
-/// unavailable, but plain `SELECT` is not, so row browsing must not be
-/// blind to that distinction. This specific error is caught here and
-/// switched to `sql::unordered_rows_sql`: an unordered, unbounded `SELECT`
-/// (no primary key was derivable, and icydb rejects any `LIMIT`/`OFFSET`
-/// with no `ORDER BY`, so a bounded page isn't achievable either). Any
-/// other `DESCRIBE` failure — a genuinely unreachable replica, a
-/// non-controller identity, etc — still propagates as before; only the
-/// introspection-disabled case gets this fallback.
+/// unavailable, but plain `SELECT` is not in general. Row browsing
+/// specifically, however, still needs a primary key to build an `ORDER BY`
+/// (icydb rejects any `LIMIT`/`OFFSET` with no `ORDER BY`), and with
+/// `DESCRIBE` unavailable there is no way to discover one. This case
+/// therefore returns `AppError::RowPagingRequiresIntrospection` rather than
+/// falling back to an unordered, unbounded `SELECT` as an earlier version of
+/// this app did: the generated-SQL lane this runs on is trusted/admin and
+/// intentionally bypasses public-read admission, so an unbounded read here
+/// would be exactly the wrong place to relax that. Row browsing is
+/// *unavailable* on a canister with introspection disabled — the SQL
+/// console remains available for a hand-written, explicitly ordered
+/// `SELECT`. Any other `DESCRIBE` failure — a genuinely unreachable replica,
+/// a non-controller identity, etc — still propagates as before; only the
+/// introspection-disabled case gets this treatment.
 #[tauri::command]
 pub async fn fetch_rows(
     env: String,
@@ -287,14 +293,20 @@ pub async fn fetch_rows(
                 .filter(|column| column.primary_key)
                 .map(|column| column.name.clone())
                 .collect();
-            rows_sql(&entity, &pk_columns, DEFAULT_ROW_LIMIT, offset)
+            rows_sql(&entity, &pk_columns, DEFAULT_ROW_LIMIT, offset)?
         }
         // An unexpected (non-Schema) shape from DESCRIBE: fall back to the
         // same "no primary key derivable" path `rows_sql` already handles,
         // rather than inventing a new error for a case that cannot occur
-        // against a well-behaved canister.
-        Ok(_) => rows_sql(&entity, &[], DEFAULT_ROW_LIMIT, offset),
-        Err(AppError::IntrospectionDisabled) => unordered_rows_sql(&entity),
+        // against a well-behaved canister. `rows_sql` itself refuses to
+        // build unordered SQL for this, so this still ends in a clear error,
+        // not a silent unordered/unbounded `SELECT`.
+        Ok(_) => rows_sql(&entity, &[], DEFAULT_ROW_LIMIT, offset)?,
+        Err(AppError::IntrospectionDisabled) => {
+            return Err(AppError::RowPagingRequiresIntrospection {
+                entity: entity.clone(),
+            })
+        }
         Err(other) => return Err(other),
     };
 

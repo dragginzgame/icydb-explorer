@@ -10,8 +10,12 @@ use candid::Principal;
 use ic_agent::identity::Secp256k1Identity;
 use ic_agent::Agent;
 
+use icydb_explorer_lib::agent::load_identity;
+use icydb_explorer_lib::discovery::{
+    read_all_identities, read_default_identity_name, recorded_principal, user_level_identity_store,
+};
 use icydb_explorer_lib::error::AppError;
-use icydb_explorer_lib::sql::{run_query, unordered_rows_sql};
+use icydb_explorer_lib::sql::run_query;
 use icydb_explorer_lib::view::{result_to_dto, ResultDto};
 
 /// Builds a live `Agent` against `ICYDB_EXPLORER_TEST_URL`, authenticated as
@@ -159,10 +163,24 @@ async fn select_with_limit_and_no_order_by_is_rejected() {
     );
 }
 
-/// Confirms `commands::fetch_rows`'s introspection-disabled fallback
-/// (Important 3 of the final whole-branch review) against a **real
-/// introspection-disabled canister**, not just the pure-function unit
-/// tests in `sql::rows`.
+/// Confirms `commands::fetch_rows`'s introspection-disabled behavior against
+/// a **real introspection-disabled canister**, not just the pure-function
+/// unit tests in `sql::rows` and `error::tests`.
+///
+/// **Corrected 2026-07-30 (icydb author review, Step 4c).** This test
+/// previously asserted that `fetch_rows`'s fallback for this case — an
+/// unordered, unbounded `SELECT * FROM {entity}` built by the
+/// since-removed `sql::unordered_rows_sql` — still returned rows. That
+/// fallback was a real defect: an unbounded read against the trusted/admin
+/// generated-SQL lane, which intentionally bypasses public-read admission.
+/// `fetch_rows` now returns `AppError::RowPagingRequiresIntrospection`
+/// instead of issuing any fallback query at all in this case (see
+/// `sql::rows::tests::empty_primary_key_is_refused_rather_than_left_unordered`
+/// and `error::tests::row_paging_requires_introspection_names_the_entity_and_the_sql_console`
+/// for the offline coverage of that). What this live test still verifies is
+/// the workaround the corrected error message actually recommends: a
+/// hand-written `SELECT` with its own explicit `ORDER BY`/`LIMIT` needs no
+/// `DESCRIBE` and so is unaffected by introspection being off.
 ///
 /// The committed fixture canister is built with `ICYDB_BUILD_TARGET=local`
 /// (see README item 4), so `introspection.local = true` applies and this
@@ -172,25 +190,24 @@ async fn select_with_limit_and_no_order_by_is_rejected() {
 /// `introspection.ic = false` per `fixture/icydb.toml` — and installed as a
 /// detached canister (`icp canister create -n local --detached`, `icp
 /// canister install <id> -n local --wasm <path>`) so it needs no `icp.yaml`
-/// entry of its own. Verified live while fixing this finding:
+/// entry of its own. Verified live while fixing the original finding:
 /// `SHOW ENTITIES` against it fails with error code 183
 /// (`RUNTIME_BOUNDARY_SQL_INTROSPECTION_DISABLED`) via a plain `icp
-/// canister call`, while `SELECT * FROM demo_row` succeeds — exactly the
-/// asymmetry `commands::fetch_rows` must degrade gracefully around instead
-/// of propagating the `DESCRIBE`'s introspection error before ever
-/// attempting a `SELECT`.
+/// canister call`, while an explicitly ordered `SELECT` succeeds.
 #[tokio::test]
 #[ignore = "requires a second fixture instance built with ICYDB_BUILD_TARGET=ic and deployed \
             detached (see this test's doc comment); set \
             ICYDB_EXPLORER_INTROSPECTION_DISABLED_CANISTER to its id"]
-async fn select_still_works_when_introspection_is_disabled() {
+async fn explicit_order_by_and_limit_still_works_when_introspection_is_disabled() {
     let (agent, canister) = connect().await;
     let canister_text = std::env::var("ICYDB_EXPLORER_INTROSPECTION_DISABLED_CANISTER")
         .map(|id| Principal::from_text(id.trim()).expect("should be a valid principal"))
         .unwrap_or(canister);
 
     // DESCRIBE (what fetch_rows uses to derive an ORDER BY) fails with
-    // exactly the error commands::fetch_rows catches and falls back on.
+    // exactly the error commands::fetch_rows now turns into
+    // AppError::RowPagingRequiresIntrospection, rather than falling back to
+    // an unbounded SELECT.
     let describe = run_query(
         &agent,
         canister_text,
@@ -203,13 +220,19 @@ async fn select_still_works_when_introspection_is_disabled() {
         "expected IntrospectionDisabled, got {describe:?}"
     );
 
-    // The fallback SQL fetch_rows switches to on that error still succeeds
-    // and returns real rows — row browsing survives introspection being
-    // off, exactly the behavior the finding required.
-    let sql = unordered_rows_sql("demo_row");
-    let result = run_query(&agent, canister_text, &sql, "icydb-explorer-test")
-        .await
-        .expect("unordered SELECT should succeed even with introspection disabled");
+    // The SQL console workaround the corrected error message points a user
+    // at — an explicit ORDER BY and LIMIT, hand-written rather than derived
+    // from a DESCRIBE — still succeeds: it never needed introspection.
+    let result = run_query(
+        &agent,
+        canister_text,
+        "SELECT * FROM demo_row ORDER BY id LIMIT 100",
+        "icydb-explorer-test",
+    )
+    .await
+    .expect(
+        "an explicitly ordered, bounded SELECT should succeed even with introspection disabled",
+    );
     match result_to_dto(result).expect("decode should succeed") {
         ResultDto::Rows(rows) => {
             assert!(!rows.rows.is_empty(), "fixture should be seeded");
@@ -292,4 +315,43 @@ async fn run_query_against_a_toko_canister_reports_no_sql_surface() {
         }
         other => panic!("expected NoSqlSurface, got {other:?}"),
     }
+}
+
+/// Live: exports the configured default identity and checks the principal it
+/// produces against the one recorded in the store. Requires a real icp
+/// identity store and the `icp` binary.
+///
+/// This is the whole identity chain in one assertion — enumerate, export,
+/// parse, load — without ever printing key material: only the (public)
+/// principal derived from the loaded identity is compared against the
+/// (public) principal `identity_list.json` already records for it.
+///
+/// Run with: cargo test --test integration -- --ignored
+#[tokio::test]
+#[ignore = "requires a real icp identity store and the icp CLI"]
+async fn the_default_identity_loads_and_matches_its_recorded_principal() {
+    let store = user_level_identity_store().expect("a user-level icp store should exist");
+    let identities = read_all_identities(&store).expect("store should read");
+    let defaults = read_default_identity_name(&store).expect("a default should be configured");
+    let identity = identities
+        .iter()
+        .find(|i| i.name == defaults)
+        .expect("the default should be present in the store");
+    if !identity.is_usable() {
+        eprintln!(
+            "default identity \"{}\" is kind \"{}\" — skipping",
+            identity.name, identity.kind
+        );
+        return;
+    }
+
+    let loaded = load_identity(identity)
+        .await
+        .expect("default identity should load");
+    let recorded = recorded_principal(&store, &identity.name).expect("store records a principal");
+    assert_eq!(
+        loaded.sender().expect("sender").to_text(),
+        recorded,
+        "the exported key must produce the principal the store recorded"
+    );
 }
