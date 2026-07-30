@@ -401,6 +401,14 @@ test("renders SHOW CONSTRAINTS results from the console", async () => {
 
   expect(await screen.findByText("demo_row_pk")).toBeDefined();
   expect(screen.getByText(/primary_key/)).toBeDefined();
+  expect(screen.getByText("declared")).toBeDefined();
+  // `validationState`'s camelCase field name matters most here: a regression
+  // back to `validation_state` would leave this cell `undefined` and render
+  // empty, with no compile error and no throw — this is the one assertion
+  // that would actually catch that.
+  expect(screen.getByText("valid")).toBeDefined();
+  expect(screen.getByText("id")).toBeDefined();
+  expect(screen.getByText("immediate")).toBeDefined();
 });
 
 test("switching environments abandons an in-flight identity selection", async () => {
