@@ -25,17 +25,23 @@ struct SqlQueryEnvelope {
 /// Runs `sql` against `canister`'s `icydb_query` endpoint and returns the
 /// decoded result.
 ///
-/// Always a query call, never an update: the app is read-only, and
-/// `icydb_query` is itself declared as a query method on a canister built
-/// with `readonly = true`.
+/// Always a query call, never an update: this function calls `agent.query`,
+/// never an update call, on `icydb_query` — a query method whose own
+/// dispatcher rejects any mutation statement regardless of how the target
+/// canister is configured. That's the property that actually makes this
+/// read-only. The target canister's own `readonly`/`ddl`/`update`/`fixtures`
+/// configuration (`icydb.toml`) is defence in depth for *other* callers of
+/// the same canister, not the boundary this app relies on — see README.md's
+/// "Read-only, and where that guarantee actually lives" for the full
+/// correction; an earlier version of this comment conflated the two.
 ///
 /// `identity` is the human-readable identity name from `IdentityRef.name`
 /// (e.g. `"demo-local"`) — the string the user configured and would edit.
 /// It exists solely so a `NotController` rejection can name it: ic-agent
 /// exposes only `sender() -> Principal`, not the configured name, so
-/// `agent` alone cannot supply it. Task 10's callers hold the
-/// `Environment` and pass `env.identity.as_ref().map_or("<none>", |i|
-/// i.name.as_str())`.
+/// `agent` alone cannot supply it. Callers resolve an `IdentityRef` from the
+/// frontend-supplied name and pass `identity_ref.name.as_str()` (see
+/// `commands.rs::query_dto`).
 pub async fn run_query(
     agent: &Agent,
     canister: Principal,

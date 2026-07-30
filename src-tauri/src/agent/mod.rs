@@ -9,7 +9,12 @@
 mod export;
 mod identity;
 
-pub use export::export_pem;
+// `export::export_pem` has no consumer outside `agent` — `identity.rs` calls
+// it via `crate::agent::export::export_pem`, not through a re-export here —
+// so it stays unexported. Re-exporting a function that returns raw PEM
+// bytes would widen the very boundary `export.rs`'s module doc claims to
+// hold (private key material never leaves this module except as the bytes
+// its one legitimate caller needs).
 pub use identity::load_identity;
 
 use std::collections::HashMap;
