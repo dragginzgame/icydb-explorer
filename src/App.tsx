@@ -517,7 +517,7 @@ function App() {
   );
 }
 
-// Renders whichever of the eight `ResultDto` variants a console statement
+// Renders whichever of the nine `ResultDto` variants a console statement
 // produced. Only "rows" reuses `RowGrid` (a one-off query has no paging
 // state of its own, so `hasMore` is always false here); the rest get a
 // small dedicated rendering since reusing `TableList`/`CanisterTree` here
@@ -583,9 +583,37 @@ function SqlResultView({ result }: { result: ResultDto }) {
       </ul>
     );
   }
+  if (result.type === "constraints") {
+    return (
+      <table className="text-sm">
+        <thead>
+          <tr className="text-left text-xs uppercase text-gray-500">
+            <th className="pr-4">Name</th>
+            <th className="pr-4">Kind</th>
+            <th className="pr-4">Origin</th>
+            <th className="pr-4">Validation</th>
+            <th className="pr-4">Fields</th>
+            <th>Semantics</th>
+          </tr>
+        </thead>
+        <tbody>
+          {result.constraints.map((constraint) => (
+            <tr key={constraint.name}>
+              <td className="pr-4 font-mono text-xs">{constraint.name}</td>
+              <td className="pr-4">{constraint.kind}</td>
+              <td className="pr-4">{constraint.origin}</td>
+              <td className="pr-4">{constraint.validationState}</td>
+              <td className="pr-4 font-mono text-xs">{constraint.fields.join(", ")}</td>
+              <td>{constraint.semantics}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    );
+  }
 
   // Exhaustiveness guard: every `ResultDto` variant is handled by an `if`
-  // above, so `result` is narrowed to `never` here. Adding a ninth variant
+  // above, so `result` is narrowed to `never` here. Adding a tenth variant
   // without a matching branch turns this into a compile error instead of a
   // silent runtime no-op.
   const exhaustiveCheck: never = result;

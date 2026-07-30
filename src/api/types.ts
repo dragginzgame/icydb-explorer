@@ -42,8 +42,20 @@ export type StoreDto = { storePath: string; storage: string };
 /** One `SHOW MEMORY` row. */
 export type MemoryDto = { tag: string; memoryId: number; storePath: string };
 
+/** One constraint from `SHOW CONSTRAINTS` (see
+ * `src-tauri/src/view/dto.rs::ConstraintDto`). Six of icydb's sixteen
+ * `EntityConstraintDescription` accessors — the rest have no UI consumer. */
+export type ConstraintDto = {
+  name: string;
+  kind: string;
+  origin: string;
+  validationState: string;
+  fields: string[];
+  semantics: string;
+};
+
 /** The frontend-facing shape of a SQL query result, internally tagged on
- * `type` (see `src-tauri/src/view/dto.rs::ResultDto`). Eight variants. */
+ * `type` (see `src-tauri/src/view/dto.rs::ResultDto`). Nine variants. */
 export type ResultDto =
   | ({ type: "rows" } & RowsDto)
   | ({ type: "schema" } & SchemaDto)
@@ -52,7 +64,8 @@ export type ResultDto =
   | { type: "explain"; entity: string; explain: string }
   | { type: "indexes"; entity: string; indexes: string[] }
   | { type: "stores"; stores: StoreDto[] }
-  | { type: "memory"; memory: MemoryDto[] };
+  | { type: "memory"; memory: MemoryDto[] }
+  | { type: "constraints"; entity: string; constraints: ConstraintDto[] };
 
 /** A node in the canic-orchestrated fleet topology (see
  * `src-tauri/src/topology/types.rs::TreeNode`). Field names are all single

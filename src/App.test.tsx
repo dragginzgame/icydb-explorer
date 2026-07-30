@@ -352,6 +352,57 @@ test("switching identity before a slow selectIdentity call resolves does not res
   expect(identitySelect).toHaveValue("bob");
 });
 
+test("renders SHOW CONSTRAINTS results from the console", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/project",
+    error: null,
+    environments: [
+      {
+        name: "local",
+        replicaUrl: "http://localhost",
+        canisters: [{ name: "root", id: "root-id" }],
+        identity: null,
+        identities: [usableIdentity],
+        artifacts: [],
+      },
+    ],
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    { pid: "root-id", role: "root", children: [{ pid: "aaaaa-aa", role: "canister-a", children: [] }] },
+  ]);
+  vi.mocked(commands.listTables).mockResolvedValue({ type: "entities", entities: [] });
+  vi.mocked(commands.runSql).mockResolvedValue({
+    result: {
+      type: "constraints",
+      entity: "demo_row",
+      constraints: [
+        {
+          name: "demo_row_pk",
+          kind: "primary_key",
+          origin: "declared",
+          validationState: "valid",
+          fields: ["id"],
+          semantics: "immediate",
+        },
+      ],
+    },
+    limitAppended: false,
+    orderByMissing: false,
+  });
+
+  render(<App />);
+
+  await screen.findByText("canister-a");
+  fireEvent.click(screen.getByText("canister-a"));
+  fireEvent.change(screen.getByRole("textbox"), {
+    target: { value: "SHOW CONSTRAINTS FROM demo_row" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: /run/i }));
+
+  expect(await screen.findByText("demo_row_pk")).toBeDefined();
+  expect(screen.getByText(/primary_key/)).toBeDefined();
+});
+
 test("switching environments abandons an in-flight identity selection", async () => {
   // Two environments so the switch is real: "local" starts on "alice" (the
   // initial fallback) and has a second, slow-to-select identity;
