@@ -113,6 +113,24 @@ mod tests {
         assert!(error.explanation().contains("broken"));
     }
 
+    /// Covers the `std::fs::read` failure branch specifically: `pem_path` is
+    /// `Some`, so `IdentityRef::new` records no `unusable_reason` (that guard
+    /// only fires for `"pem"` with `pem_path: None` — see
+    /// `a_pem_kind_with_no_path_is_an_error_not_a_panic` above, which is a
+    /// different path). This identity reaches the `"pem"` match arm's
+    /// `std::fs::read(path)` call, and the path simply doesn't exist on disk.
+    #[tokio::test]
+    async fn a_pem_file_that_does_not_exist_is_an_error_not_a_panic() {
+        let identity = IdentityRef::new(
+            "missing".into(),
+            "secp256k1".into(),
+            "pem".into(),
+            Some(PathBuf::from("tests/fixtures/definitely-absent.pem")),
+        );
+        let error = load_identity(&identity).await.err().expect("should fail");
+        assert!(error.explanation().contains("missing"));
+    }
+
     #[tokio::test]
     async fn anonymous_is_refused_before_any_subprocess_runs() {
         let identity =
