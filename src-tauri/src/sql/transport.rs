@@ -28,27 +28,54 @@ struct SqlQueryEnvelope {
 /// Always a query call, never an update: the app is read-only, and
 /// `icydb_query` is itself declared as a query method on a canister built
 /// with `readonly = true`.
+///
+/// `identity` is the human-readable identity name from `IdentityRef.name`
+/// (e.g. `"demo-local"`) — the string the user configured and would edit.
+/// It exists solely so a `NotController` rejection can name it: ic-agent
+/// exposes only `sender() -> Principal`, not the configured name, so
+/// `agent` alone cannot supply it. Task 10's callers hold the
+/// `Environment` and pass `env.identity.as_ref().map_or("<none>", |i|
+/// i.name.as_str())`.
 pub async fn run_query(
     agent: &Agent,
     canister: Principal,
     sql: &str,
+    identity: &str,
 ) -> Result<SqlQueryResult, AppError> {
-    // `run_query`'s signature (fixed by callers in Tasks 9/10) carries no
-    // identity name — only `&Agent`, which has no notion of the config-level
-    // identity name (e.g. "demo-local") that `AppError::NotController` names.
-    // That name is passed as "" here; it does not affect `NoSqlSurface`
-    // detection, the diagnostic this classifier exists primarily to produce.
     let bytes = agent
         .query(&canister, "icydb_query")
         .with_arg(Encode!(&sql.to_string()).map_err(|e| AppError::Parse(e.to_string()))?)
         .call()
         .await
-        .map_err(|e| map_agent_error(&e, &canister.to_text(), ""))?;
+        .map_err(|e| {
+            map_agent_error(&e, &canister.to_text(), &identity_descriptor(agent, identity))
+        })?;
 
     Decode!(bytes.as_slice(), Result<SqlQueryEnvelope, icydb::Error>)
         .map_err(|e| AppError::Parse(e.to_string()))?
         .map(|envelope| envelope.result)
         .map_err(|e| AppError::IcyDb { code: format!("{e:?}"), message: e.to_string() })
+}
+
+/// Builds the string shown as `AppError::NotController`'s identity: the
+/// configured name plus, when available, the principal it resolves to.
+///
+/// The name is what the user recognizes and would edit in their `.icp/`
+/// config; the principal is what `dfx canister info <canister>` actually
+/// lists as a controller. A user acting on a `NotController` error needs
+/// both — the name to know which of possibly several configured
+/// identities is at fault, the principal to check it directly against the
+/// canister's controller list without a separate `dfx identity
+/// get-principal` lookup. `agent.get_principal()` just reads the identity
+/// already loaded into `agent` (the same one used for the call that
+/// failed) — no network round trip, so this is safe to call on every
+/// error path. If it errors, the name alone is still useful and is
+/// returned unchanged.
+fn identity_descriptor(agent: &Agent, identity: &str) -> String {
+    match agent.get_principal() {
+        Ok(principal) => format!("{identity} (principal {principal})"),
+        Err(_) => identity.to_string(),
+    }
 }
 
 /// Extracts the reject message from a failed call and classifies it via
@@ -120,5 +147,32 @@ mod tests {
     fn unrecognised_rejections_pass_through_verbatim() {
         let error = map_reject_message("some novel failure", "user_hub", "demo-local");
         assert!(error.explanation().contains("some novel failure"));
+    }
+
+    /// `identity_descriptor` needs no live replica: `Agent::builder().build()`
+    /// is local and synchronous (only `fetch_root_key` hits the network), so
+    /// this test builds a real `Agent` from the same offline test pem Task
+    /// 7's identity tests use and checks the descriptor carries both the
+    /// configured name and the principal that pem actually resolves to.
+    #[test]
+    fn identity_descriptor_includes_the_resolved_principal() {
+        use ic_agent::identity::Secp256k1Identity;
+        use ic_agent::Identity;
+        use std::path::PathBuf;
+
+        let pem_path = PathBuf::from("tests/fixtures/secp256k1.pem");
+        let identity =
+            Secp256k1Identity::from_pem_file(&pem_path).expect("test pem should load");
+        let principal = identity.sender().expect("identity should resolve a principal");
+
+        let agent = Agent::builder()
+            .with_url("http://127.0.0.1:4943")
+            .with_identity(identity)
+            .build()
+            .expect("agent should build offline, without a network call");
+
+        let descriptor = identity_descriptor(&agent, "demo-local");
+        assert!(descriptor.contains("demo-local"));
+        assert!(descriptor.contains(&principal.to_string()));
     }
 }
