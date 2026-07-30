@@ -2,12 +2,14 @@
 // in `src-tauri/src/commands.rs`. Command names are passed to `invoke`
 // exactly as declared in Rust (snake_case) — Tauri does not rename the
 // command name itself. Argument keys are the Rust parameter names (`env`,
-// `canister`, `entity`, `offset`, `sql`); Tauri's IPC layer expects them in
-// camelCase, but every one of these is already a single word, so no renaming
-// is actually visible here — confirmed against `@tauri-apps/api` 2.11.1's
-// `invoke`, which passes the args object straight to
-// `window.__TAURI_INTERNALS__.invoke` with no key transformation of its own,
-// and against the Rust parameter names in `src-tauri/src/commands.rs`.
+// `canister`, `entity`, `offset`, `sql`). Confirmed on the JS side:
+// `@tauri-apps/api` 2.11.1's `invoke` passes the args object straight to
+// `window.__TAURI_INTERNALS__.invoke` with no key transformation of its
+// own. Whether the `#[tauri::command]` macro itself renames snake_case
+// parameters to camelCase on the Rust side wasn't independently verified —
+// but every parameter above is already a single lowercase word, so that
+// distinction can't actually surface here regardless of which convention
+// wins.
 //
 // When a Tauri command returns `Err(AppError)`, the promise rejects with
 // whatever `AppError`'s `Serialize` impl produced — i.e. an object shaped

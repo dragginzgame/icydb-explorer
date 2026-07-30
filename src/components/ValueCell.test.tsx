@@ -18,5 +18,5 @@ test("right-aligns numeric kinds", () => {
 
 test("renders principals and ulids in a monospace font", () => {
   const { container } = render(<ValueCell value={{ kind: "principal", display: "aaaaa-aa" }} />);
-  expect(container.firstChild?.className).toContain("font-mono");
+  expect((container.firstChild as HTMLElement)?.className).toContain("font-mono");
 });
