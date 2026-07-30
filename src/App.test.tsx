@@ -1,9 +1,22 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import App from "./App";
 import * as commands from "./api/commands";
-import type { EntityDto, ResultDto, TreeNode } from "./api/types";
+import type { EntityDto, IdentityRef, ResultDto, TreeNode } from "./api/types";
 
 vi.mock("./api/commands");
+
+// A single usable identity, reused by every fixture `Environment` below so
+// the app's initial-selection fallback (first usable entry in
+// `identities`, since none of these fixtures configures a default) always
+// has something to land on — otherwise the cascading fetch effects would
+// early-return on a null identity and never call `canisterTree` at all.
+const usableIdentity: IdentityRef = {
+  name: "default",
+  algorithm: "secp256k1",
+  kind: "keyring",
+  pemPath: null,
+  unusableReason: null,
+};
 
 // A resolve-on-demand promise so the test controls exactly when each
 // `listTables` call settles, independent of call order.
@@ -40,6 +53,7 @@ test("a stale canister's tables never overwrite a newer selection", async () => 
         replicaUrl: "http://localhost",
         canisters: [{ name: "root", id: "root-id" }],
         identity: null,
+        identities: [usableIdentity],
         artifacts: [],
       },
     ],
@@ -119,6 +133,7 @@ test("a stale SQL console run never overwrites a newer canister's result", async
         replicaUrl: "http://localhost",
         canisters: [{ name: "root", id: "root-id" }],
         identity: null,
+        identities: [usableIdentity],
         artifacts: [],
       },
     ],

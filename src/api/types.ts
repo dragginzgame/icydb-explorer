@@ -72,7 +72,16 @@ export type AppErrorDto = { kind: string; explanation: string };
 export type SqlRunDto = { result: ResultDto; limitAppended: boolean; orderByMissing: boolean };
 
 // `list_environments` returns a `Project` (see `src-tauri/src/discovery/types.rs`).
-export type IdentityRef = { name: string; algorithm: string; pemPath: string };
+export type IdentityRef = {
+  name: string;
+  algorithm: string;
+  kind: string;
+  pemPath: string | null;
+  /// Why this app cannot use this identity, or null if it can. Computed by
+  /// `IdentityRef::new` in `src-tauri/src/discovery/types.rs` and rendered
+  /// verbatim here — the rule is not re-implemented in TypeScript.
+  unusableReason: string | null;
+};
 export type CanisterArtifact = { role: string; didPath: string };
 
 /** One entry from `.icp/cache/mappings/<network>.ids.json`: a name the
@@ -90,6 +99,10 @@ export type Environment = {
    * with no root at all). `canisterTree(env)` walks each entry. */
   canisters: NamedCanister[];
   identity: IdentityRef | null;
+  /** Every identity the resolved store declares, usable or not — see
+   * `IdentityRef.unusableReason`. The UI lists all of them so an
+   * unsupported identity reads as unsupported rather than missing. */
+  identities: IdentityRef[];
   artifacts: CanisterArtifact[];
 };
 

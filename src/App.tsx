@@ -6,6 +6,7 @@ import {
   listEnvironments,
   listTables,
   runSql,
+  selectIdentity,
 } from "./api/commands";
 import type {
   AppErrorDto,
@@ -18,6 +19,7 @@ import type {
 } from "./api/types";
 import { CanisterTree } from "./components/CanisterTree";
 import { ErrorBanner } from "./components/ErrorBanner";
+import { IdentitySelector } from "./components/IdentitySelector";
 import { RowGrid } from "./components/RowGrid";
 import { SchemaPanel } from "./components/SchemaPanel";
 import { SqlConsole } from "./components/SqlConsole";
@@ -37,6 +39,13 @@ function App() {
   const [environmentsError, setEnvironmentsError] = useState<AppErrorDto | null>(null);
   const [environmentsLoaded, setEnvironmentsLoaded] = useState(false);
   const [env, setEnv] = useState<string | null>(null);
+
+  // The session's chosen `icp` identity, by name. Initialised once the
+  // environments load (see the effect below) and changed only through
+  // `handleSelectIdentity`, which calls `selectIdentity` first and only
+  // updates this on success — see that handler's doc comment for why.
+  const [identity, setIdentity] = useState<string | null>(null);
+  const [identityError, setIdentityError] = useState<AppErrorDto | null>(null);
 
   // A forest, not a single tree: see `Environment.canisters`'s doc comment.
   const [forest, setForest] = useState<TreeNode[] | null>(null);
@@ -72,7 +81,23 @@ function App() {
         setEnvironments(project.environments);
         setEnvironmentsError(project.error);
         if (project.environments.length > 0) {
-          setEnv(project.environments[0].name);
+          const firstEnvironment = project.environments[0];
+          setEnv(firstEnvironment.name);
+
+          // The configured default wins if it's usable. Otherwise fall back
+          // to the first usable entry in `identities` rather than leaving
+          // the session stuck on an identity the backend would reject (or,
+          // worse, silently picking an unusable one) — `unusableReason` is
+          // read verbatim, never re-derived from `kind`.
+          const configured = firstEnvironment.identity;
+          if (configured && configured.unusableReason === null) {
+            setIdentity(configured.name);
+          } else {
+            const fallback = firstEnvironment.identities.find(
+              (candidate) => candidate.unusableReason === null,
+            );
+            setIdentity(fallback ? fallback.name : null);
+          }
         }
       })
       .catch((error: AppErrorDto) => setEnvironmentsError(error))
@@ -90,9 +115,9 @@ function App() {
     setForest(null);
     setTreeError(null);
     setCanister(null);
-    if (!env) return;
+    if (!env || !identity) return;
     let cancelled = false;
-    canisterTree(env)
+    canisterTree(env, identity)
       .then((result) => {
         if (cancelled) return;
         setForest(result);
@@ -104,15 +129,15 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [env]);
+  }, [env, identity]);
 
   useEffect(() => {
     setEntities(null);
     setEntitiesError(null);
     setEntity(null);
-    if (!env || !canister) return;
+    if (!env || !canister || !identity) return;
     let cancelled = false;
-    listTables(env, canister)
+    listTables(env, canister, identity)
       .then((result) => {
         if (cancelled) return;
         if (result.type === "entities") {
@@ -128,7 +153,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [env, canister]);
+  }, [env, canister, identity]);
 
   useEffect(() => {
     setSchema(null);
@@ -137,10 +162,10 @@ function App() {
     setRowsError(null);
     setOffset(0);
     setLastPageRowCount(0);
-    if (!env || !canister || !entity) return;
+    if (!env || !canister || !entity || !identity) return;
     let cancelled = false;
 
-    describeTable(env, canister, entity)
+    describeTable(env, canister, entity, identity)
       .then((result) => {
         if (cancelled) return;
         if (result.type === "schema") {
@@ -154,7 +179,7 @@ function App() {
         setSchemaError(error);
       });
 
-    fetchRows(env, canister, entity, 0)
+    fetchRows(env, canister, entity, 0, identity)
       .then((result) => {
         if (cancelled) return;
         if (result.type === "rows") {
@@ -172,7 +197,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [env, canister, entity]);
+  }, [env, canister, entity, identity]);
 
   // `loadMore` isn't tied to a `useEffect` cleanup (it's fired from a click,
   // not a selection change), so it uses a request-token equivalent instead:
@@ -183,21 +208,29 @@ function App() {
   // snapshot won't match `selectionRef.current` when it resolves, and it's
   // dropped instead of appending pages from the wrong table onto the new
   // selection's (just-reset-to-null) rows.
-  const selectionRef = useRef<{ env: string | null; canister: string | null; entity: string | null }>(
-    { env: null, canister: null, entity: null },
-  );
+  const selectionRef = useRef<{
+    env: string | null;
+    canister: string | null;
+    entity: string | null;
+    identity: string | null;
+  }>({ env: null, canister: null, entity: null, identity: null });
   useEffect(() => {
-    selectionRef.current = { env, canister, entity };
-  }, [env, canister, entity]);
+    selectionRef.current = { env, canister, entity, identity };
+  }, [env, canister, entity, identity]);
 
   const loadMore = useCallback(() => {
-    if (!env || !canister || !entity) return;
+    if (!env || !canister || !entity || !identity) return;
     const nextOffset = offset + DEFAULT_ROW_LIMIT;
     const isStale = () => {
       const current = selectionRef.current;
-      return current.env !== env || current.canister !== canister || current.entity !== entity;
+      return (
+        current.env !== env ||
+        current.canister !== canister ||
+        current.entity !== entity ||
+        current.identity !== identity
+      );
     };
-    fetchRows(env, canister, entity, nextOffset)
+    fetchRows(env, canister, entity, nextOffset, identity)
       .then((result) => {
         if (isStale()) return;
         if (result.type !== "rows") {
@@ -214,25 +247,28 @@ function App() {
         if (isStale()) return;
         setRowsError(error);
       });
-  }, [env, canister, entity, offset]);
+  }, [env, canister, entity, identity, offset]);
 
   // The only async path with no staleness guard before this fix: switching
-  // canisters while a console query is still in flight could otherwise land
-  // an old canister's result under the newly-selected one's label. Reuses
-  // `selectionRef` (env/canister only — the console has no `entity` of its
-  // own) rather than a second cancellation mechanism, matching `loadMore`'s
-  // pattern.
+  // canisters (or, now, identities) while a console query is still in
+  // flight could otherwise land an old selection's result under the
+  // newly-selected one's label. Reuses `selectionRef` (env/canister/identity
+  // — the console has no `entity` of its own) rather than a second
+  // cancellation mechanism, matching `loadMore`'s pattern.
   const handleRunSql = useCallback(
     (sql: string) => {
-      if (!env || !canister) return;
+      if (!env || !canister || !identity) return;
       const requestEnv = env;
       const requestCanister = canister;
+      const requestIdentity = identity;
       const isStale = () =>
-        selectionRef.current.env !== requestEnv || selectionRef.current.canister !== requestCanister;
+        selectionRef.current.env !== requestEnv ||
+        selectionRef.current.canister !== requestCanister ||
+        selectionRef.current.identity !== requestIdentity;
 
       setSqlError(undefined);
       setSqlResult(null);
-      runSql(requestEnv, requestCanister, sql)
+      runSql(requestEnv, requestCanister, sql, requestIdentity)
         .then((run) => {
           if (isStale()) return;
           setSqlResult(run.result);
@@ -246,13 +282,36 @@ function App() {
           setSqlOrderByMissing(false);
         });
     },
-    [env, canister],
+    [env, canister, identity],
   );
 
   // A full page (== DEFAULT_ROW_LIMIT rows on the most recently fetched
   // page) means there may be more; there is no COUNT here, so this never
   // claims a total.
   const hasMore = lastPageRowCount === DEFAULT_ROW_LIMIT;
+
+  const currentEnvironment = environments.find((candidate) => candidate.name === env) ?? null;
+
+  // `selectIdentity` performs an eager export (see its doc comment in
+  // `src-tauri/src/commands.rs`), so it's called *before* any local state
+  // changes: a bad identity fails right here, and the previous selection is
+  // left in place rather than the UI optimistically switching and then
+  // reporting an error against an identity the backend never actually
+  // accepted.
+  const handleSelectIdentity = useCallback(
+    (name: string) => {
+      if (!env) return;
+      selectIdentity(env, name)
+        .then(() => {
+          setIdentityError(null);
+          setIdentity(name);
+        })
+        .catch((error: AppErrorDto) => {
+          setIdentityError(error);
+        });
+    },
+    [env],
+  );
 
   return (
     <main className="flex h-screen flex-col bg-white text-gray-900">
@@ -271,11 +330,22 @@ function App() {
             ))}
           </select>
         )}
+        <IdentitySelector
+          identities={currentEnvironment?.identities ?? []}
+          selected={identity}
+          onSelect={handleSelectIdentity}
+        />
       </header>
 
       {environmentsError && (
         <div className="p-2">
           <ErrorBanner error={environmentsError} />
+        </div>
+      )}
+
+      {identityError && (
+        <div className="p-2">
+          <ErrorBanner error={identityError} />
         </div>
       )}
 

@@ -46,19 +46,35 @@ export async function listEnvironments(): Promise<Project> {
   }
 }
 
-/** Returns a forest — one `TreeNode` per named canister in the
- * environment's mapping, not a single tree (see `Environment.canisters`). */
-export async function canisterTree(env: string): Promise<TreeNode[]> {
+/** Selects `identity` for `env`, exporting it eagerly so a bad identity
+ * (an unsupported kind, a missing key file, a keyring export the user
+ * declines) fails now rather than on the first query that uses it — see
+ * `src-tauri/src/commands.rs::select_identity`. */
+export async function selectIdentity(env: string, identity: string): Promise<void> {
   try {
-    return await invoke<TreeNode[]>("canister_tree", { env });
+    return await invoke<void>("select_identity", { env, identity });
   } catch (error) {
     throw toAppErrorDto(error);
   }
 }
 
-export async function listTables(env: string, canister: string): Promise<ResultDto> {
+/** Returns a forest — one `TreeNode` per named canister in the
+ * environment's mapping, not a single tree (see `Environment.canisters`). */
+export async function canisterTree(env: string, identity: string): Promise<TreeNode[]> {
   try {
-    return await invoke<ResultDto>("list_tables", { env, canister });
+    return await invoke<TreeNode[]>("canister_tree", { env, identity });
+  } catch (error) {
+    throw toAppErrorDto(error);
+  }
+}
+
+export async function listTables(
+  env: string,
+  canister: string,
+  identity: string,
+): Promise<ResultDto> {
+  try {
+    return await invoke<ResultDto>("list_tables", { env, canister, identity });
   } catch (error) {
     throw toAppErrorDto(error);
   }
@@ -68,9 +84,10 @@ export async function describeTable(
   env: string,
   canister: string,
   entity: string,
+  identity: string,
 ): Promise<ResultDto> {
   try {
-    return await invoke<ResultDto>("describe_table", { env, canister, entity });
+    return await invoke<ResultDto>("describe_table", { env, canister, entity, identity });
   } catch (error) {
     throw toAppErrorDto(error);
   }
@@ -81,17 +98,23 @@ export async function fetchRows(
   canister: string,
   entity: string,
   offset: number,
+  identity: string,
 ): Promise<ResultDto> {
   try {
-    return await invoke<ResultDto>("fetch_rows", { env, canister, entity, offset });
+    return await invoke<ResultDto>("fetch_rows", { env, canister, entity, offset, identity });
   } catch (error) {
     throw toAppErrorDto(error);
   }
 }
 
-export async function runSql(env: string, canister: string, sql: string): Promise<SqlRunDto> {
+export async function runSql(
+  env: string,
+  canister: string,
+  sql: string,
+  identity: string,
+): Promise<SqlRunDto> {
   try {
-    return await invoke<SqlRunDto>("run_sql", { env, canister, sql });
+    return await invoke<SqlRunDto>("run_sql", { env, canister, sql, identity });
   } catch (error) {
     throw toAppErrorDto(error);
   }
