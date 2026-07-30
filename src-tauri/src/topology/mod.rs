@@ -33,6 +33,16 @@ use crate::error::AppError;
 /// malformed topology (e.g. two canisters that declare each other as
 /// parent) cannot walk the same pid twice, so the recursion always
 /// terminates in at most `infos.len()` steps.
+///
+/// A self-parenting node, or a cluster of nodes that only ever parent each
+/// other, forms a bucket that `root`'s own traversal never reaches — but
+/// those pids are real, declared data, so after the root-rooted recursion
+/// completes, anything still left in `children_of` is swept and attached
+/// under `root` too (see the comment at the sweep below). Dropping them
+/// instead would silently vanish a canister the fleet walk actually
+/// returned, which is exactly the "invisible database" failure this module
+/// exists to avoid — the same reasoning that makes an absent-parent orphan
+/// attach to root applies equally to a present-but-unplaceable one.
 pub fn build_tree(root: &str, infos: Vec<CanisterInfo>) -> TreeNode {
     let known: HashSet<String> = infos.iter().map(|info| info.pid.to_text()).collect();
 
@@ -51,10 +61,25 @@ pub fn build_tree(root: &str, infos: Vec<CanisterInfo>) -> TreeNode {
     let mut visited = HashSet::new();
     visited.insert(root.to_string());
 
+    let mut children = build_children(root, &mut children_of, &mut visited);
+
+    // Anything still keyed in `children_of` at this point was never reached
+    // from `root`: a self-parenting node, or a cycle of nodes that only
+    // point at each other. Sweep every leftover bucket and attach it under
+    // root too, reusing the same recursion and the same `visited` set —
+    // termination is unaffected (each key is still consumed by `remove` at
+    // most once) and every pid still appears exactly once. A cycle ends up
+    // presented as a chain rooted at whichever pid the sweep reaches first,
+    // rather than vanishing.
+    let leftover_keys: Vec<String> = children_of.keys().cloned().collect();
+    for key in leftover_keys {
+        children.extend(build_children(&key, &mut children_of, &mut visited));
+    }
+
     TreeNode {
         pid: root.to_string(),
         role: "root".to_string(),
-        children: build_children(root, &mut children_of, &mut visited),
+        children,
     }
 }
 
@@ -284,5 +309,48 @@ mod tests {
         let tree = build_tree(&principal(1).to_text(), vec![]);
         assert_eq!(tree.role, "root");
         assert!(tree.children.is_empty());
+    }
+
+    /// Walks every pid in `node`'s subtree (including `node` itself), depth
+    /// first, so a test can assert both that a pid is present and that it
+    /// isn't duplicated.
+    fn collect_pids(node: &TreeNode) -> Vec<String> {
+        let mut pids = vec![node.pid.clone()];
+        for child in &node.children {
+            pids.extend(collect_pids(child));
+        }
+        pids
+    }
+
+    #[test]
+    fn a_self_parenting_canister_terminates_and_stays_reachable() {
+        // pid 9 declares itself as its own parent. Root's traversal never
+        // reaches it (nothing under root points at it), so without the
+        // sweep it would silently vanish; if the cycle guard were broken,
+        // building this tree would hang instead of returning.
+        let tree = build_tree(&principal(1).to_text(), vec![info(9, "loopy", Some(9))]);
+
+        let pids = collect_pids(&tree);
+        let loopy = principal(9).to_text();
+        assert_eq!(
+            pids.iter().filter(|pid| **pid == loopy).count(),
+            1,
+            "the self-parenting node should appear exactly once, got: {pids:?}"
+        );
+    }
+
+    #[test]
+    fn a_mutually_parenting_pair_terminates_and_both_stay_reachable() {
+        // pid 10 declares pid 11 as parent and vice versa: a two-node cycle
+        // disconnected from root. Both must still surface under root
+        // exactly once each, not vanish and not duplicate.
+        let infos = vec![info(10, "a", Some(11)), info(11, "b", Some(10))];
+        let tree = build_tree(&principal(1).to_text(), infos);
+
+        let pids = collect_pids(&tree);
+        let a = principal(10).to_text();
+        let b = principal(11).to_text();
+        assert_eq!(pids.iter().filter(|pid| **pid == a).count(), 1, "pid 10 should appear exactly once, got: {pids:?}");
+        assert_eq!(pids.iter().filter(|pid| **pid == b).count(), 1, "pid 11 should appear exactly once, got: {pids:?}");
     }
 }
