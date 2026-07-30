@@ -1,5 +1,6 @@
 pub mod discovery;
 pub mod error;
+pub mod sql;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
