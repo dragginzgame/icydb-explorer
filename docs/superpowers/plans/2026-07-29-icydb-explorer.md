@@ -754,7 +754,15 @@ git commit -m "feat: add read-only statement classifier and default LIMIT"
     `Entities(Vec<EntityDto>)` panics at serialize time. `Rows(RowsDto)` and
     `Schema(SchemaDto)` are fine as newtype variants because their payloads
     serialize as maps, which the tag can be added to.
-  - `pub fn result_to_dto(result: SqlQueryResult) -> ResultDto`
+  - `pub fn result_to_dto(result: SqlQueryResult) -> Result<ResultDto, AppError>`
+
+    Fallible on purpose. `SqlQueryResult::Ddl` is a DDL-mutation report, and this
+    app never sends DDL — but the value is decoded from a canister response, i.e.
+    data crossing a process boundary this program does not control. So its arrival
+    is a protocol anomaly to report, not an invariant to assert: map it to
+    `AppError::Parse` naming the unexpected variant. Never `unreachable!()` or
+    `panic!()` here — a desktop app must surface that as an error, not die. Callers
+    already return `Result<_, AppError>`, so this costs them a `?`.
 
 **This is the load-bearing module.** It is the only place icydb shapes are translated. When icydb bumps, this is what changes.
 
