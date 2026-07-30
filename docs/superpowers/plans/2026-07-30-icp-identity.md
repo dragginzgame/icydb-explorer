@@ -320,9 +320,14 @@ git commit -m "feat: export identity pems via the icp CLI"
 **Interfaces:**
 - Consumes: `AppError`
 - Produces:
-  - `pub struct IdentityRef { pub name: String, pub algorithm: String, pub kind: String, pub pem_path: Option<PathBuf> }`
+  - `pub struct IdentityRef { pub name: String, pub algorithm: String, pub kind: String, pub pem_path: Option<PathBuf>, pub unusable_reason: Option<String> }`
+  - `IdentityRef::new(name: String, algorithm: String, kind: String, pem_path: Option<PathBuf>) -> Self` — the **only** place the usability rule is expressed
+  - `IdentityRef::is_usable(&self) -> bool`
   - `Environment` gains `pub identities: Vec<IdentityRef>`
-  - `IdentityRef::is_usable(&self) -> bool` and `IdentityRef::unusable_reason(&self) -> Option<String>`
+
+`unusable_reason` is a **serialised field**, computed once in `new`, not a method.
+The frontend renders it verbatim rather than re-deriving the rule, so the rule
+exists in exactly one place in the codebase.
 
 **Two type changes that make an existing lie honest.** `pem_path: PathBuf` asserts every identity has a file — which is exactly what made keyring unrepresentable. It becomes `Option<PathBuf>`. And `kind` must be carried, because it decides how the key is obtained and why an identity is unusable.
 
@@ -405,7 +410,7 @@ fn anonymous_is_unusable_because_endpoints_are_controller_gated() {
     let identities = read_all_identities(store).unwrap();
     let anonymous = identities.iter().find(|i| i.name == "anonymous").unwrap();
     assert!(!anonymous.is_usable());
-    let reason = anonymous.unusable_reason().expect("should give a reason");
+    let reason = anonymous.unusable_reason.as_ref().expect("should give a reason");
     assert!(reason.contains("controller-gated"), "got: {reason}");
 }
 
@@ -415,7 +420,7 @@ fn an_unrecognised_kind_is_unusable_and_names_itself() {
     let identities = read_all_identities(store).unwrap();
     let future = identities.iter().find(|i| i.name == "future-kind").unwrap();
     assert!(!future.is_usable());
-    let reason = future.unusable_reason().expect("should give a reason");
+    let reason = future.unusable_reason.as_ref().expect("should give a reason");
     assert!(reason.contains("delegation"), "should name the kind: {reason}");
 }
 ```
@@ -442,16 +447,17 @@ pub struct IdentityRef {
     pub algorithm: String,
     pub kind: String,
     pub pem_path: Option<PathBuf>,
+    /// Why this app cannot use this identity, or `None` if it can.
+    ///
+    /// A serialised field rather than a method, computed once in
+    /// [`IdentityRef::new`], so the frontend renders this text instead of
+    /// re-implementing the rule in TypeScript. The rule lives in exactly one
+    /// place in the codebase.
+    pub unusable_reason: Option<String>,
 }
 
 impl IdentityRef {
-    /// Whether this app can obtain a signing key for this identity.
-    #[must_use]
-    pub fn is_usable(&self) -> bool {
-        self.unusable_reason().is_none()
-    }
-
-    /// Why this identity cannot be used, or `None` if it can.
+    /// Builds an `IdentityRef`, deriving `unusable_reason` from the kind.
     ///
     /// icp's storage kinds are `plaintext`, `keyring`, and `password`
     /// (`icp identity new --storage`). `plaintext` surfaces here as kind
@@ -460,9 +466,14 @@ impl IdentityRef {
     /// assumed loadable — a wrong guess would fail confusingly at query
     /// time instead of clearly at selection time.
     #[must_use]
-    pub fn unusable_reason(&self) -> Option<String> {
-        match self.kind.as_str() {
-            "pem" if self.pem_path.is_none() => {
+    pub fn new(
+        name: String,
+        algorithm: String,
+        kind: String,
+        pem_path: Option<PathBuf>,
+    ) -> Self {
+        let unusable_reason = match kind.as_str() {
+            "pem" if pem_path.is_none() => {
                 Some("pem identity with no key file recorded".to_string())
             }
             "pem" | "keyring" => None,
@@ -475,7 +486,15 @@ impl IdentityRef {
                 "identity kind \"{other}\" is not supported by this app: it cannot be \
                  exported as a PEM"
             )),
-        }
+        };
+
+        Self { name, algorithm, kind, pem_path, unusable_reason }
+    }
+
+    /// Whether this app can obtain a signing key for this identity.
+    #[must_use]
+    pub fn is_usable(&self) -> bool {
+        self.unusable_reason.is_none()
     }
 }
 ```
@@ -497,6 +516,8 @@ In `discovery/icp_dir.rs`, add a function that reads `identity_list.json` from t
 - `kind` is the entry's `kind` string; an entry with no `kind` is an error (`AppError::Parse`) naming the identity.
 - `algorithm` is the entry's `algorithm` string, defaulting to `"secp256k1"` when absent — `anonymous` entries have no algorithm and must not fail the whole read.
 - `pem_path` is `Some(<store>/keys/<name>.pem)` when `kind == "pem"`, otherwise `None`.
+- Build every `IdentityRef` through `IdentityRef::new(..)` — never a struct literal — so
+  `unusable_reason` cannot be forgotten or computed twice.
 
 Refactor the existing default-identity read to build its `IdentityRef` through the same per-entry conversion, so the two paths cannot disagree about `kind` or `pem_path`. Then populate `Environment.identities` wherever `Environment.identity` is currently set, from the same resolved store.
 
@@ -546,12 +567,12 @@ mod tests {
     use std::path::PathBuf;
 
     fn pem_identity(algorithm: &str, file: &str) -> IdentityRef {
-        IdentityRef {
-            name: "demo-local".into(),
-            algorithm: algorithm.into(),
-            kind: "pem".into(),
-            pem_path: Some(PathBuf::from("tests/fixtures").join(file)),
-        }
+        IdentityRef::new(
+            "demo-local".into(),
+            algorithm.into(),
+            "pem".into(),
+            Some(PathBuf::from("tests/fixtures").join(file)),
+        )
     }
 
     #[tokio::test]
@@ -573,36 +594,24 @@ mod tests {
 
     #[tokio::test]
     async fn a_pem_kind_with_no_path_is_an_error_not_a_panic() {
-        let identity = IdentityRef {
-            name: "broken".into(),
-            algorithm: "secp256k1".into(),
-            kind: "pem".into(),
-            pem_path: None,
-        };
+        let identity =
+            IdentityRef::new("broken".into(), "secp256k1".into(), "pem".into(), None);
         let error = load_identity(&identity).await.err().expect("should fail");
         assert!(error.explanation().contains("broken"));
     }
 
     #[tokio::test]
     async fn anonymous_is_refused_before_any_subprocess_runs() {
-        let identity = IdentityRef {
-            name: "anonymous".into(),
-            algorithm: "secp256k1".into(),
-            kind: "anonymous".into(),
-            pem_path: None,
-        };
+        let identity =
+            IdentityRef::new("anonymous".into(), "secp256k1".into(), "anonymous".into(), None);
         let error = load_identity(&identity).await.err().expect("should fail");
         assert!(error.explanation().contains("controller-gated"));
     }
 
     #[tokio::test]
     async fn an_unrecognised_kind_is_refused_naming_the_kind() {
-        let identity = IdentityRef {
-            name: "future".into(),
-            algorithm: "secp256k1".into(),
-            kind: "delegation".into(),
-            pem_path: None,
-        };
+        let identity =
+            IdentityRef::new("future".into(), "secp256k1".into(), "delegation".into(), None);
         let error = load_identity(&identity).await.err().expect("should fail");
         assert!(error.explanation().contains("delegation"));
     }
@@ -643,7 +652,7 @@ use crate::error::AppError;
 /// identity, exported via the icp CLI for a `keyring` one — then on algorithm
 /// to choose a loader. Unusable kinds are refused before any subprocess runs.
 pub async fn load_identity(identity: &IdentityRef) -> Result<Box<dyn Identity>, AppError> {
-    if let Some(reason) = identity.unusable_reason() {
+    if let Some(reason) = identity.unusable_reason.as_ref() {
         return Err(AppError::Agent(format!(
             "identity \"{}\" cannot be used: {reason}",
             identity.name
@@ -829,12 +838,12 @@ fn find_identity_reports_a_missing_name_rather_than_panicking() {
         replica_url: "http://127.0.0.1:4943".into(),
         canisters: Vec::new(),
         identity: None,
-        identities: vec![IdentityRef {
-            name: "alice".into(),
-            algorithm: "secp256k1".into(),
-            kind: "keyring".into(),
-            pem_path: None,
-        }],
+        identities: vec![IdentityRef::new(
+            "alice".into(),
+            "secp256k1".into(),
+            "keyring".into(),
+            None,
+        )],
         artifacts: Vec::new(),
     };
 
@@ -933,6 +942,10 @@ export type IdentityRef = {
   algorithm: string;
   kind: string;
   pemPath: string | null;
+  /// Why this app cannot use this identity, or null if it can. Computed by
+  /// `IdentityRef::new` in `src-tauri/src/discovery/types.rs` and rendered
+  /// verbatim here — the rule is not re-implemented in TypeScript.
+  unusableReason: string | null;
 };
 
 export type Environment = {
@@ -945,26 +958,6 @@ export type Environment = {
 };
 ```
 
-The backend derives `unusable_reason` in Rust but does not serialise it, so the selector needs the same rule in TypeScript. Add it beside the type, with a comment naming `discovery/types.rs` as the source of truth:
-
-```ts
-/// Mirrors `IdentityRef::unusable_reason` in `src-tauri/src/discovery/types.rs`.
-/// Keep the two in sync; the Rust side is authoritative and enforces this at
-/// load time regardless of what the UI allows.
-export function unusableReason(identity: IdentityRef): string | null {
-  switch (identity.kind) {
-    case "pem":
-      return identity.pemPath === null ? "pem identity with no key file recorded" : null;
-    case "keyring":
-      return null;
-    case "anonymous":
-      return "the anonymous identity cannot be used: icydb's SQL endpoints are controller-gated";
-    default:
-      return `identity kind "${identity.kind}" is not supported by this app: it cannot be exported as a PEM`;
-  }
-}
-```
-
 - [ ] **Step 2: Write the failing tests**
 
 ```tsx
@@ -972,9 +965,9 @@ import { render, screen } from "@testing-library/react";
 import { IdentitySelector } from "./IdentitySelector";
 import type { IdentityRef } from "../api/types";
 
-const keyring: IdentityRef = { name: "default", algorithm: "secp256k1", kind: "keyring", pemPath: null };
-const anonymous: IdentityRef = { name: "anonymous", algorithm: "secp256k1", kind: "anonymous", pemPath: null };
-const future: IdentityRef = { name: "delegated", algorithm: "secp256k1", kind: "delegation", pemPath: null };
+const keyring: IdentityRef = { name: "default", algorithm: "secp256k1", kind: "keyring", pemPath: null, unusableReason: null };
+const anonymous: IdentityRef = { name: "anonymous", algorithm: "secp256k1", kind: "anonymous", pemPath: null, unusableReason: "the anonymous identity cannot be used: icydb's SQL endpoints are controller-gated" };
+const future: IdentityRef = { name: "delegated", algorithm: "secp256k1", kind: "delegation", pemPath: null, unusableReason: "identity kind \"delegation\" is not supported by this app: it cannot be exported as a PEM" };
 
 test("lists every identity, usable or not", () => {
   render(<IdentitySelector identities={[keyring, anonymous, future]} selected="default" onSelect={() => {}} />);
@@ -1007,7 +1000,15 @@ Expected: FAIL — cannot resolve `./IdentitySelector`.
 
 - [ ] **Step 4: Implement `IdentitySelector.tsx`**
 
-A `<select>` with one `<option>` per identity. Each option's label is `name (kind)`, and for an unusable identity the label appends ` — <reason>` and the option carries `disabled`. Render `null` when `identities` is empty. Show the selected identity's principal is **not** required — `IdentityRef` does not carry it, so don't invent it.
+A `<select>` with one `<option>` per identity. Each option's label is `name (kind)`,
+and when `unusableReason` is non-null the label appends ` — <reason>` and the option
+carries `disabled`. Render `null` when `identities` is empty.
+
+Read `unusableReason` straight off the DTO — do **not** re-derive it from `kind` in
+TypeScript. The backend computes it once in `IdentityRef::new` and serialises it, so
+the rule lives in exactly one place.
+
+`IdentityRef` carries no principal, so don't display one — and don't invent it.
 
 - [ ] **Step 5: Run to verify they pass**
 
@@ -1147,4 +1148,7 @@ git commit -m "test: verify the default identity loads live; document identity s
 
 **Type consistency.** `IdentityRef` is `{ name, algorithm, kind, pem_path: Option<PathBuf> }` in Task 3 and used with that exact shape in Tasks 4, 6, and 7. `load_identity` is async from Task 4 onward and awaited in Task 5. `pool.get` takes `(&Environment, &IdentityRef)` from Task 5 and is called that way in Task 6. The TS `IdentityRef` in Task 7 mirrors the Rust field names under the existing camelCase rename (`pemPath`).
 
-**One accepted duplication.** `unusableReason` exists in both Rust and TypeScript, because the backend does not serialise the derived reason. Task 7 documents the Rust side as authoritative and notes it is enforced at load time regardless of what the UI permits — so a drift makes the UI permissive, not the backend unsafe. Serialising the reason instead would be the alternative; it was not chosen because it puts derived text on the wire for one consumer.
+**No duplicated rule.** An earlier draft implemented `unusableReason` in both Rust and
+TypeScript with Rust authoritative. That was changed before execution: the reason is
+computed once in `IdentityRef::new`, carried as a serialised field, and rendered
+verbatim by the selector. One rule, one place.
