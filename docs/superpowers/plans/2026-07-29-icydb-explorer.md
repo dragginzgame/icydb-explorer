@@ -1097,11 +1097,53 @@ pub async fn run_query(
         .await
         .map_err(|e| map_agent_error(&e, &canister.to_text()))?;
 
-    Decode!(bytes.as_slice(), Result<SqlQueryResult, icydb::Error>)
+    Decode!(bytes.as_slice(), Result<SqlQueryEnvelope, icydb::Error>)
         .map_err(|e| AppError::Parse(e.to_string()))?
+        .map(|envelope| envelope.result)
         .map_err(|e| AppError::IcyDb { code: format!("{e:?}"), message: e.to_string() })
 }
 ```
+
+**The response is wrapped, and the wrapper is not an importable type.** A canister
+with `readonly = true` does not return `SqlQueryResult` directly — the actor macro
+emits a per-canister `IcydbSqlQueryPerfResult` record holding the real result plus
+eight instruction counters, and returns that. Verified in the generated fixture
+candid:
+
+```candid
+type IcydbSqlQueryPerfResult = record {
+  result : SqlQueryResult;
+  instructions : nat64;
+  planner_instructions : nat64;
+  store_instructions : nat64;
+  executor_instructions : nat64;
+  pure_covering_decode_instructions : nat64;
+  pure_covering_row_assembly_instructions : nat64;
+  decode_instructions : nat64;
+  compiler_instructions : nat64;
+};
+icydb_query : (text) -> (variant { Ok : IcydbSqlQueryPerfResult; Err : Error }) query;
+```
+
+Because that struct is generated *into each canister* rather than exported by the
+`icydb` crate, there is nothing to import — you must declare a local mirror.
+`icydb-cli` does exactly this with its own `ShellSqlQueryPerfResult`. Declare only
+the field you use, in `transport.rs`:
+
+```rust
+/// Local mirror of the per-canister `IcydbSqlQueryPerfResult` the actor macro
+/// emits for read-only SQL surfaces. Candid skips unmatched record fields on
+/// decode, so the eight instruction counters are deliberately omitted — the
+/// explorer does not surface them. `icydb-cli` declares all nine in its own
+/// mirror; if decoding ever fails here, adding them back is the fallback.
+#[derive(CandidType, Deserialize)]
+struct SqlQueryEnvelope {
+    result: SqlQueryResult,
+}
+```
+
+`run_query` still returns `SqlQueryResult`, so this unwrap is invisible to callers
+and Task 10's tests are unaffected.
 
 Use `agent.query(...)`, never `agent.update(...)` — the Global Constraints forbid update calls, and `icydb_query` is declared as a query method. `map_agent_error` extracts the reject message from `AgentError` and delegates to `map_reject_message`.
 
