@@ -386,25 +386,26 @@ npm run build
 npx tsc --noEmit
 ```
 
-**Known gap as of the `0.215.5` bump.** Four of the ignored live tests in
-`src-tauri/tests/integration.rs` (`show_entities_lists_the_fixture_entities`,
-`select_returns_typed_values_for_every_seeded_column`,
-`describe_reports_the_primary_key`, and
-`explicit_order_by_and_limit_still_works_when_introspection_is_disabled`)
-still write `demo_row` in their SQL literals and assertions. Since `#[entity]`
-dropped its entity-level `name` (see item 9 above), the fixture's live entity
-name is now `DemoRow`, and these four fail against a freshly rebuilt fixture
-with a store/runtime-unsupported error (icydb error code 23) rather than
-whatever they were written to check. Verified directly: the identical query
-text with `DemoRow` substituted for `demo_row` succeeds and returns real
-data. `select_with_limit_and_no_order_by_is_rejected` still reports `ok`
-against the stale name, but for the wrong reason — it only asserts
-`is_err()`, and an unknown-entity error satisfies that just as well as the
-intended missing-`ORDER BY` rejection (icydb error code 5) would have, so a
-green result there does not currently prove the pagination policy is
-enforced. This is a test-fixture staleness left over from the bump, not a
-regression in `src-tauri/`; the app's own decoding path (`sql::run_query`,
-`view::result_to_dto`) was confirmed working live against `DemoRow`.
+**Fixed post-`0.215.5` bump — recorded here because it recurred once
+already.** `#[entity]` dropping its entity-level `name` (see [Updating the
+icydb version](#updating-the-icydb-version) above) silently renamed the
+fixture's entities from `demo_row`/`demo_child` to `DemoRow`/`DemoChild`.
+`src-tauri/tests/integration.rs` still wrote the old names when this bump
+first landed, so four of its live tests failed against a freshly rebuilt
+fixture with a store/runtime-unsupported error (icydb error code 23) instead
+of whatever they were meant to check, and a fifth
+(`select_with_limit_and_no_order_by_is_rejected`) reported `ok` for the
+wrong reason — it asserted only `Result::is_err()`, and the unknown-entity
+error satisfied that just as well as the intended missing-`ORDER BY`
+rejection (icydb error code 5) would have, so a green result there didn't
+actually prove the pagination policy was enforced. Both are fixed now: every
+SQL literal uses the current entity names, and that test asserts the
+specific `AppError::IcyDb { message: "E5", .. }` rejection rather than a
+bare `is_err()`. Left here as a warning for the *next* bump: an entity
+rename like this one produces no compile error, so a green
+`cargo test --test integration -- --ignored` run is not by itself proof
+that a renamed entity's tests are still checking the right thing — read
+the failure (or lack of one) rather than trusting the exit code alone.
 
 The integration suite includes one deliberately negative test,
 `run_query_against_a_toko_canister_reports_no_sql_surface`, that asserts
@@ -428,6 +429,28 @@ frontend DTOs. On an icydb version bump, that's the module to update —
 everything upstream of it (`sql`, `agent`, `topology`, `discovery`) and
 everything downstream (the entire frontend) should be unaffected, which is
 the entire reason that boundary exists.
+
+**If your schema crate declares entities via `#[entity]`, check whether the
+new icydb version still lets you name them.** The `0.202.1` → `0.215.5` bump
+removed `#[entity]`'s entity-level `name` attribute entirely (confirmed
+against `icydb-model-macros-0.215.5/src/node/entity.rs`: the `Entity` struct
+has no name field, and the SQL-visible name is derived unconditionally from
+the annotated struct's own identifier). This is not a cosmetic rename or a
+macro-argument reshuffle like the other grammar changes in this bump — it
+silently changes **every entity's SQL-visible name** to its Rust struct name
+(this repo's fixture went from `demo_row`/`demo_child` to `DemoRow`/
+`DemoChild`), and nothing in icydb's own docs, changelog, or compiler
+diagnostics flags it: code that names entities in SQL by their old string
+keeps compiling and keeps deploying — it just starts failing at query time
+against whichever caller still uses the old name, with a generic
+store/entity-not-found error rather than anything pointing at the rename.
+We found this only because four of this repo's own live integration tests
+started failing after rebuilding the fixture (see the note in
+[Testing](#testing)). If you have any hand-written SQL, saved queries, or
+tests that name an entity by a string literal, grep for the old names
+and update every one of them before trusting a green test run — an
+entity-name-derived-from-struct-name change like this one won't show up
+as a compile error the way the `SqlQueryResult` variant addition did.
 
 ## Known limitations
 

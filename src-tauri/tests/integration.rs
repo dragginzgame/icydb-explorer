@@ -3,6 +3,15 @@
 //!   cargo test --test integration -- --ignored
 //!
 //! Set ICYDB_EXPLORER_TEST_CANISTER and ICYDB_EXPLORER_TEST_URL first.
+//!
+//! The fixture's entities are `DemoRow`/`DemoChild`, not `demo_row`/
+//! `demo_child` — the icydb 0.215.5 bump's `#[entity]` macro dropped its
+//! entity-level `name` attribute (`fixture-schema/src/lib.rs` used to set
+//! `name = "demo_row"` explicitly), so an entity's SQL-visible name is now
+//! forced to its Rust struct identifier. Every SQL literal below was
+//! written against the old snake_case name and updated for this; see
+//! README.md item 9's "A distinct upgrade note" for the full explanation
+//! and why it isn't a no-op.
 
 use std::path::PathBuf;
 
@@ -70,7 +79,7 @@ async fn show_entities_lists_the_fixture_entities() {
         // shape; fixed here without touching the assertion itself.
         ResultDto::Entities { entities } => {
             let names: Vec<&str> = entities.iter().map(|e| e.name.as_str()).collect();
-            assert!(names.contains(&"demo_row"), "got {names:?}");
+            assert!(names.contains(&"DemoRow"), "got {names:?}");
         }
         other => panic!("expected Entities, got {other:?}"),
     }
@@ -80,7 +89,7 @@ async fn show_entities_lists_the_fixture_entities() {
 #[ignore = "requires a local replica with the fixture canister installed"]
 async fn select_returns_typed_values_for_every_seeded_column() {
     let (agent, canister) = connect().await;
-    // Was `"SELECT * FROM demo_row LIMIT 10"` (no `ORDER BY`) — that SQL is
+    // Was `"SELECT * FROM DemoRow LIMIT 10"` (no `ORDER BY`) — that SQL is
     // rejected outright by icydb 0.202.1's query planner
     // (`PolicyPlanError::UnorderedPagination`: pagination requires an
     // explicit ordering), confirmed live while first writing this test (see
@@ -89,7 +98,7 @@ async fn select_returns_typed_values_for_every_seeded_column() {
     let result = run_query(
         &agent,
         canister,
-        "SELECT * FROM demo_row ORDER BY id LIMIT 10",
+        "SELECT * FROM DemoRow ORDER BY id LIMIT 10",
         "icydb-explorer-test",
     )
     .await
@@ -119,7 +128,7 @@ async fn select_returns_typed_values_for_every_seeded_column() {
 #[ignore = "requires a local replica with the fixture canister installed"]
 async fn describe_reports_the_primary_key() {
     let (agent, canister) = connect().await;
-    let result = run_query(&agent, canister, "DESCRIBE demo_row", "icydb-explorer-test")
+    let result = run_query(&agent, canister, "DESCRIBE DemoRow", "icydb-explorer-test")
         .await
         .unwrap();
     match result_to_dto(result).expect("decode should succeed") {
@@ -145,6 +154,18 @@ async fn describe_reports_the_primary_key() {
 /// unnecessary) that no prescribed test checks, and that's the whole reason
 /// `commands::fetch_rows` and `sql::limit::apply_default_limit` needed
 /// fixing in the first place.
+///
+/// **Corrected 2026-07-30 (icydb 0.215.5 bump, Task 3 fix-up).** Until this
+/// fix, this assertion was `unordered.is_err()` — true, but true for the
+/// wrong reason: while this test still referred to the fixture's pre-bump
+/// entity name (`demo_row`), the query failed with icydb's generic
+/// unknown-entity error (`E23`) rather than the `UnorderedPagination`
+/// rejection (`E5`) it exists to check, and `is_err()` can't tell the two
+/// apart. Verified directly: the identical query against the correct
+/// (post-bump) entity name returns `E5` as expected, while the stale name
+/// returned `E23` — proving the earlier "pass" was accidental. Now asserts
+/// on the specific `AppError::IcyDb` code so an unrelated failure mode
+/// can't silently masquerade as this one again.
 #[tokio::test]
 #[ignore = "requires a local replica with the fixture canister installed"]
 async fn select_with_limit_and_no_order_by_is_rejected() {
@@ -153,14 +174,16 @@ async fn select_with_limit_and_no_order_by_is_rejected() {
     let unordered = run_query(
         &agent,
         canister,
-        "SELECT * FROM demo_row LIMIT 1 OFFSET 0",
+        "SELECT * FROM DemoRow LIMIT 1 OFFSET 0",
         "icydb-explorer-test",
     )
     .await;
-    assert!(
-        unordered.is_err(),
-        "expected icydb to reject LIMIT/OFFSET without ORDER BY, got {unordered:?}"
-    );
+    match unordered {
+        Err(AppError::IcyDb { message, .. }) if message == "E5" => {}
+        other => panic!(
+            "expected icydb's E5 UnorderedPagination rejection, got {other:?}"
+        ),
+    }
 }
 
 /// Confirms `commands::fetch_rows`'s introspection-disabled behavior against
@@ -211,7 +234,7 @@ async fn explicit_order_by_and_limit_still_works_when_introspection_is_disabled(
     let describe = run_query(
         &agent,
         canister_text,
-        "DESCRIBE demo_row",
+        "DESCRIBE DemoRow",
         "icydb-explorer-test",
     )
     .await;
@@ -226,7 +249,7 @@ async fn explicit_order_by_and_limit_still_works_when_introspection_is_disabled(
     let result = run_query(
         &agent,
         canister_text,
-        "SELECT * FROM demo_row ORDER BY id LIMIT 100",
+        "SELECT * FROM DemoRow ORDER BY id LIMIT 100",
         "icydb-explorer-test",
     )
     .await
