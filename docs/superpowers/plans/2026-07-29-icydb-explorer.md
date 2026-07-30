@@ -1421,7 +1421,7 @@ git commit -m "feat: walk canic topology into a canister tree"
   - `canister_tree(env: String) -> TreeNode`
   - `list_tables(env: String, canister: String) -> ResultDto`
   - `describe_table(env: String, canister: String, entity: String) -> ResultDto`
-  - `fetch_rows(env: String, canister: String, entity: String, cursor: Option<String>) -> ResultDto`
+  - `fetch_rows(env: String, canister: String, entity: String, offset: u32) -> ResultDto`
   - `run_sql(env: String, canister: String, sql: String) -> SqlRunDto`
   - `pub struct SqlRunDto { pub result: ResultDto, pub limit_appended: bool }`
 
@@ -1431,12 +1431,30 @@ Each command resolves the environment via `discovery`, gets an `Agent` from `Age
 
 - `list_tables` → `"SHOW ENTITIES"`
 - `describe_table` → `format!("DESCRIBE {entity}")`
-- `fetch_rows` with no cursor → `format!("SELECT * FROM {entity} LIMIT 100")`
-- `fetch_rows` with a cursor → the same plus the cursor clause icydb expects; confirm the exact syntax before writing:
+- `fetch_rows` → `format!("SELECT * FROM {entity} LIMIT 100 OFFSET {offset}")`
 
-```bash
-grep -rn "next_cursor\|CURSOR" ~/.cargo/registry/src/*/icydb-0.202.1/src/db/sql/ | head -20
-```
+**Scalar paging is `LIMIT`/`OFFSET`, not cursors.** icydb's SQL subset contract
+(`docs/contracts/SQL_SUBSET.md`) is explicit:
+
+> `pagination.scalar_cursor` — **status: rejected.** Cursor-based pagination is not
+> part of the scalar SQL surface.
+>
+> `pagination.scalar_limit_offset` — **status: accepted.** SQL uses `LIMIT` /
+> `OFFSET` for scalar windowing. […] This is intentional: cursor semantics are
+> transport-level, not query[-level].
+
+`next_cursor` exists only on **grouped** payloads (`pagination.grouped_cursor`),
+because grouped execution differs — so a `Projection` never carries one, and
+`RowsDto.next_cursor` stays `None` for scalar browsing. Keep the field for grouped
+results arriving through the console.
+
+There is a separate "no offset" rule in that contract, and it does **not** apply
+here: it constrains `execute_trusted_sql_prefix_update`, a bounded *mutation* lane.
+Reads are unaffected.
+
+Determining "has more": the app cannot know a total without a separate `COUNT`, so
+treat a full page (returned `row_count` equal to the requested limit) as "there may
+be more" and let the UI offer another page. Do not fabricate a total.
 
 `run_sql` must call `classify` first and return the `Rejected` error without contacting the canister, then `apply_default_limit`, and report `limit_appended` so the UI can show that it modified the statement.
 
@@ -1504,7 +1522,33 @@ async fn describe_reports_the_primary_key() {
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-- [ ] **Step 4: Deploy the fixture and run the integration tests**
+- [ ] **Step 4: Create the deploy config**
+
+This repo has **no** `dfx.json`, no `icp.yaml`, and no `.icp/` — nothing yet tells a
+local replica how to install the fixture. Create the minimal config that names the
+fixture as a prebuilt canister, pointing at the wasm and candid Task 2 already
+produces:
+
+```json
+{
+  "canisters": {
+    "fixture": {
+      "type": "custom",
+      "candid": "fixture/fixture.did",
+      "wasm": "target/wasm32-unknown-unknown/release/icydb_explorer_fixture.wasm"
+    }
+  },
+  "networks": { "local": { "bind": "127.0.0.1:4943", "type": "ephemeral" } },
+  "version": 1
+}
+```
+
+Both `icp` and `dfx` are on PATH and either may drive the replica — `icp project show`
+prints the effective config if you need to debug resolution. Adjust paths to whatever
+Task 2 actually emitted rather than trusting the names above, and report what you
+created and which tool you used.
+
+- [ ] **Step 5: Deploy the fixture and run the integration tests**
 
 ```bash
 icp start --background
@@ -1514,15 +1558,15 @@ cargo test --test integration -- --ignored
 
 Expected: PASS, 3 tests. These are the first end-to-end proof that a real canister response decodes into DTOs. If `SHOW ENTITIES` returns `IntrospectionDisabled`, `fixture/icydb.toml` has `introspection.local = false` — fix the config, not the test.
 
-- [ ] **Step 5: Verify the unit suite still passes**
+- [ ] **Step 6: Verify the unit suite still passes**
 
 Run: `cd src-tauri && cargo test`
 Expected: PASS (integration tests skipped as ignored).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src-tauri/src/commands.rs src-tauri/src/main.rs src-tauri/tests/integration.rs src-tauri/Cargo.toml
+git add src-tauri/src/commands.rs src-tauri/src/main.rs src-tauri/tests/integration.rs src-tauri/Cargo.toml dfx.json
 git commit -m "feat: add Tauri command surface with live fixture integration tests"
 ```
 
@@ -1665,24 +1709,24 @@ const rows = {
 };
 
 test("renders column headers and cells", () => {
-  render(<RowGrid rows={rows} onLoadMore={() => {}} />);
+  render(<RowGrid rows={rows} hasMore={false} onLoadMore={() => {}} />);
   expect(screen.getByText("id")).toBeDefined();
   expect(screen.getByText("01H")).toBeDefined();
   expect(screen.getByText("7")).toBeDefined();
 });
 
-test("hides Load more when there is no cursor", () => {
-  render(<RowGrid rows={rows} onLoadMore={() => {}} />);
+test("hides Load more when there is no more to load", () => {
+  render(<RowGrid rows={rows} hasMore={false} onLoadMore={() => {}} />);
   expect(screen.queryByRole("button", { name: /load more/i })).toBeNull();
 });
 
-test("shows Load more when a cursor is present", () => {
-  render(<RowGrid rows={{ ...rows, nextCursor: "abc" }} onLoadMore={() => {}} />);
+test("shows Load more when more may exist", () => {
+  render(<RowGrid rows={rows} hasMore onLoadMore={() => {}} />);
   expect(screen.getByRole("button", { name: /load more/i })).toBeDefined();
 });
 
 test("renders an empty result without crashing", () => {
-  render(<RowGrid rows={{ ...rows, rows: [], rowCount: 0 }} onLoadMore={() => {}} />);
+  render(<RowGrid rows={{ ...rows, rows: [], rowCount: 0 }} hasMore={false} onLoadMore={() => {}} />);
   expect(screen.getByText(/no rows/i)).toBeDefined();
 });
 ```
@@ -1694,7 +1738,13 @@ Expected: FAIL — cannot resolve `./RowGrid`.
 
 - [ ] **Step 3: Implement `RowGrid.tsx`**
 
-A `<table>` with sticky headers, one `<ValueCell>` per cell, an empty state reading "No rows", and a "Load more" button rendered only when `nextCursor` is non-null.
+A `<table>` with sticky headers, one `<ValueCell>` per cell, an empty state reading
+"No rows", and a "Load more" button rendered only when the `hasMore` prop is true.
+
+`hasMore` is a prop rather than something `RowGrid` derives, because scalar paging is
+`LIMIT`/`OFFSET` (see Task 10) and only the caller knows the requested page size and
+current offset. Keeping that arithmetic in `App.tsx` leaves `RowGrid` a dumb,
+trivially testable renderer.
 
 - [ ] **Step 4: Run to verify it passes**
 
