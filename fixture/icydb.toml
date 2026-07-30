@@ -1,0 +1,9 @@
+[canisters.fixture.sql]
+readonly = true
+ddl = false
+fixtures = true
+update = false
+
+[canisters.fixture.sql.introspection]
+local = true
+ic = false

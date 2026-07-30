@@ -25,3 +25,7 @@ dist-ssr
 
 # Project-local coordination workspace
 .superpowers/
+
+# Cargo workspace build output (moved here from src-tauri/target once
+# src-tauri joined the root workspace in Task 2)
+/target/

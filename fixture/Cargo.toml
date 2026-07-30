@@ -1,0 +1,28 @@
+[package]
+name = "icydb-explorer-fixture"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.96.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+candid = "0.10"
+ic-cdk = "0.20"
+icydb = { workspace = true }
+fixture-schema = { path = "../fixture-schema" }
+serde = { version = "1", features = ["derive"] }
+
+[build-dependencies]
+icydb = { workspace = true }
+fixture-schema = { path = "../fixture-schema" }
+
+[features]
+default = ["sql"]
+# icydb-build's generated actor glue gates the SQL surface behind
+# `#[cfg(feature = "sql")]` on the *consuming* crate — Cargo does not forward
+# a dependency's own feature flags automatically, so this crate needs its own
+# `sql` feature (mapped onto icydb's) and must default it on, since Step 6's
+# build command doesn't pass `--features` explicitly.
+sql = ["icydb/sql"]

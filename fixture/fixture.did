@@ -1,0 +1,258 @@
+type Account = record { owner : principal; subaccount : opt blob };
+type EntityCatalogDescription = record {
+  storage : text;
+  schema_version : nat32;
+  store_path : text;
+  entity_name : text;
+  entity_path : text;
+  indexes : nat32;
+  relations : nat32;
+  columns : nat32;
+};
+type EntityFieldDescription = record {
+  primary_key : bool;
+  queryable : bool;
+  nullable : bool;
+  kind : text;
+  name : text;
+  origin : text;
+  slot : nat16;
+};
+type EntityIndexDescription = record {
+  name : text;
+  origin : text;
+  unique : bool;
+  fields : vec text;
+};
+type EntityRelationCardinality = variant { Set; List; Single };
+type EntityRelationDescription = record {
+  field : text;
+  target_entity_name : text;
+  cardinality : EntityRelationCardinality;
+  target_store_path : text;
+  strength : EntityRelationStrength;
+  target_path : text;
+};
+type EntityRelationStrength = variant { Weak; Strong };
+type EntitySchemaDescription = record {
+  primary_key : text;
+  fields : vec EntityFieldDescription;
+  entity_name : text;
+  entity_path : text;
+  primary_key_fields : vec text;
+  indexes : vec EntityIndexDescription;
+  relations : vec EntityRelationDescription;
+};
+type Error = record { code : nat16; class : nat8; origin : nat8 };
+type IcydbSqlQueryPerfResult = record {
+  result : SqlQueryResult;
+  compiler_instructions : nat64;
+  executor_instructions : nat64;
+  instructions : nat64;
+  store_instructions : nat64;
+  planner_instructions : nat64;
+  decode_instructions : nat64;
+  pure_covering_row_assembly_instructions : nat64;
+  pure_covering_decode_instructions : nat64;
+};
+// 
+// MemoryCatalogDescription
+// 
+// One runtime-registered stable-memory allocation entry for `SHOW MEMORY`.
+// 
+type MemoryCatalogDescription = record {
+  tag : text;
+  memory_id : nat8;
+  store_path : text;
+};
+type OutputValue = variant {
+  Int : int64;
+  Map : Vec;
+  Nat : nat64;
+  Blob : blob;
+  Bool : bool;
+  Date : int32;
+  Enum : record {
+    path : opt text;
+    "variant" : text;
+    payload : opt OutputValue;
+  };
+  List : vec OutputValue;
+  Null;
+  Text : text;
+  Ulid : text;
+  Unit;
+  Subaccount : blob;
+  Timestamp : int64;
+  Nat128 : nat;
+  NatBig : nat;
+  Account : record { owner : principal; subaccount : opt blob };
+  Principal : principal;
+  Decimal : text;
+  Float32 : float32;
+  Float64 : float64;
+  Int128 : int;
+  IntBig : int;
+  Duration : nat64;
+};
+type OutputValueEnum = record {
+  path : opt text;
+  "variant" : text;
+  payload : opt OutputValue;
+};
+type OutputValue_1 = variant {
+  Int : int64;
+  Map : vec record { OutputValue; OutputValue };
+  Nat : nat64;
+  Blob : blob;
+  Bool : bool;
+  Date : int32;
+  Enum : OutputValueEnum;
+  List : vec OutputValue;
+  Null;
+  Text : text;
+  Ulid : text;
+  Unit;
+  Subaccount : blob;
+  Timestamp : int64;
+  Nat128 : nat;
+  NatBig : nat;
+  Account : Account;
+  Principal : principal;
+  Decimal : text;
+  Float32 : float32;
+  Float64 : float64;
+  Int128 : int;
+  IntBig : int;
+  Duration : nat64;
+};
+type Result = variant { Ok; Err : Error };
+type Result_1 = variant {
+  Ok : record {
+    opt record { vec record { nat16; nat64 }; nat64; nat64 };
+    vec record { text; vec record { nat16; nat64 } };
+    opt nat64;
+    nat64;
+  };
+  Err : Error;
+};
+type Result_2 = variant { Ok : IcydbSqlQueryPerfResult; Err : Error };
+// 
+// RowProjectionOutput
+// 
+// Candid-friendly projected row payload shared by fluent write-returning
+// helpers and SQL projection endpoints.
+// 
+type RowProjectionOutput = record {
+  entity : text;
+  rows : vec vec OutputValue_1;
+  row_count : nat32;
+  columns : vec text;
+};
+type SqlGroupedRowsOutput = record {
+  entity : text;
+  rows : vec vec text;
+  row_count : nat32;
+  next_cursor : opt text;
+  columns : vec text;
+};
+type SqlQueryResult = variant {
+  Ddl : record {
+    entity : text;
+    status : text;
+    target_store : text;
+    mutation_kind : text;
+    field_path : vec text;
+    target_index : text;
+    index_keys_written : nat64;
+    rows_scanned : nat64;
+  };
+  Grouped : SqlGroupedRowsOutput;
+  ShowMemory : record { memory : vec MemoryCatalogDescription };
+  ShowStores : record { stores : vec StoreCatalogDescription; verbose : bool };
+  ShowEntities : record {
+    verbose : bool;
+    entities : vec EntityCatalogDescription;
+  };
+  ShowIndexes : record { entity : text; indexes : vec text };
+  ShowColumns : record { entity : text; columns : vec EntityFieldDescription };
+  Projection : RowProjectionOutput;
+  Count : record { entity : text; row_count : nat32 };
+  Describe : EntitySchemaDescription;
+  Explain : record { entity : text; explain : text };
+};
+// 
+// StoreCatalogDescription
+// 
+// One runtime-registered store entry for `SHOW STORES`.
+// 
+type StoreCatalogDescription = record { storage : text; store_path : text };
+type Vec = vec record {
+  variant {
+    Int : int64;
+    Map : Vec;
+    Nat : nat64;
+    Blob : blob;
+    Bool : bool;
+    Date : int32;
+    Enum : record {
+      path : opt text;
+      "variant" : text;
+      payload : opt OutputValue;
+    };
+    List : vec OutputValue;
+    Null;
+    Text : text;
+    Ulid : text;
+    Unit;
+    Subaccount : blob;
+    Timestamp : int64;
+    Nat128 : nat;
+    NatBig : nat;
+    Account : record { owner : principal; subaccount : opt blob };
+    Principal : principal;
+    Decimal : text;
+    Float32 : float32;
+    Float64 : float64;
+    Int128 : int;
+    IntBig : int;
+    Duration : nat64;
+  };
+  variant {
+    Int : int64;
+    Map : Vec;
+    Nat : nat64;
+    Blob : blob;
+    Bool : bool;
+    Date : int32;
+    Enum : record {
+      path : opt text;
+      "variant" : text;
+      payload : opt OutputValue;
+    };
+    List : vec OutputValue;
+    Null;
+    Text : text;
+    Ulid : text;
+    Unit;
+    Subaccount : blob;
+    Timestamp : int64;
+    Nat128 : nat;
+    NatBig : nat;
+    Account : record { owner : principal; subaccount : opt blob };
+    Principal : principal;
+    Decimal : text;
+    Float32 : float32;
+    Float64 : float64;
+    Int128 : int;
+    IntBig : int;
+    Duration : nat64;
+  };
+};
+service : {
+  icydb_fixtures_load : () -> (Result);
+  icydb_fixtures_reset : () -> (Result);
+  icydb_metrics : (opt nat64) -> (Result_1) query;
+  icydb_metrics_reset : () -> (Result);
+  icydb_query : (text) -> (Result_2) query;
+}
