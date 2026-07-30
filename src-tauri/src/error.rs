@@ -84,7 +84,17 @@ impl AppError {
                  is correct."
             ),
             AppError::IcyDb { code, message } => {
-                format!("icydb reported error {code}: {message}")
+                if is_unordered_pagination(message) {
+                    "This statement uses LIMIT/OFFSET but has no ORDER BY. icydb requires an \
+                     explicit ordering whenever a statement paginates — without one, which rows \
+                     land on which page isn't well-defined, so icydb rejects the statement \
+                     rather than guess. Add an ORDER BY naming any column before the LIMIT (it \
+                     doesn't need to be unique or the primary key), e.g. `ORDER BY id LIMIT 100`, \
+                     and it will run."
+                        .to_string()
+                } else {
+                    format!("icydb reported error {code}: {message}")
+                }
             }
             AppError::Rejected(reason) => format!(
                 "This explorer is read-only and does not support this statement: {reason}"
@@ -107,6 +117,23 @@ impl AppError {
             AppError::Rejected(_) => "rejected",
         }
     }
+}
+
+/// Whether an `icydb::Error` (surfaced here only as `AppError::IcyDb`'s
+/// `message` string) is diagnostic code 5 — `QUERY_UNORDERED_PAGINATION`
+/// (`icydb-diagnostic-code-0.202.1/src/registry.rs`): a statement used
+/// `LIMIT`/`OFFSET` without an explicit `ORDER BY`. This is the single
+/// most useful `IcyDb` case to give a purpose-written explanation for — a
+/// user typing SQL into the console will hit it the moment they add a
+/// `LIMIT` (or Task 5's `apply_default_limit` would have added one) without
+/// also adding an `ORDER BY`.
+///
+/// `icydb::Error`'s `Display` impl renders as exactly `"E{code}"` (a plain
+/// struct field interpolation, `icydb-0.202.1/src/error.rs`), and 5 is this
+/// registry's one and only code for unordered pagination, so matching the
+/// full string `"E5"` is exact, not a substring guess.
+fn is_unordered_pagination(message: &str) -> bool {
+    message == "E5"
 }
 
 impl Serialize for AppError {
@@ -152,6 +179,42 @@ mod tests {
     fn replica_unreachable_names_the_url_tried() {
         let text = AppError::ReplicaUnreachable { url: "http://127.0.0.1:8000".into() }.explanation();
         assert!(text.contains("http://127.0.0.1:8000"));
+    }
+
+    /// icydb's diagnostic code 5 (`QueryUnorderedPagination`) surfaces here
+    /// as `AppError::IcyDb { message: "E5", .. }` — `icydb::Error`'s
+    /// `Display` is exactly `"E{code}"`. Confirmed live against a real
+    /// canister (Task 10's report): `SELECT * FROM demo_row LIMIT 10`
+    /// rejects with precisely this code/message pair.
+    #[test]
+    fn unordered_pagination_explains_the_missing_order_by() {
+        let text = AppError::IcyDb {
+            code: "Error { code: 5, class: 1, origin: 7 }".into(),
+            message: "E5".into(),
+        }
+        .explanation();
+        assert!(
+            text.contains("ORDER BY"),
+            "expected an ORDER BY explanation, got: {text}"
+        );
+        assert!(
+            text.contains("LIMIT"),
+            "expected the explanation to mention LIMIT, got: {text}"
+        );
+    }
+
+    /// Any other icydb error code keeps the generic, verbatim fallback —
+    /// the purpose-written explanation above is specific to code 5 and
+    /// must not swallow unrelated `IcyDb` errors.
+    #[test]
+    fn other_icydb_errors_use_the_generic_fallback() {
+        let text = AppError::IcyDb {
+            code: "Error { code: 183, class: 7, origin: 5 }".into(),
+            message: "E183".into(),
+        }
+        .explanation();
+        assert!(text.contains("E183"));
+        assert!(text.contains("Error { code: 183, class: 7, origin: 5 }"));
     }
 
     #[test]

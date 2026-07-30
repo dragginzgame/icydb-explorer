@@ -75,10 +75,16 @@ async fn show_entities_lists_the_fixture_entities() {
 #[ignore = "requires a local replica with the fixture canister installed"]
 async fn select_returns_typed_values_for_every_seeded_column() {
     let (agent, canister) = connect().await;
+    // Was `"SELECT * FROM demo_row LIMIT 10"` (no `ORDER BY`) — that SQL is
+    // rejected outright by icydb 0.202.1's query planner
+    // (`PolicyPlanError::UnorderedPagination`: pagination requires an
+    // explicit ordering), confirmed live while first writing this test (see
+    // the task report). Updated per the coordinator's follow-up now that
+    // the finding is confirmed and folded into the plan.
     let result = run_query(
         &agent,
         canister,
-        "SELECT * FROM demo_row LIMIT 10",
+        "SELECT * FROM demo_row ORDER BY id LIMIT 10",
         "icydb-explorer-test",
     )
     .await
@@ -123,21 +129,20 @@ async fn describe_reports_the_primary_key() {
 }
 
 /// Not one of the task brief's three prescribed tests — added on top of
-/// them to cover `commands::fetch_rows`'s deviation from the brief's
-/// literal `SELECT * FROM {entity} LIMIT 100 OFFSET {offset}`.
+/// them to cover the negative case none of the three exercise.
 ///
-/// Confirmed live (see the task report): icydb 0.202.1's query planner
-/// rejects any `LIMIT`/`OFFSET` window without an explicit `ORDER BY`
-/// (`PolicyPlanError::UnorderedPagination`, diagnostic code
-/// `QUERY_UNORDERED_PAGINATION` = 5) — which is exactly what
-/// `select_returns_typed_values_for_every_seeded_column` above would hit
-/// too, if it weren't for `.expect`/`.unwrap` turning that rejection into a
-/// panic instead of a quiet false pass. This test proves the fix
-/// `fetch_rows` actually applies (order by the entity's primary key,
-/// discovered via `DESCRIBE`) works end to end against the real canister.
+/// This started out proving *both* halves of the `ORDER BY` finding
+/// (unordered rejected, ordered succeeds) — the "ordered succeeds" half is
+/// now redundant with `select_returns_typed_values_for_every_seeded_column`
+/// above, since the coordinator folded the finding into the prescribed
+/// test's own SQL. Trimmed down to just the half that's still distinct: the
+/// negative case (that omitting `ORDER BY` really is rejected, not merely
+/// unnecessary) that no prescribed test checks, and that's the whole reason
+/// `commands::fetch_rows` and `sql::limit::apply_default_limit` needed
+/// fixing in the first place.
 #[tokio::test]
 #[ignore = "requires a local replica with the fixture canister installed"]
-async fn ordered_pagination_succeeds_where_unordered_pagination_would_be_rejected() {
+async fn select_with_limit_and_no_order_by_is_rejected() {
     let (agent, canister) = connect().await;
 
     let unordered = run_query(
@@ -151,17 +156,4 @@ async fn ordered_pagination_succeeds_where_unordered_pagination_would_be_rejecte
         unordered.is_err(),
         "expected icydb to reject LIMIT/OFFSET without ORDER BY, got {unordered:?}"
     );
-
-    let ordered = run_query(
-        &agent,
-        canister,
-        "SELECT * FROM demo_row ORDER BY id LIMIT 1 OFFSET 0",
-        "icydb-explorer-test",
-    )
-    .await
-    .expect("adding ORDER BY should make the same window succeed");
-    match result_to_dto(ordered).expect("decode should succeed") {
-        ResultDto::Rows(rows) => assert_eq!(rows.rows.len(), 1),
-        other => panic!("expected Rows, got {other:?}"),
-    }
 }
