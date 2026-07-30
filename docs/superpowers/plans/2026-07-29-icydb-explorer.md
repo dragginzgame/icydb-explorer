@@ -1067,8 +1067,15 @@ git commit -m "feat: add agent pool and pem identity loading"
 **Interfaces:**
 - Consumes: `AgentPool` (Task 7), `AppError` (Task 3), `classify`/`apply_default_limit` (Task 5)
 - Produces:
-  - `pub async fn run_query(agent: &Agent, canister: Principal, sql: &str) -> Result<SqlQueryResult, AppError>`
-  - `pub fn map_call_error(error: &AgentError, canister: &str, identity: &str) -> AppError`
+  - `pub async fn run_query(agent: &Agent, canister: Principal, sql: &str, identity: &str) -> Result<SqlQueryResult, AppError>`
+
+    `identity` is the human-readable identity name from
+    `IdentityRef.name` — the string the user would actually change. It exists
+    solely so `AppError::NotController` can name it: ic-agent exposes only
+    `sender() -> Principal`, not the configured name, so the agent alone cannot
+    supply it. Task 10's callers have the `Environment` and pass
+    `env.identity.as_ref().map_or("<none>", |i| i.name.as_str())`.
+  - `pub fn map_reject_message(message: &str, canister: &str, identity: &str) -> AppError` (with a private `map_agent_error(&AgentError, &str, &str)` extracting the reject text and delegating to it)
 
 - [ ] **Step 1: Write the failing error-mapping test**
 
@@ -1147,13 +1154,14 @@ pub async fn run_query(
     agent: &Agent,
     canister: Principal,
     sql: &str,
+    identity: &str,
 ) -> Result<SqlQueryResult, AppError> {
     let bytes = agent
         .query(&canister, "icydb_query")
         .with_arg(Encode!(&sql.to_string()).map_err(|e| AppError::Parse(e.to_string()))?)
         .call()
         .await
-        .map_err(|e| map_agent_error(&e, &canister.to_text()))?;
+        .map_err(|e| map_agent_error(&e, &canister.to_text(), identity))?;
 
     Decode!(bytes.as_slice(), Result<SqlQueryEnvelope, icydb::Error>)
         .map_err(|e| AppError::Parse(e.to_string()))?
