@@ -231,9 +231,25 @@ canister's own configuration is what makes this app's queries read-only.
 
 Free-form input rendering into the same grid as browsing. Statements are classified
 before send, and rejections explain why (e.g. "`INSERT` is not available — this
-explorer is read-only"). A `SELECT` with no `LIMIT` gets a default limit appended,
-and the UI shows that it was appended — no silent modification, and no accidental
-full-table scans against a canister.
+explorer is read-only").
+
+**Corrected 2026-07-30 (icp-identity final review):** the rule below was written
+before icydb's `ORDER BY`-requires-`LIMIT` behavior (`PolicyPlanError::UnorderedPagination`)
+was confirmed live, and no longer describes what the code does. A `SELECT` gets a
+default `LIMIT` appended **only when it already has its own `ORDER BY`** — appending
+a bare `LIMIT` to an `ORDER BY`-less `SELECT` would just manufacture a guaranteed
+rejection (icydb rejects any `LIMIT`/`OFFSET` window with no explicit ordering, for
+every entity). A `SELECT` with neither its own `LIMIT` nor an `ORDER BY` is therefore
+left completely untouched — no `LIMIT` is appended, and the console instead surfaces
+an `orderByMissing` hint telling the user to add one (`sql::limit::apply_default_limit`,
+`src-tauri/src/sql/limit.rs`). The UI still shows when a `LIMIT` was silently appended,
+but for a `SELECT` with no `ORDER BY` there is currently no accidental full-table-scan
+guard at all: an unbounded, unordered `SELECT` is sent to the canister exactly as
+typed, and the `orderByMissing` hint only arrives in the response — after that scan
+already happened. This is a defensible, pre-existing behavior for hand-typed console
+SQL (the alternative is guessing at a bogus `ORDER BY`) and is out of scope to change
+here; a client-side warning before the round trip, rather than a hint after it, would
+be the natural improvement.
 
 ## Paging
 

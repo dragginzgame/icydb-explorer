@@ -256,7 +256,30 @@ Restart the app and it starts from `icp identity default` again.
 |---|---|
 | `plaintext` | Yes — the pem is read straight off disk. |
 | `keyring` | Yes — exported non-interactively via `icp identity export` and never written to disk; see `src-tauri/src/agent/export.rs`. |
-| `password` | **No.** `icp identity export` prompts interactively for the password, which this app has no way to supply. The export attempt times out after 20s with an explanatory error rather than hanging indefinitely — use a `plaintext` or `keyring` identity instead. |
+| `password` | **Unverified — likely broken, but not via the mechanism this row used to claim.** See the correction below. |
+
+**Corrected 2026-07-30 (icp-identity final review).** This row previously asserted
+that a `--storage password` identity's export attempt times out after 20s with an
+explanatory error. That claim rested on zero direct observation — no `identity_list.json`
+fixture or live store anywhere in this project's history has ever contained a
+`--storage password` identity, so its on-disk shape has never actually been checked.
+
+What *is* verified, from `src-tauri/src/discovery/icp_dir.rs`: every real `identity_list.json`
+entry this project has observed carries both a `kind` field (`"pem"`, `"keyring"`, or
+`"anonymous"`) and a separate `format` field (every observed `"pem"`-kind entry pairs
+with `format: "plaintext"`). This app's classification (`IdentityRef::new`,
+`src-tauri/src/discovery/types.rs`) decides usability from `kind` alone and never reads
+`format` at all. The most plausible shape for a `--storage password` identity, going by
+that pattern, is `kind: "pem"` with some other `format` value (e.g. `"encrypted"`) — not
+a distinct `kind`. If that's right, this app would classify it as a perfectly usable
+`pem` identity (a resolvable key file on disk), never touch the `keyring` export path or
+its 20s timeout at all, read the encrypted file straight off disk, and fail only when
+parsing it as a PEM — with a generic "failed to load ... pem" error that says nothing
+about a password. That is a plausible reading of the code, not a confirmed one: no
+fixture or live store representing a `--storage password` identity has been created to
+check it, so treat both this row and the previous one as unverified, and report back if
+you get a real `--storage password` identity into a store to test against — either
+`plaintext` or `keyring` identity is what to use in the meantime.
 
 The selector also disables (with the reason shown inline) any identity this
 app otherwise cannot use — most notably `anonymous`, since `icydb_query` is
