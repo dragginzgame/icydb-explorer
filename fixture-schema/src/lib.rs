@@ -112,8 +112,11 @@ impl Default for DemoRow {
 ///
 /// DemoChild
 ///
-/// Related to `DemoRow` via `parent`, with a named lookup index so the SQL
-/// surface has more than one table to join against.
+/// `parent` holds a `DemoRow` id as a plain `Ulid` (not an icydb `rel`
+/// relation — `rel` fields must have an ident ending in `_id`, which `parent`
+/// deliberately doesn't, to keep the brief's literal field name), with a
+/// named lookup index so the SQL surface has more than one table to join
+/// against.
 ///
 
 #[entity(
