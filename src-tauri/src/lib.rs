@@ -39,6 +39,7 @@ pub fn run() {
         .manage(discover_project())
         .invoke_handler(tauri::generate_handler![
             commands::list_environments,
+            commands::select_identity,
             commands::canister_tree,
             commands::list_tables,
             commands::describe_table,

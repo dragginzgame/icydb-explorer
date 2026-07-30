@@ -16,7 +16,7 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::agent::AgentPool;
-use crate::discovery::{Environment, Project};
+use crate::discovery::{Environment, IdentityRef, Project};
 use crate::error::AppError;
 use crate::sql::{apply_default_limit, classify, rows_sql, run_query, unordered_rows_sql};
 use crate::topology::{build_tree, fetch_children, TreeNode};
@@ -61,6 +61,33 @@ fn find_environment<'a>(project: &'a Project, name: &str) -> Result<&'a Environm
         })
 }
 
+/// Finds the identity named `name` in `env`, or a clear error rather than a
+/// panic if the store changed since the frontend last listed environments
+/// (or if the name was simply never valid — a typo, or an identity removed
+/// via `icp identity` since this window opened).
+///
+/// This is the one place both former `pool.get` call sites' "no usable
+/// identity" shim now funnels through — see the task history: an earlier
+/// pass had to degrade that message to a placeholder that named neither the
+/// identity nor how to find one, to keep the build green while identity
+/// selection didn't exist yet. Now that the frontend supplies a name, the
+/// message can be specific and actionable again — and, since keyring
+/// identities load exactly as well as pem ones now, it no longer steers
+/// anyone toward "use a pem identity", which would be stale advice.
+pub fn find_identity<'a>(env: &'a Environment, name: &str) -> Result<&'a IdentityRef, AppError> {
+    env.identities
+        .iter()
+        .find(|identity| identity.name == name)
+        .ok_or_else(|| {
+            AppError::Agent(format!(
+                "environment \"{}\" has no identity named \"{name}\"; the icp identity store \
+                 may have changed since this window opened. Run `icp identity list` to see \
+                 which identities are currently available.",
+                env.name
+            ))
+        })
+}
+
 /// Parses a canister id string (as supplied by the frontend, itself sourced
 /// from `canister_tree`'s pids or from `list_environments`' root ids) into a
 /// `Principal`, mapping a malformed id to a clear parse error rather than
@@ -70,29 +97,24 @@ fn parse_principal(text: &str) -> Result<Principal, AppError> {
         .map_err(|e| AppError::Parse(format!("invalid canister id \"{text}\": {e}")))
 }
 
-/// Runs `sql` against `canister` in `environment` and maps the decoded
-/// result straight through to the frontend DTO. The one place every
-/// query-shaped command below funnels through: get-agent, run-query,
-/// map-to-dto, in that order, every time.
+/// Runs `sql` against `canister` in `environment`, as `identity_ref`, and
+/// maps the decoded result straight through to the frontend DTO. The one
+/// place every query-shaped command below funnels through: get-agent,
+/// run-query, map-to-dto, in that order, every time.
+///
+/// Takes an already-resolved `identity_ref` rather than looking one up
+/// itself: every caller has just resolved the frontend-supplied identity
+/// name via `find_identity`, and doing that resolution once per command
+/// (instead of once per `query_dto` call, of which `fetch_rows` makes two)
+/// avoids reporting the same lookup failure from two different call sites
+/// with two different chances to drift out of sync.
 async fn query_dto(
     pool: &AgentPool,
     environment: &Environment,
+    identity_ref: &IdentityRef,
     canister: Principal,
     sql: &str,
 ) -> Result<ResultDto, AppError> {
-    // Task 5 re-keyed `AgentPool::get` by `(environment, identity)`, so a
-    // caller must now supply the identity explicitly. This still always
-    // uses the environment's *default* identity — Task 6 threads the
-    // user-selected identity through the command surface (and relocates
-    // the "no usable identity" message here, where the selection will be
-    // known); this is the minimal change needed to keep the build green
-    // until then.
-    let identity_ref = environment.identity.as_ref().ok_or_else(|| {
-        AppError::Agent(format!(
-            "no usable identity is available for environment \"{}\"",
-            environment.name
-        ))
-    })?;
     let agent = pool.get(environment, identity_ref).await?;
     let result = run_query(&agent, canister, sql, identity_ref.name.as_str()).await?;
     result_to_dto(result)
@@ -107,6 +129,32 @@ async fn query_dto(
 #[tauri::command]
 pub fn list_environments(project: State<'_, Project>) -> Project {
     project.inner().clone()
+}
+
+/// Loads the named identity now, so a failure surfaces when the user selects
+/// it rather than on their first query.
+///
+/// This exports eagerly rather than just recording the choice as state: it
+/// resolves the identity and calls `pool.get`, which is what actually loads
+/// the key material (from disk, or via a keyring export that may prompt the
+/// OS Keychain) and builds the agent. A lazy version — one that only
+/// remembered the selected name — would defer that first key-load (and any
+/// Keychain prompt) to whatever query the user happens to run first, which
+/// would surface the same failure three clicks later, at a moment that
+/// doesn't obviously connect back to "I just switched identities". Doing it
+/// here, synchronously with the selection, is the entire point of this
+/// command existing as more than a plain setter.
+#[tauri::command]
+pub async fn select_identity(
+    env: String,
+    identity: String,
+    project: State<'_, Project>,
+    pool: State<'_, AgentPool>,
+) -> Result<(), AppError> {
+    let environment = find_environment(&project, &env)?;
+    let identity_ref = find_identity(environment, &identity)?;
+    pool.get(environment, identity_ref).await?;
+    Ok(())
 }
 
 /// Walks the canic-orchestrated fleet rooted at each of `env`'s named
@@ -124,6 +172,7 @@ pub fn list_environments(project: State<'_, Project>) -> Project {
 #[tauri::command]
 pub async fn canister_tree(
     env: String,
+    identity: String,
     project: State<'_, Project>,
     pool: State<'_, AgentPool>,
 ) -> Result<Vec<TreeNode>, AppError> {
@@ -135,14 +184,7 @@ pub async fn canister_tree(
         )));
     }
 
-    // See `query_dto`'s comment: same temporary "use the environment's
-    // default identity" shim, pending Task 6's threading.
-    let identity_ref = environment.identity.as_ref().ok_or_else(|| {
-        AppError::Agent(format!(
-            "no usable identity is available for environment \"{}\"",
-            environment.name
-        ))
-    })?;
+    let identity_ref = find_identity(environment, &identity)?;
     let agent = pool.get(environment, identity_ref).await?;
     let mut forest = Vec::with_capacity(environment.canisters.len());
     for named in &environment.canisters {
@@ -158,12 +200,14 @@ pub async fn canister_tree(
 pub async fn list_tables(
     env: String,
     canister: String,
+    identity: String,
     project: State<'_, Project>,
     pool: State<'_, AgentPool>,
 ) -> Result<ResultDto, AppError> {
     let environment = find_environment(&project, &env)?;
+    let identity_ref = find_identity(environment, &identity)?;
     let canister_id = parse_principal(&canister)?;
-    query_dto(&pool, environment, canister_id, "SHOW ENTITIES").await
+    query_dto(&pool, environment, identity_ref, canister_id, "SHOW ENTITIES").await
 }
 
 /// `DESCRIBE <entity>` against `canister`.
@@ -172,13 +216,15 @@ pub async fn describe_table(
     env: String,
     canister: String,
     entity: String,
+    identity: String,
     project: State<'_, Project>,
     pool: State<'_, AgentPool>,
 ) -> Result<ResultDto, AppError> {
     let environment = find_environment(&project, &env)?;
+    let identity_ref = find_identity(environment, &identity)?;
     let canister_id = parse_principal(&canister)?;
     let sql = format!("DESCRIBE {entity}");
-    query_dto(&pool, environment, canister_id, &sql).await
+    query_dto(&pool, environment, identity_ref, canister_id, &sql).await
 }
 
 /// Pages `entity`'s rows, `DEFAULT_ROW_LIMIT` at a time, starting at
@@ -224,14 +270,16 @@ pub async fn fetch_rows(
     canister: String,
     entity: String,
     offset: u32,
+    identity: String,
     project: State<'_, Project>,
     pool: State<'_, AgentPool>,
 ) -> Result<ResultDto, AppError> {
     let environment = find_environment(&project, &env)?;
+    let identity_ref = find_identity(environment, &identity)?;
     let canister_id = parse_principal(&canister)?;
 
     let describe_sql = format!("DESCRIBE {entity}");
-    let sql = match query_dto(&pool, environment, canister_id, &describe_sql).await {
+    let sql = match query_dto(&pool, environment, identity_ref, canister_id, &describe_sql).await {
         Ok(ResultDto::Schema(schema)) => {
             let pk_columns: Vec<String> = schema
                 .columns
@@ -250,7 +298,7 @@ pub async fn fetch_rows(
         Err(other) => return Err(other),
     };
 
-    query_dto(&pool, environment, canister_id, &sql).await
+    query_dto(&pool, environment, identity_ref, canister_id, &sql).await
 }
 
 /// Runs a user-typed SQL statement, classifying it before any network
@@ -263,10 +311,12 @@ pub async fn run_sql(
     env: String,
     canister: String,
     sql: String,
+    identity: String,
     project: State<'_, Project>,
     pool: State<'_, AgentPool>,
 ) -> Result<SqlRunDto, AppError> {
     let environment = find_environment(&project, &env)?;
+    let identity_ref = find_identity(environment, &identity)?;
     let canister_id = parse_principal(&canister)?;
 
     // Classify first: a rejected statement returns immediately, before the
@@ -274,10 +324,39 @@ pub async fn run_sql(
     let statement = classify(&sql)?;
     let limited = apply_default_limit(&sql, statement, DEFAULT_ROW_LIMIT);
 
-    let result = query_dto(&pool, environment, canister_id, &limited.sql).await?;
+    let result = query_dto(&pool, environment, identity_ref, canister_id, &limited.sql).await?;
     Ok(SqlRunDto {
         result,
         limit_appended: limited.limit_appended,
         order_by_missing: limited.order_by_missing,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find_identity_reports_a_missing_name_rather_than_panicking() {
+        let env = Environment {
+            name: "local".into(),
+            replica_url: "http://127.0.0.1:4943".into(),
+            canisters: Vec::new(),
+            identity: None,
+            identities: vec![IdentityRef::new(
+                "alice".into(),
+                "secp256k1".into(),
+                "keyring".into(),
+                None,
+            )],
+            artifacts: Vec::new(),
+        };
+
+        assert_eq!(find_identity(&env, "alice").unwrap().name, "alice");
+
+        let error = find_identity(&env, "nope").expect_err("should fail");
+        let text = error.explanation();
+        assert!(text.contains("nope"), "should name the identity: {text}");
+        assert!(text.contains("local"), "should name the environment: {text}");
+    }
 }
