@@ -19,13 +19,18 @@ const usableIdentity: IdentityRef = {
 };
 
 // A resolve-on-demand promise so the test controls exactly when each
-// `listTables` call settles, independent of call order.
+// `listTables` call settles, independent of call order. `reject` is included
+// too (unused by the earlier tests below, which only ever resolve) so the
+// same helper covers a call that's expected to fail, like a timed-out
+// `selectIdentity` export.
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((res) => {
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
     resolve = res;
+    reject = rej;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 function entity(name: string): EntityDto {
@@ -106,6 +111,57 @@ test("shows an explicit empty state when discovery finds no environments and no 
   render(<App />);
 
   await screen.findByText(/no environments were found/i);
+});
+
+test("shows an explicit banner when no identity is usable, rather than a silently blank app", async () => {
+  // Every identity in the store is unusable (here: only `anonymous`) — the
+  // exact case the show-unusable-with-reason design exists for.
+  // `initialIdentityFor` returns `null` for this environment, every
+  // cascading effect early-returns on that `null`, and previously nothing
+  // told the user why the app looked empty (`identityError` is only ever
+  // set by a *failed* `selectIdentity` call, never by there being nothing
+  // to select in the first place).
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/project",
+    error: null,
+    environments: [
+      {
+        name: "local",
+        replicaUrl: "http://localhost",
+        canisters: [{ name: "root", id: "root-id" }],
+        identity: null,
+        identities: [
+          {
+            name: "anonymous",
+            algorithm: "secp256k1",
+            kind: "anonymous",
+            pemPath: null,
+            unusableReason:
+              "the anonymous identity cannot be used: icydb's SQL endpoints are controller-gated",
+          },
+        ],
+        artifacts: [],
+      },
+    ],
+  });
+
+  // `canisterTree` isn't stubbed for this test (there's nothing it could
+  // sensibly be called with), so its call history is cleared here rather
+  // than trusting no earlier test in this file left calls on the same
+  // module-level mock — `vi.mock` calls aren't reset between tests
+  // automatically in this project's vitest config.
+  vi.mocked(commands.canisterTree).mockClear();
+
+  render(<App />);
+
+  // Matched against the banner `<p>` specifically: the (disabled) `<option>`
+  // in `IdentitySelector` also renders `unusableReason`, so an unscoped
+  // `/controller-gated/` query would match twice.
+  const banner = await screen.findByText(/no usable identity is available/i);
+  expect(banner.textContent).toMatch(/controller-gated/);
+  // Never silently blank: nothing should even attempt to query with a null
+  // identity.
+  expect(commands.canisterTree).not.toHaveBeenCalled();
 });
 
 test("shows the discovery error rather than a silent blank pane", async () => {
@@ -229,4 +285,69 @@ test("switching environments re-derives the identity for the new environment", a
   // obscurely at the backend or (worse) silently resolve to the wrong
   // identity if a same-named one happened to exist there.
   expect(commands.canisterTree).not.toHaveBeenCalledWith("ic", "alice");
+});
+
+test("switching identity before a slow selectIdentity call resolves does not resurrect its error", async () => {
+  // Three identities so the initial fallback ("alice", first in the list)
+  // is distinct from both identities this test actually drives through
+  // `selectIdentity`. "slow-password" stands in for a password-protected
+  // identity whose eager export can take up to 20s (`EXPORT_TIMEOUT` in
+  // `src-tauri/src/agent/export.rs`) before it ultimately fails.
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/project",
+    error: null,
+    environments: [
+      {
+        name: "local",
+        replicaUrl: "http://localhost",
+        canisters: [{ name: "root", id: "root-id" }],
+        identity: null,
+        identities: [
+          { name: "alice", algorithm: "secp256k1", kind: "keyring", pemPath: null, unusableReason: null },
+          { name: "slow-password", algorithm: "secp256k1", kind: "pem", pemPath: "/x", unusableReason: null },
+          { name: "bob", algorithm: "secp256k1", kind: "keyring", pemPath: null, unusableReason: null },
+        ],
+        artifacts: [],
+      },
+    ],
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([]);
+
+  const forSlow = deferred<void>();
+  const forBob = deferred<void>();
+  vi.mocked(commands.selectIdentity).mockImplementation((_env, identity) => {
+    if (identity === "slow-password") return forSlow.promise;
+    if (identity === "bob") return forBob.promise;
+    throw new Error(`unexpected identity ${identity}`);
+  });
+
+  render(<App />);
+
+  // Wait for the identity selector to actually render (it depends on the
+  // async `listEnvironments` resolving first) before driving it.
+  await screen.findByDisplayValue("local");
+  const identitySelect = screen.getAllByRole("combobox")[1];
+
+  // Pick the slow identity, then — before it resolves — pick a working one.
+  fireEvent.change(identitySelect, { target: { value: "slow-password" } });
+  fireEvent.change(identitySelect, { target: { value: "bob" } });
+
+  // The later (current) selection succeeds first.
+  forBob.resolve();
+  await waitFor(() => {
+    expect(identitySelect).toHaveValue("bob");
+  });
+
+  // The abandoned selection's export finally times out and rejects. Without
+  // a staleness guard this would still call `setIdentityError`, planting a
+  // banner about "slow-password" even though the session has long since
+  // moved on to "bob".
+  forSlow.reject({
+    kind: "unknown",
+    explanation: "`icp identity export slow-password` timed out after 20s",
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  expect(screen.queryByText(/timed out/i)).toBeNull();
+  expect(identitySelect).toHaveValue("bob");
 });

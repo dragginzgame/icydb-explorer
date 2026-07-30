@@ -57,6 +57,23 @@ function initialIdentityFor(environment: Environment): string | null {
   return fallback ? fallback.name : null;
 }
 
+// Explains why `initialIdentityFor` came back `null` for `environment` — a
+// store holding only `anonymous`, only unrecognised kinds, or no identities
+// at all. This is exactly the case the show-unusable-with-reason design
+// exists for (`unusableReason` on every `IdentityRef`), so when there is
+// truly nothing selectable, that design should still be the thing the user
+// sees, not a blank window with no explanation.
+function noUsableIdentitySummary(environment: Environment): string {
+  if (environment.identities.length === 0) {
+    return "No identities were found in the icp identity store. Run `icp identity new` to create one.";
+  }
+  const reasons = environment.identities
+    .filter((candidate) => candidate.unusableReason !== null)
+    .map((candidate) => `${candidate.name} (${candidate.unusableReason})`)
+    .join("; ");
+  return `No usable identity is available for this environment. ${reasons}`;
+}
+
 function App() {
   const [environments, setEnvironments] = useState<Environment[]>([]);
   const [environmentsError, setEnvironmentsError] = useState<AppErrorDto | null>(null);
@@ -328,15 +345,34 @@ function App() {
   // left in place rather than the UI optimistically switching and then
   // reporting an error against an identity the backend never actually
   // accepted.
+  //
+  // A keyring identity's eager export can take up to 20s (see
+  // `EXPORT_TIMEOUT` in `src-tauri/src/agent/export.rs`) before it fails, so
+  // this — unlike every other async path in this file — had no staleness
+  // guard: picking a password-protected identity, then picking a working one
+  // before the first call resolves, would let the working selection succeed
+  // and then, ~20s later, the first (abandoned) selection's rejection would
+  // still fire `setIdentityError`, planting a persistent error banner about
+  // an identity the user isn't even using anymore. `identityRequestRef`
+  // tracks the *latest requested* selection — a fresh object per call, so a
+  // `.then`/`.catch` firing for any request other than the most recent one
+  // (by reference identity) is dropped, same idea as `selectionRef` above,
+  // scoped to just this one in-flight request rather than the whole
+  // env/canister/entity/identity tuple.
+  const identityRequestRef = useRef<{ env: string; name: string } | null>(null);
   const handleSelectIdentity = useCallback(
     (name: string) => {
       if (!env) return;
+      const request = { env, name };
+      identityRequestRef.current = request;
       selectIdentity(env, name)
         .then(() => {
+          if (identityRequestRef.current !== request) return;
           setIdentityError(null);
           setIdentity(name);
         })
         .catch((error: AppErrorDto) => {
+          if (identityRequestRef.current !== request) return;
           setIdentityError(error);
         });
     },
@@ -389,6 +425,22 @@ function App() {
             No environments were found in this project&apos;s <code>.icp/</code> layout. Deploy
             it (e.g. <code>icp network start</code>, <code>icp canister create</code>,{" "}
             <code>icp canister install</code>) and relaunch this app.
+          </p>
+        </div>
+      )}
+
+      {/* Another explicit empty state, of the same class as the one above:
+          `identity === null` means `initialIdentityFor` found nothing
+          selectable for `currentEnvironment` (a store holding only
+          `anonymous`, only unrecognised kinds, or nothing at all). Every
+          effect below early-returns on a null identity, so without this the
+          user would see empty panes with no explanation at all —
+          `identityError` is only ever set by a *failed* `selectIdentity`
+          call, never by there being nothing to select in the first place. */}
+      {environmentsLoaded && currentEnvironment && identity === null && (
+        <div className="p-2">
+          <p className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
+            {noUsableIdentitySummary(currentEnvironment)}
           </p>
         </div>
       )}
