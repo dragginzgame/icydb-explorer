@@ -12,10 +12,12 @@ pub enum Statement {
 /// Classify a SQL statement by its leading verb.
 ///
 /// This is a UX affordance, not a security control: the actual read-only
-/// boundary is the target canister's own `readonly = true` configuration,
-/// which means write and DDL endpoints are never even generated. This
-/// function exists so a user who types an unsupported statement gets an
-/// immediate, clear message instead of a confusing round-trip failure.
+/// boundary is that this app calls only `icydb_query`, a query method whose
+/// dispatcher rejects mutation statements, and query calls cannot persist
+/// canister state — see README.md's "Read-only, and where that guarantee
+/// actually lives" for the full explanation. This function exists so a user
+/// who types an unsupported statement gets an immediate, clear message
+/// instead of a confusing round-trip failure.
 pub fn classify(sql: &str) -> Result<Statement, AppError> {
     let verb = sql
         .split_whitespace()

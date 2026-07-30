@@ -89,12 +89,14 @@ async fn show_entities_lists_the_fixture_entities() {
 #[ignore = "requires a local replica with the fixture canister installed"]
 async fn select_returns_typed_values_for_every_seeded_column() {
     let (agent, canister) = connect().await;
-    // Was `"SELECT * FROM DemoRow LIMIT 10"` (no `ORDER BY`) — that SQL is
+    // Was `"SELECT * FROM demo_row LIMIT 10"` (no `ORDER BY`) — that SQL is
     // rejected outright by icydb 0.202.1's query planner
     // (`PolicyPlanError::UnorderedPagination`: pagination requires an
     // explicit ordering), confirmed live while first writing this test (see
     // the task report). Updated per the coordinator's follow-up now that
-    // the finding is confirmed and folded into the plan.
+    // the finding is confirmed and folded into the plan. (The entity was
+    // named `demo_row` at the time; the 0.215.5 bump forced the rename to
+    // `DemoRow` — see this file's module doc comment.)
     let result = run_query(
         &agent,
         canister,
@@ -119,6 +121,23 @@ async fn select_returns_typed_values_for_every_seeded_column() {
             ] {
                 assert!(kinds.contains(&expected), "missing {expected} in {kinds:?}");
             }
+            // `timestamps(created_at(...), updated_at(...))` in
+            // `fixture-schema/src/lib.rs` was restored deliberately on this
+            // bump — 0.202.1 generated these columns unconditionally, and
+            // 0.215.5 made them opt-in, so silently dropping the
+            // `timestamps(...)` key would change `SELECT *`'s column set
+            // without any other test noticing. Assert both names are still
+            // present so a future bump that drops that key fails here.
+            assert!(
+                rows.columns.iter().any(|c| c == "created_at"),
+                "missing created_at in {:?}",
+                rows.columns
+            );
+            assert!(
+                rows.columns.iter().any(|c| c == "updated_at"),
+                "missing updated_at in {:?}",
+                rows.columns
+            );
         }
         other => panic!("expected Rows, got {other:?}"),
     }
@@ -214,7 +233,7 @@ async fn select_with_limit_and_no_order_by_is_rejected() {
 /// detached canister (`icp canister create -n local --detached`, `icp
 /// canister install <id> -n local --wasm <path>`) so it needs no `icp.yaml`
 /// entry of its own. Verified live while fixing the original finding:
-/// `SHOW ENTITIES` against it fails with error code 183
+/// `SHOW ENTITIES` against it fails with error code 179
 /// (`RUNTIME_BOUNDARY_SQL_INTROSPECTION_DISABLED`) via a plain `icp
 /// canister call`, while an explicitly ordered `SELECT` succeeds.
 #[tokio::test]

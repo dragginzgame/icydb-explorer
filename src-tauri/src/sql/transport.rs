@@ -74,7 +74,7 @@ pub async fn run_query(
 /// **Verified live against a real introspection-disabled canister** (a
 /// second fixture instance built with `ICYDB_BUILD_TARGET=ic`, so
 /// `introspection.ic = false` applies — see
-/// `tests/integration.rs::select_still_works_when_introspection_is_disabled`):
+/// `tests/integration.rs::explicit_order_by_and_limit_still_works_when_introspection_is_disabled`):
 /// this is genuinely how `SqlIntrospectionDisabled` reaches this app, and
 /// `map_reject_message`'s `"SqlIntrospectionDisabled"` string match (below)
 /// does **not** fire for it. `icydb_query` returns a well-formed, successful
@@ -216,7 +216,7 @@ mod tests {
     /// This is the actual live path `SqlIntrospectionDisabled` reaches this
     /// app through — verified against a real introspection-disabled
     /// canister (see `map_icydb_error`'s doc comment and
-    /// `tests/integration.rs::select_still_works_when_introspection_is_disabled`).
+    /// `tests/integration.rs::explicit_order_by_and_limit_still_works_when_introspection_is_disabled`).
     /// `map_reject_message`'s string-based classification above does not
     /// fire for it in practice; this is the one that matters.
     #[test]

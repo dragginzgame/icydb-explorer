@@ -169,35 +169,47 @@ least a few of these.
    to opt in explicitly for mainnet schema browsing (and this app's row
    browsing) to be available at all.
 
-9. **`icydb` is pinned exactly, in exactly one place.** The workspace root
-   `Cargo.toml`'s `[workspace.dependencies]` declares
-   `icydb = { version = "=0.215.5", features = ["sql-explain"] }`; every
-   crate in this workspace (`src-tauri`, `fixture`, `fixture-schema`)
-   depends on it via `icydb = { workspace = true }`, so there is exactly one
-   version string to bump, not one per crate that could silently drift out
-   of sync. This matters because `SqlQueryResult`/`OutputValue` shapes are
-   version-coupled and icydb moves fast. `src-tauri/src/view/` is the one
-   module that translates icydb's types into this app's stable frontend
-   DTOs — it is the only module that should need to change on a version
-   bump, which is also why the frontend
+9. **`icydb` is pinned exactly, in two places that must move together.** The
+   workspace root `Cargo.toml`'s `[workspace.dependencies]` declares both
+   `icydb = { version = "=0.215.5", features = ["sql-explain"] }` and
+   `icydb-model = "=0.215.5"`; every crate in this workspace (`src-tauri`,
+   `fixture`, `fixture-schema`) that needs either depends on it via
+   `{ workspace = true }`. These two version strings must be bumped in
+   lockstep: `icydb-model-macros` emits `::icydb::__macro::...` paths, so a
+   mismatch between the two pins produces macro-expansion errors far from
+   the actual cause. This matters because `SqlQueryResult`/`OutputValue`
+   shapes are version-coupled and icydb moves fast. `src-tauri/src/view/` is
+   the one module that translates icydb's types into this app's stable
+   frontend DTOs — it is the only module that should need to change on a
+   version bump, which is also why the frontend
    never sees an icydb type directly.
 
    **What the `0.202.1` → `0.215.5` bump (thirteen minor versions) actually
-   cost:** exactly two compile errors in the app itself, one at each
-   designated boundary — `error[E0004]` on a non-exhaustive `SqlQueryResult`
-   match in `src-tauri/src/view/mod.rs`, and TypeScript's `never`-typed
-   exhaustiveness guard in `src/App.tsx` — both naming precisely what a new
-   `SqlQueryResult` variant (`ShowConstraints`) required. That's the
-   version-firewall design working as intended. The cost landed almost
-   entirely on the test fixture instead: `icydb::design` relocated to a new
-   `icydb-model` crate, the `#[entity]`/`#[store]`/`field!` macro grammar
-   changed shape, managed `created_at`/`updated_at` timestamps went from
-   automatic to opt-in, `db!()` became fallible, and `DbSession::insert`
-   was replaced by a typed-adapter write path — five separate migration
-   steps in `fixture-schema/` and `fixture/`, none of them touching
-   `src-tauri/`. One consequence of the macro grammar change worth flagging
-   explicitly: `#[entity]` no longer accepts an entity-level `name`, so the
-   fixture's entities are now identified by their Rust struct names
+   cost:** five bump-forced compile errors, not two, and four of them landed
+   inside `src-tauri/src/view/` itself. Two are in production code, one at
+   each designated boundary — `error[E0004]` on a non-exhaustive
+   `SqlQueryResult` match in `src-tauri/src/view/mod.rs`, and TypeScript's
+   `never`-typed exhaustiveness guard in `src/App.tsx` — both naming
+   precisely what a new `SqlQueryResult` variant (`ShowConstraints`)
+   required. The other three are in `src-tauri/src/view/`'s own test
+   helpers: the `Ddl` test literal in `view/mod.rs` needed a new
+   `constraint_validation: Option<..>` field added, and two cases in
+   `view/value.rs`'s exhaustive `OutputValue` test had to move off the
+   removed `Date::new` and the now-fallible `Ulid::generate()`. Every one of
+   these five landed inside `src-tauri/src/view/` (the module designated as
+   the version firewall) or `src/App.tsx`'s matching exhaustiveness guard —
+   that's the version-firewall design working as intended, not a claim that
+   the fixture was untouched.
+
+   The remaining cost landed on the test fixture: `icydb::design` relocated
+   to a new `icydb-model` crate, the `#[entity]`/`#[store]` macro grammar
+   and its `field(...)` key shape changed, managed `created_at`/`updated_at`
+   timestamps went from automatic to opt-in, `db!()` became fallible, and
+   `DbSession::insert` was replaced by a typed-adapter write path — five
+   separate migration steps in `fixture-schema/` and `fixture/`. One
+   consequence of the macro grammar change worth flagging explicitly:
+   `#[entity]` no longer accepts an entity-level `name`, so the fixture's
+   entities are now identified by their Rust struct names
    (`DemoRow`, `DemoChild`) rather than the snake_case names
    (`demo_row`, `demo_child`) they used to declare — see the note under
    [Testing](#testing) about what that changed for this repo's own
@@ -371,7 +383,7 @@ query-only regardless of how the canister is configured.
 ## Testing
 
 ```bash
-# Rust unit tests (97 as of this writing) — no replica needed.
+# Rust unit tests (100 as of this writing) — no replica needed.
 cargo test -p icydb-explorer
 
 # Rust integration tests against a live replica — requires the fixture

@@ -9,8 +9,12 @@
 //! `[dependencies]` and `[build-dependencies]` there) is what makes that
 //! registration visible to `fixture/build.rs`.
 //!
-//! `demo_row` and `demo_child` are not a model of any real domain — they
-//! exist to exercise every `OutputValue` variant icydb can render.
+//! `DemoRow` and `DemoChild` are not a model of any real domain — they
+//! exist to exercise every `OutputValue` variant icydb can render. In
+//! 0.215.5, `#[entity]` no longer accepts an entity-level `name`, so an
+//! entity's SQL-visible name is its Rust struct identifier; see README.md's
+//! pin note (item 9) for the upgrade note on what that changed for this
+//! repo's own SQL literals.
 
 use icydb_model::prelude::*;
 
@@ -116,7 +120,7 @@ impl Default for DemoRow {
 /// DemoChild
 ///
 /// `parent` holds a `DemoRow` id as a plain `Ulid` (not an icydb `rel`
-/// relation — `rel` fields must have an ident ending in `_id`, which `parent`
+/// relation — `rel` fields must have a `name` ending in `_id`, which `parent`
 /// deliberately doesn't, to keep the brief's literal field name), with a
 /// named lookup index so the SQL surface has more than one table to join
 /// against.

@@ -11,13 +11,21 @@
 //! ergonomic whole-entity insert directly on `DbSession`
 //! (`icydb-0.202.1/src/db/session/write.rs:184`), but no such method exists
 //! anywhere in 0.215.5's `icydb`/`icydb-core` surface. The replacement,
-//! opted into via `typed_adapters = true` on both `#[entity]` declarations in
-//! `fixture-schema/src/lib.rs`, is a generated bind → encode → execute →
-//! decode pipeline (`icydb-model-macros-0.215.5/src/node/entity.rs:1122-1244`):
+//! opted into via `typed_adapters = true`, is a generated bind → encode →
+//! execute → decode pipeline
+//! (`icydb-model-macros-0.215.5/src/node/entity.rs:1122-1244`):
 //! `<Entity>::typed_binding`, the generated `<Entity>Insert` struct's
 //! `TypedWriteAdapter::encode_write`, `DbSession::execute_trusted_typed_write`,
 //! and `DbSession::typed_mutation_row` + `TypedRowAdapter::decode_row` to read
 //! the inserted row (including its macro-generated `id`) back out.
+//!
+//! `typed_adapters = true` is set on three declarations in
+//! `fixture-schema/src/lib.rs`, not two: both `#[entity]`s (`DemoRow`,
+//! `DemoChild`) *and* the `#[list] DemoTags` declaration. `DemoTags` needs
+//! it too — `list_adapter_tokens`
+//! (`icydb-model-macros-0.215.5/src/node/typed_adapter.rs:223`) only emits a
+//! `List` node's `TypedAdapter` impl when the list itself opts in, and
+//! `DemoRowInsert.tags` needs that impl to encode.
 
 use icydb::db::{
     DbSession, DynamicMutationResult, TypedBindingError, TypedEntityAdapter, TypedEntityBinding,

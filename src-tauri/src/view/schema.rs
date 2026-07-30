@@ -69,8 +69,7 @@ pub(super) fn memory_catalog_to_dto(memory: &MemoryCatalogDescription) -> Memory
 
 /// Reads an `EntityConstraintDescription` through its accessors — its fields
 /// are private, like every other icydb description type.
-#[must_use]
-pub fn constraint_to_dto(constraint: &EntityConstraintDescription) -> ConstraintDto {
+pub(super) fn constraint_to_dto(constraint: &EntityConstraintDescription) -> ConstraintDto {
     ConstraintDto {
         name: constraint.name().to_string(),
         kind: constraint.kind().to_string(),

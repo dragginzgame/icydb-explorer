@@ -242,11 +242,14 @@ pub async fn describe_table(
 /// LIMIT {DEFAULT_ROW_LIMIT} OFFSET {offset}")` the task brief specifies,
 /// and that deviation is deliberate, not an oversight — see the task
 /// report for the full write-up. Confirmed live against the fixture
-/// canister: icydb 0.202.1's query planner rejects *any* `LIMIT`/`OFFSET`
+/// canister: icydb's query planner rejects *any* `LIMIT`/`OFFSET`
 /// window that has no explicit `ORDER BY`
 /// (`PolicyPlanError::UnorderedPagination`, diagnostic code
 /// `QUERY_UNORDERED_PAGINATION`) — so the brief's literal SQL fails on
-/// every real call, for every entity, not just this fixture's. Since
+/// every real call, for every entity, not just this fixture's. Re-confirmed
+/// under 0.215.5 by
+/// `tests/integration.rs::select_with_limit_and_no_order_by_is_rejected`,
+/// which asserts the `E5` rejection directly. Since
 /// `fetch_rows` isn't handed a column to order by, this looks up the
 /// entity's primary-key column(s) via `DESCRIBE` first (icydb requires
 /// every entity to declare one) and orders by those via `sql::rows_sql`
