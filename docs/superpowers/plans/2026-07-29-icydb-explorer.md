@@ -1203,7 +1203,36 @@ struct SqlQueryEnvelope {
 `run_query` still returns `SqlQueryResult`, so this unwrap is invisible to callers
 and Task 10's tests are unaffected.
 
-Use `agent.query(...)`, never `agent.update(...)` — the Global Constraints forbid update calls, and `icydb_query` is declared as a query method. `map_agent_error` extracts the reject message from `AgentError` and delegates to `map_reject_message`.
+Use `agent.query(...)`, never `agent.update(...)` — the Global Constraints forbid
+update calls, and `icydb_query` is declared as a query method.
+
+`map_agent_error` extracts the reject message and delegates to
+`map_reject_message`. **It must match both reject variants:**
+
+```rust
+fn map_agent_error(error: &AgentError, canister: &str, identity: &str) -> AppError {
+    match error {
+        AgentError::CertifiedReject { reject, .. }
+        | AgentError::UncertifiedReject { reject, .. } => {
+            map_reject_message(&reject.reject_message, canister, identity)
+        }
+        other => AppError::Agent(other.to_string()),
+    }
+}
+```
+
+Matching only `CertifiedReject` is the trap here: query calls are not certified by
+default, so a rejected `icydb_query` normally arrives as `UncertifiedReject`. Miss
+that arm and the `NoSqlSurface` detection — the single most valuable error message in
+this app, and the one most users hit first — silently never fires.
+
+Verified ic-agent 0.48.1 surface, so no need to re-check:
+
+- `agent.query<S: Into<String>>(&Principal, S) -> QueryBuilder`
+- `QueryBuilder::with_arg<A: Into<Vec<u8>>>(A) -> Self`
+- `QueryBuilder::call() -> Result<Vec<u8>, AgentError>`, async
+- `AgentError::{CertifiedReject, UncertifiedReject} { reject: RejectResponse, .. }`,
+  with the text at `reject.reject_message`
 
 - [ ] **Step 6: Verify the suite passes**
 
