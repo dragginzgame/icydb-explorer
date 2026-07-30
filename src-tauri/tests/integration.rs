@@ -11,7 +11,7 @@ use ic_agent::identity::Secp256k1Identity;
 use ic_agent::Agent;
 
 use icydb_explorer_lib::error::AppError;
-use icydb_explorer_lib::sql::run_query;
+use icydb_explorer_lib::sql::{run_query, unordered_rows_sql};
 use icydb_explorer_lib::view::{result_to_dto, ResultDto};
 
 /// Builds a live `Agent` against `ICYDB_EXPLORER_TEST_URL`, authenticated as
@@ -157,6 +157,65 @@ async fn select_with_limit_and_no_order_by_is_rejected() {
         unordered.is_err(),
         "expected icydb to reject LIMIT/OFFSET without ORDER BY, got {unordered:?}"
     );
+}
+
+/// Confirms `commands::fetch_rows`'s introspection-disabled fallback
+/// (Important 3 of the final whole-branch review) against a **real
+/// introspection-disabled canister**, not just the pure-function unit
+/// tests in `sql::rows`.
+///
+/// The committed fixture canister is built with `ICYDB_BUILD_TARGET=local`
+/// (see README item 4), so `introspection.local = true` applies and this
+/// scenario can't be reproduced against it. This test instead points at a
+/// second, separately-deployed instance of the exact same fixture wasm,
+/// rebuilt with `ICYDB_BUILD_TARGET=ic` — which flips it to
+/// `introspection.ic = false` per `fixture/icydb.toml` — and installed as a
+/// detached canister (`icp canister create -n local --detached`, `icp
+/// canister install <id> -n local --wasm <path>`) so it needs no `icp.yaml`
+/// entry of its own. Verified live while fixing this finding:
+/// `SHOW ENTITIES` against it fails with error code 183
+/// (`RUNTIME_BOUNDARY_SQL_INTROSPECTION_DISABLED`) via a plain `icp
+/// canister call`, while `SELECT * FROM demo_row` succeeds — exactly the
+/// asymmetry `commands::fetch_rows` must degrade gracefully around instead
+/// of propagating the `DESCRIBE`'s introspection error before ever
+/// attempting a `SELECT`.
+#[tokio::test]
+#[ignore = "requires a second fixture instance built with ICYDB_BUILD_TARGET=ic and deployed \
+            detached (see this test's doc comment); set \
+            ICYDB_EXPLORER_INTROSPECTION_DISABLED_CANISTER to its id"]
+async fn select_still_works_when_introspection_is_disabled() {
+    let (agent, canister) = connect().await;
+    let canister_text = std::env::var("ICYDB_EXPLORER_INTROSPECTION_DISABLED_CANISTER")
+        .map(|id| Principal::from_text(id.trim()).expect("should be a valid principal"))
+        .unwrap_or(canister);
+
+    // DESCRIBE (what fetch_rows uses to derive an ORDER BY) fails with
+    // exactly the error commands::fetch_rows catches and falls back on.
+    let describe = run_query(
+        &agent,
+        canister_text,
+        "DESCRIBE demo_row",
+        "icydb-explorer-test",
+    )
+    .await;
+    assert!(
+        matches!(describe, Err(AppError::IntrospectionDisabled)),
+        "expected IntrospectionDisabled, got {describe:?}"
+    );
+
+    // The fallback SQL fetch_rows switches to on that error still succeeds
+    // and returns real rows — row browsing survives introspection being
+    // off, exactly the behavior the finding required.
+    let sql = unordered_rows_sql("demo_row");
+    let result = run_query(&agent, canister_text, &sql, "icydb-explorer-test")
+        .await
+        .expect("unordered SELECT should succeed even with introspection disabled");
+    match result_to_dto(result).expect("decode should succeed") {
+        ResultDto::Rows(rows) => {
+            assert!(!rows.rows.is_empty(), "fixture should be seeded");
+        }
+        other => panic!("expected Rows, got {other:?}"),
+    }
 }
 
 /// The negative counterpart to the four tests above: a canister that never

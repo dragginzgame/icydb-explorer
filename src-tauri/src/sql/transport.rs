@@ -48,13 +48,47 @@ pub async fn run_query(
         .call()
         .await
         .map_err(|e| {
-            map_agent_error(&e, &canister.to_text(), &identity_descriptor(agent, identity))
+            map_agent_error(
+                &e,
+                &canister.to_text(),
+                &identity_descriptor(agent, identity),
+            )
         })?;
 
     Decode!(bytes.as_slice(), Result<SqlQueryEnvelope, icydb::Error>)
         .map_err(|e| AppError::Parse(e.to_string()))?
         .map(|envelope| envelope.result)
-        .map_err(|e| AppError::IcyDb { code: format!("{e:?}"), message: e.to_string() })
+        .map_err(map_icydb_error)
+}
+
+/// Classifies a decoded `icydb::Error` (the `Err` arm of the
+/// `Result<SqlQueryEnvelope, icydb::Error>` this canister's `icydb_query`
+/// returns) into an `AppError`.
+///
+/// **Verified live against a real introspection-disabled canister** (a
+/// second fixture instance built with `ICYDB_BUILD_TARGET=ic`, so
+/// `introspection.ic = false` applies — see
+/// `tests/integration.rs::select_still_works_when_introspection_is_disabled`):
+/// this is genuinely how `SqlIntrospectionDisabled` reaches this app, and
+/// `map_reject_message`'s `"SqlIntrospectionDisabled"` string match (below)
+/// does **not** fire for it. `icydb_query` returns a well-formed, successful
+/// reply whose Candid-decoded body is `Err(icydb::Error { code: 183, .. })`
+/// — a query-level rejection carried in the *value*, not an agent-level
+/// reject/trap — so it never reaches `map_agent_error`/`map_reject_message`
+/// at all; it decodes cleanly and lands here. `icydb::Error`'s `Display` is
+/// exactly `"E{code}"` (the same fact `error.rs`'s `is_unordered_pagination`
+/// relies on for code 5), and 183 is
+/// `RUNTIME_BOUNDARY_SQL_INTROSPECTION_DISABLED`'s one and only code
+/// (`icydb-diagnostic-code-0.202.1/src/registry.rs`), so matching the full
+/// string `"E183"` is exact, not a substring guess.
+fn map_icydb_error(error: icydb::Error) -> AppError {
+    if error.to_string() == "E183" {
+        return AppError::IntrospectionDisabled;
+    }
+    AppError::IcyDb {
+        code: format!("{error:?}"),
+        message: error.to_string(),
+    }
 }
 
 /// Builds the string shown as `AppError::NotController`'s identity: the
@@ -102,15 +136,30 @@ fn map_agent_error(error: &AgentError, canister: &str, identity: &str) -> AppErr
 /// The `has no query method 'icydb_query'` marker is the same string
 /// `icydb-cli` matches on for this condition, so the two tools agree about
 /// what a stale-wasm canister (SQL feature never enabled) looks like.
+///
+/// The `"SqlIntrospectionDisabled"` branch below is defensive, not the
+/// live path: verified against a real introspection-disabled canister (see
+/// `map_icydb_error`'s doc comment), `SqlIntrospectionDisabled` actually
+/// arrives as a decoded `icydb::Error` value inside a *successful* reply,
+/// never as an agent-level reject/trap message, so this branch does not
+/// fire in current icydb behavior. It's kept in case a future icydb
+/// release ever does surface it as a genuine reject (or some other
+/// canister-side trap happens to embed this string), since it costs
+/// nothing and only makes the classification more forgiving, never less
+/// correct.
 pub fn map_reject_message(message: &str, canister: &str, identity: &str) -> AppError {
     if message.contains("has no query method 'icydb_query'") {
-        return AppError::NoSqlSurface { canister: canister.to_string() };
+        return AppError::NoSqlSurface {
+            canister: canister.to_string(),
+        };
     }
     if message.contains("SqlIntrospectionDisabled") {
         return AppError::IntrospectionDisabled;
     }
     if message.contains("Unauthorized") || message.contains("not a controller") {
-        return AppError::NotController { identity: identity.to_string() };
+        return AppError::NotController {
+            identity: identity.to_string(),
+        };
     }
     AppError::Agent(message.to_string())
 }
@@ -132,7 +181,11 @@ mod tests {
 
     #[test]
     fn unauthorized_maps_to_not_controller_naming_the_identity() {
-        let error = map_reject_message("Unauthorized: caller is not a controller", "user_hub", "demo-local");
+        let error = map_reject_message(
+            "Unauthorized: caller is not a controller",
+            "user_hub",
+            "demo-local",
+        );
         assert!(matches!(error, AppError::NotController { .. }));
         assert!(error.explanation().contains("demo-local"));
     }
@@ -141,6 +194,35 @@ mod tests {
     fn introspection_disabled_is_recognised() {
         let error = map_reject_message("SqlIntrospectionDisabled", "user_hub", "demo-local");
         assert!(matches!(error, AppError::IntrospectionDisabled));
+    }
+
+    /// `icydb::Error`'s fields are private with no public constructor for
+    /// an arbitrary code, but it derives `serde::Deserialize`, so this
+    /// builds one the same way any other cross-boundary payload is
+    /// decoded — code 183 is `RUNTIME_BOUNDARY_SQL_INTROSPECTION_DISABLED`
+    /// (`icydb-diagnostic-code-0.202.1/src/registry.rs`), and its `Display`
+    /// is exactly `"E{code}"` (`icydb-0.202.1/src/error.rs`).
+    fn icydb_error(code: u16) -> icydb::Error {
+        serde_json::from_value(serde_json::json!({ "code": code, "class": 7, "origin": 5 }))
+            .expect("icydb::Error should deserialize for testing")
+    }
+
+    /// This is the actual live path `SqlIntrospectionDisabled` reaches this
+    /// app through — verified against a real introspection-disabled
+    /// canister (see `map_icydb_error`'s doc comment and
+    /// `tests/integration.rs::select_still_works_when_introspection_is_disabled`).
+    /// `map_reject_message`'s string-based classification above does not
+    /// fire for it in practice; this is the one that matters.
+    #[test]
+    fn code_183_from_a_decoded_icydb_error_maps_to_introspection_disabled() {
+        let error = map_icydb_error(icydb_error(183));
+        assert!(matches!(error, AppError::IntrospectionDisabled));
+    }
+
+    #[test]
+    fn other_icydb_error_codes_keep_the_generic_icydb_variant() {
+        let error = map_icydb_error(icydb_error(5));
+        assert!(matches!(error, AppError::IcyDb { .. }));
     }
 
     #[test]
@@ -161,9 +243,10 @@ mod tests {
         use std::path::PathBuf;
 
         let pem_path = PathBuf::from("tests/fixtures/secp256k1.pem");
-        let identity =
-            Secp256k1Identity::from_pem_file(&pem_path).expect("test pem should load");
-        let principal = identity.sender().expect("identity should resolve a principal");
+        let identity = Secp256k1Identity::from_pem_file(&pem_path).expect("test pem should load");
+        let principal = identity
+            .sender()
+            .expect("identity should resolve a principal");
 
         let agent = Agent::builder()
             .with_url("http://127.0.0.1:4943")

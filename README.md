@@ -115,14 +115,23 @@ least a few of these.
    (`PolicyPlanError::UnorderedPagination`, diagnostic code 5), for every
    entity — ordering by *any* column (not necessarily unique, not
    necessarily the primary key) satisfies it. This is why `fetch_rows`
-   (`src-tauri/src/commands.rs`) always runs a `DESCRIBE` first to learn the
-   entity's primary key and orders by it, and why the SQL console does not
-   auto-append a bare `LIMIT` to a `SELECT` that has no `ORDER BY` of its
-   own — doing so would manufacture a guaranteed rejection. Scalar paging in
-   this app is therefore **`LIMIT`/`OFFSET`, not cursors**: icydb's SQL
-   subset marks `pagination.scalar_cursor` rejected and
-   `pagination.scalar_limit_offset` accepted, and a scalar `SELECT`'s
-   `Projection` payload carries no cursor field at all.
+   (`src-tauri/src/commands.rs`) runs a `DESCRIBE` first to learn the
+   entity's primary key and orders by it (via the pure `sql::rows_sql`), and
+   why the SQL console does not auto-append a bare `LIMIT` to a `SELECT`
+   that has no `ORDER BY` of its own — doing so would manufacture a
+   guaranteed rejection. Scalar paging in this app is therefore
+   **`LIMIT`/`OFFSET`, not cursors**: icydb's SQL subset marks
+   `pagination.scalar_cursor` rejected and `pagination.scalar_limit_offset`
+   accepted, and a scalar `SELECT`'s `Projection` payload carries no cursor
+   field at all.
+
+   When that `DESCRIBE` itself fails because introspection is disabled (see
+   item 8 below), `fetch_rows` falls back to an unordered, unbounded
+   `SELECT` rather than propagating the introspection error — no primary
+   key is derivable in that case, and icydb would reject a `LIMIT`/`OFFSET`
+   window with no `ORDER BY` anyway, so a bounded page isn't achievable
+   either. Row browsing therefore still works with introspection off; only
+   paging (and, separately, `SHOW`/`DESCRIBE`/`EXPLAIN` themselves) don't.
 
 7. **Endpoints are controller-gated.** `icydb_query` requires the calling
    identity to be a controller of the target canister. The identity this
@@ -135,7 +144,8 @@ least a few of these.
    `EXPLAIN` are enabled by default on local builds and *disabled* by
    default on IC (mainnet) builds. A canister deployed to mainnet with no
    explicit `icydb.toml` override will report `IntrospectionDisabled` for
-   schema-browsing statements even though plain `SELECT` still works; the
+   schema-browsing statements even though plain `SELECT` still works (see
+   item 6 above for exactly how row browsing degrades in that case); the
    canister owner has to opt in explicitly for mainnet schema browsing to be
    available at all.
 
