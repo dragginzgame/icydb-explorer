@@ -85,3 +85,38 @@ enabled = true
 ```
 
 Note `integrity` and `[schema]` require 0.215; they are not valid keys in 0.202.1.
+
+---
+
+## Parked follow-ups from this phase
+
+Recorded here because the phase's SDD workspace is deleted at completion and these
+should outlive it.
+
+1. **`AgentPool` needs a `get_or_build` seam.** The pool-wide lock is now correctly
+   released across `load_identity` and `fetch_root_key`, but nothing *tests* that one
+   pending build doesn't block another key's lookup — `AgentPool::get` has no seam for
+   a slow loader (concrete `Environment`/`IdentityRef`, real `ic_agent::Agent`). An
+   inner `async fn get_or_build<F: Future<Output = Result<Arc<Agent>, AppError>>>(&self,
+   key: String, build: F)` would let a `tokio::test` hold one build pending on a
+   `oneshot` and assert a second key's `get` completes — deterministic, no timers.
+   The lock scope is a structural property a reader can confirm today, which is why
+   this was parked rather than blocking the merge.
+2. **No negative caching in `AgentPool::get`.** A persistently failing identity
+   re-runs the 20-second export on every command that touches it. Correct as-is (a
+   cached failure would be worse), but a rate-limit or a surfaced "last failure" note
+   would be a real UX improvement.
+3. **`host_of` can't parse bracketed IPv6 literals** (`agent/mod.rs`). Documented
+   candidly in its own test; pre-existing and explicitly scoped out.
+4. **`find_identity` doesn't distinguish "no such name" from "exists but unusable."**
+   The distinction surfaces later from `load_identity`. A more specific message would
+   speed diagnosis in the UI.
+5. **Switching identity discards the canister and entity selection.** Canister ids
+   don't depend on identity; re-fetching the tree while preserving the selection would
+   be kinder.
+6. **`identity.rs`'s `pem`-with-no-`pem_path` branch is unreachable** — `IdentityRef::new`
+   already sets `unusable_reason` for that combination and the early guard returns
+   first. Harmless, but it reads as live and isn't.
+7. **The spec still describes cursor paging** in places
+   (`2026-07-29-icydb-explorer-design.md`), contradicting the `LIMIT`/`OFFSET` reality.
+   Pre-existing.
