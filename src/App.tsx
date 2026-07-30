@@ -130,6 +130,19 @@ function App() {
       .finally(() => setEnvironmentsLoaded(true));
   }, []);
 
+  // Tracks the *latest requested* `handleSelectIdentity` call — see that
+  // handler's doc comment below for why. Declared here, ahead of both
+  // handlers that touch it, because `handleSelectEnvironment` also needs to
+  // clear it: switching environments abandons whatever identity selection
+  // was in flight, and without clearing this ref a slow keyring export for
+  // the *old* environment's identity would still pass the "am I the latest
+  // request" check when it finally settles (that check only ever compared
+  // against itself, never against a environment change happening out from
+  // under it) and could plant an error banner — or, on success, call
+  // `setIdentity` — for an identity that may not even exist in the
+  // environment the user has since switched to.
+  const identityRequestRef = useRef<{ env: string; name: string } | null>(null);
+
   // The one place `env` changes after the initial load: re-derives
   // `identity` via `initialIdentityFor` in the *same* handler, rather than
   // in a separate effect keyed on `env`. A separate effect would still be
@@ -147,6 +160,11 @@ function App() {
       setEnv(name);
       setIdentity(nextEnvironment ? initialIdentityFor(nextEnvironment) : null);
       setIdentityError(null);
+      // Abandons any in-flight `handleSelectIdentity` request for the
+      // environment being left: its `.then`/`.catch` compares against this
+      // ref, so nulling it here means that request can never again match
+      // and is dropped, however long its keyring export takes to settle.
+      identityRequestRef.current = null;
     },
     [environments],
   );
@@ -354,12 +372,12 @@ function App() {
   // and then, ~20s later, the first (abandoned) selection's rejection would
   // still fire `setIdentityError`, planting a persistent error banner about
   // an identity the user isn't even using anymore. `identityRequestRef`
-  // tracks the *latest requested* selection — a fresh object per call, so a
+  // (declared above, alongside `handleSelectEnvironment`) tracks the
+  // *latest requested* selection — a fresh object per call, so a
   // `.then`/`.catch` firing for any request other than the most recent one
   // (by reference identity) is dropped, same idea as `selectionRef` above,
   // scoped to just this one in-flight request rather than the whole
   // env/canister/entity/identity tuple.
-  const identityRequestRef = useRef<{ env: string; name: string } | null>(null);
   const handleSelectIdentity = useCallback(
     (name: string) => {
       if (!env) return;

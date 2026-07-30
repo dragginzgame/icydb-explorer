@@ -264,13 +264,16 @@ explanatory error. That claim rested on zero direct observation — no `identity
 fixture or live store anywhere in this project's history has ever contained a
 `--storage password` identity, so its on-disk shape has never actually been checked.
 
-What *is* verified, from `src-tauri/src/discovery/icp_dir.rs`: every real `identity_list.json`
-entry this project has observed carries both a `kind` field (`"pem"`, `"keyring"`, or
-`"anonymous"`) and a separate `format` field (every observed `"pem"`-kind entry pairs
-with `format: "plaintext"`). This app's classification (`IdentityRef::new`,
-`src-tauri/src/discovery/types.rs`) decides usability from `kind` alone and never reads
-`format` at all. The most plausible shape for a `--storage password` identity, going by
-that pattern, is `kind: "pem"` with some other `format` value (e.g. `"encrypted"`) — not
+What *is* verified, from this project's own `identity_list.json` fixtures
+(`src-tauri/tests/fixtures/identity_stores/*/identity_list.json` and
+`src-tauri/tests/fixtures/icp_project/.icp/cli-home/identity/identity_list.json`):
+every `"pem"`-kind entry carries a separate `format` field (`format: "plaintext"` in
+every case observed); `"keyring"` and `"anonymous"` entries carry no `format` field at
+all. This app's classification (`IdentityRef::new`, `src-tauri/src/discovery/types.rs`,
+fed by `src-tauri/src/discovery/icp_dir.rs`) decides usability from `kind` alone and
+never reads `format` at all. The most plausible shape for a `--storage password`
+identity, going by that pattern, is `kind: "pem"` with some other `format` value (e.g.
+`"encrypted"`) — not
 a distinct `kind`. If that's right, this app would classify it as a perfectly usable
 `pem` identity (a resolvable key file on disk), never touch the `keyring` export path or
 its 20s timeout at all, read the encrypted file straight off disk, and fail only when

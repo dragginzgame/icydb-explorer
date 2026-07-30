@@ -351,3 +351,76 @@ test("switching identity before a slow selectIdentity call resolves does not res
   expect(screen.queryByText(/timed out/i)).toBeNull();
   expect(identitySelect).toHaveValue("bob");
 });
+
+test("switching environments abandons an in-flight identity selection", async () => {
+  // Two environments so the switch is real: "local" starts on "alice" (the
+  // initial fallback) and has a second, slow-to-select identity;
+  // "ic" has a single, unrelated identity of its own.
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/project",
+    error: null,
+    environments: [
+      {
+        name: "local",
+        replicaUrl: "http://localhost",
+        canisters: [{ name: "root", id: "root-id" }],
+        identity: null,
+        identities: [
+          { name: "alice", algorithm: "secp256k1", kind: "keyring", pemPath: null, unusableReason: null },
+          { name: "slow-password", algorithm: "secp256k1", kind: "pem", pemPath: "/x", unusableReason: null },
+        ],
+        artifacts: [],
+      },
+      {
+        name: "ic",
+        replicaUrl: "https://icp0.io",
+        canisters: [{ name: "root", id: "root-id-2" }],
+        identity: null,
+        identities: [
+          { name: "carol", algorithm: "secp256k1", kind: "keyring", pemPath: null, unusableReason: null },
+        ],
+        artifacts: [],
+      },
+    ],
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([]);
+
+  const forSlow = deferred<void>();
+  vi.mocked(commands.selectIdentity).mockImplementation((_env, identity) => {
+    if (identity === "slow-password") return forSlow.promise;
+    throw new Error(`unexpected identity ${identity}`);
+  });
+
+  render(<App />);
+
+  await screen.findByDisplayValue("local");
+  const identitySelect = screen.getAllByRole("combobox")[1];
+
+  // Start a slow selection for "local", then switch environments entirely
+  // before it resolves — abandoning that in-flight request, not just
+  // superseding it with another selection in the same environment (that
+  // case is covered by the test above).
+  fireEvent.change(identitySelect, { target: { value: "slow-password" } });
+  fireEvent.change(screen.getByDisplayValue("local"), { target: { value: "ic" } });
+
+  await waitFor(() => {
+    expect(commands.canisterTree).toHaveBeenCalledWith("ic", "carol");
+  });
+
+  // The abandoned "local" selection's export finally times out and rejects.
+  // Without clearing `identityRequestRef` on an environment switch, this
+  // would still pass the "am I the latest request" check (it only ever
+  // compared a request against itself, never against an environment change
+  // happening out from under it) and plant an error banner for an identity
+  // — and environment — the user has since left.
+  forSlow.reject({
+    kind: "unknown",
+    explanation: "`icp identity export slow-password` timed out after 20s",
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  expect(screen.queryByText(/timed out/i)).toBeNull();
+  // Still cleanly on "ic"'s own identity, not reverted to or stuck on
+  // "local"'s.
+  expect(screen.getAllByRole("combobox")[1]).toHaveValue("carol");
+});
