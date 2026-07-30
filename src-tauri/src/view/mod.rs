@@ -20,6 +20,8 @@ use schema::{
 };
 use value::rendered_text_to_dto;
 
+use crate::error::AppError;
+
 /// Translate one decoded `SqlQueryResult` into the DTO the frontend renders.
 ///
 /// Matched exhaustively with no `_ =>` arm: a future icydb release that adds
@@ -39,8 +41,13 @@ use value::rendered_text_to_dto;
 ///   the time it reaches this module. Those cells get `ValueDto { kind:
 ///   "text", .. }` rather than a type-specific kind. Only `Projection` rows
 ///   carry a real per-cell kind.
-pub fn result_to_dto(result: SqlQueryResult) -> ResultDto {
-    match result {
+///
+/// `SqlQueryResult` is decoded from a canister response — data crossing a
+/// process boundary this program does not control — so this returns
+/// `Result` rather than panicking on the one variant (`Ddl`) that cannot
+/// legitimately arrive. See the `Ddl` arm below.
+pub fn result_to_dto(result: SqlQueryResult) -> Result<ResultDto, AppError> {
+    let dto = match result {
         SqlQueryResult::Count { entity, row_count } => ResultDto::Count { entity, row_count },
         SqlQueryResult::Projection(output) => ResultDto::Rows(RowsDto {
             entity: output.entity,
@@ -85,17 +92,24 @@ pub fn result_to_dto(result: SqlQueryResult) -> ResultDto {
         },
         // This explorer never issues DDL: Task 5's statement classifier
         // rejects DDL before it reaches a canister, and the canister side
-        // itself is read-only. A `Ddl` result reaching this module means
-        // that invariant was broken elsewhere, not that this is legitimate
-        // data to render — so this panics loudly rather than silently
-        // mapping it into one of the variants above. See the Task 6 report
-        // for the alternative considered (returning `Result` from this
-        // function) and why the fixed `ResultDto` return type was kept.
-        SqlQueryResult::Ddl { .. } => unreachable!(
-            "SqlQueryResult::Ddl reached the view layer; this explorer is read-only and never \
-             issues DDL, so this indicates a broken invariant upstream, not legitimate data"
-        ),
-    }
+        // itself is read-only. But `SqlQueryResult` is decoded from a
+        // canister response — data crossing a process boundary this
+        // program does not control — so a `Ddl` result arriving here is a
+        // protocol anomaly worth reporting to the caller (a misbehaving or
+        // future-version canister, or a broken invariant upstream), not an
+        // invariant worth asserting with a panic that would crash the
+        // whole desktop app. Report it as a parse error rather than
+        // inventing a `ResultDto` variant for a result this app never
+        // legitimately produces.
+        SqlQueryResult::Ddl { .. } => {
+            return Err(AppError::Parse(
+                "unexpected SqlQueryResult::Ddl reached the view layer; this explorer is \
+                 read-only and never issues DDL"
+                    .to_string(),
+            ));
+        }
+    };
+    Ok(dto)
 }
 
 #[cfg(test)]
@@ -105,7 +119,7 @@ mod tests {
     #[test]
     fn count_maps_to_count_dto() {
         let result = SqlQueryResult::Count { entity: "demo_row".into(), row_count: 3 };
-        match result_to_dto(result) {
+        match result_to_dto(result).unwrap() {
             ResultDto::Count { entity, row_count } => {
                 assert_eq!(entity, "demo_row");
                 assert_eq!(row_count, 3);
@@ -120,7 +134,7 @@ mod tests {
             entity: "demo_row".into(),
             indexes: vec!["by_parent".into()],
         };
-        match result_to_dto(result) {
+        match result_to_dto(result).unwrap() {
             ResultDto::Indexes { entity, indexes } => {
                 assert_eq!(entity, "demo_row");
                 assert_eq!(indexes, vec!["by_parent".to_string()]);
@@ -185,7 +199,7 @@ mod tests {
             rows: vec![vec![OutputValue::Nat64(1)]],
             row_count: 1,
         });
-        match result_to_dto(result) {
+        match result_to_dto(result).unwrap() {
             ResultDto::Rows(rows) => {
                 assert_eq!(rows.next_cursor, None);
                 assert_eq!(rows.rows[0][0].kind, "nat");
@@ -206,7 +220,7 @@ mod tests {
             row_count: 1,
             next_cursor: Some("cursor-1".into()),
         });
-        match result_to_dto(result) {
+        match result_to_dto(result).unwrap() {
             ResultDto::Rows(rows) => {
                 assert_eq!(rows.next_cursor, Some("cursor-1".to_string()));
                 assert_eq!(rows.rows[0][0].kind, "text");
@@ -214,5 +228,24 @@ mod tests {
             }
             other => panic!("expected Rows, got {other:?}"),
         }
+    }
+
+    /// `Ddl` is a protocol anomaly (this app never issues DDL, so a
+    /// canister should never return one) — it must surface as an `Err`
+    /// the caller can log or show as a UI error, not crash the process.
+    #[test]
+    fn ddl_maps_to_an_error_naming_the_variant() {
+        let result = SqlQueryResult::Ddl {
+            entity: "demo_row".into(),
+            mutation_kind: "create_index".into(),
+            target_index: "by_parent".into(),
+            target_store: "main".into(),
+            field_path: vec![],
+            status: "ok".into(),
+            rows_scanned: 0,
+            index_keys_written: 0,
+        };
+        let err = result_to_dto(result).unwrap_err();
+        assert!(err.explanation().contains("Ddl"));
     }
 }
