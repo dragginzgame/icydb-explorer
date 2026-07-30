@@ -461,9 +461,24 @@ mod tests {
     }
 
     #[test]
-    fn no_cli_home_means_no_identity_and_no_error() {
-        let env = &no_cli_home_fixture().environments[0];
-        assert!(env.identity.is_none());
+    fn no_cli_home_means_no_error() {
+        // Deliberately does NOT assert on `env.identity` here: this
+        // fixture has no `cli-home/`, so `read_default_identity` falls
+        // through to the *developer's real* user-level icp-cli store
+        // (derived from `$HOME`), which this test does not and cannot
+        // control. Reproduced live: with `HOME` pointed at a pem-default
+        // store, `env.identity` resolves `Some`; with it pointed at a
+        // keyring-default store (or unset), it resolves `None`. Either is
+        // correct behavior — asserting a specific outcome here would make
+        // this test's result depend on whoever runs it, not on this
+        // fixture. The two cases that ARE fixture-controlled —
+        // `non_pem_identity_kind_resolves_to_none` and
+        // `user_level_shaped_store_with_pem_identity_still_resolves` —
+        // exercise `read_identity_from_store` directly against synthetic
+        // stores instead, and are hermetic. This test only checks that
+        // falling through to the user-level path (present or not) is not
+        // itself an error.
+        assert!(discover(Path::new("tests/fixtures/icp_project_no_cli_home")).is_ok());
     }
 
     #[test]

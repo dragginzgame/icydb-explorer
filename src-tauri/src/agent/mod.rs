@@ -77,20 +77,33 @@ impl AgentPool {
 
 /// Resolves the identity to use for `env`.
 ///
-/// An environment with no identity configured (`Environment.identity ==
+/// An environment with no *loadable* identity (`Environment.identity ==
 /// None`) is not treated as "connect anonymously": icydb's SQL endpoints
 /// are controller-gated, so an anonymous caller would only find out it's
 /// rejected after a network round-trip, via a rejection message that
-/// doesn't obviously point back at "you have no identity configured".
-/// Failing locally and immediately, with a message that says exactly
-/// what's missing, is the clearer failure for the user.
+/// doesn't obviously point back at "you have no usable identity". Failing
+/// locally and immediately, with a message that says exactly what's
+/// missing, is the clearer failure for the user.
+///
+/// `None` here does not always mean *no identity is configured at all* —
+/// `discovery::read_default_identity` also reports `None` when a default
+/// identity exists but its `kind` isn't `"pem"` (this app only loads pem
+/// files), which is exactly the case a keyring-backed icp-cli default
+/// produces (verified live: this machine's own user-level default is
+/// `kind: "keyring"`). The message below names both possibilities rather
+/// than asserting the flatly wrong "no identity is configured" in that
+/// case.
 fn identity_for(env: &Environment) -> Result<Box<dyn ic_agent::Identity>, AppError> {
     match &env.identity {
         Some(identity_ref) => load_identity(identity_ref),
         None => Err(AppError::Agent(format!(
-            "no identity is configured for environment \"{}\"; icydb's SQL endpoints are \
-             controller-gated, so add an identity (e.g. via `dfx identity`) to this \
-             environment's .icp/ configuration before connecting",
+            "no usable identity is available for environment \"{}\"; icydb's SQL endpoints \
+             are controller-gated. This means either no default identity is configured, or \
+             the default identity exists but isn't a kind this app can load — it only loads \
+             pem-file identities, so an icp-cli keyring-backed default (a common case) reads \
+             as unusable here. Configure a pem-based identity for this environment (e.g. via \
+             `icp identity new`/`icp identity use`, or this project's own .icp/cli-home/identity/) \
+             before connecting",
             env.name
         ))),
     }
@@ -180,8 +193,12 @@ mod tests {
             "expected the environment name in the error, got: {text}"
         );
         assert!(
-            text.contains("dfx identity") && text.contains(".icp/"),
-            "expected the actionable fix (dfx identity / .icp/ config) in the error, got: {text}"
+            text.contains("icp identity") && text.contains(".icp/"),
+            "expected the actionable fix (icp identity / .icp/ config) in the error, got: {text}"
+        );
+        assert!(
+            text.contains("keyring"),
+            "expected the message to name the keyring-kind-default possibility, got: {text}"
         );
     }
 
