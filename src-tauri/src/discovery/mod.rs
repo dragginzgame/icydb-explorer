@@ -4,5 +4,5 @@
 mod icp_dir;
 mod types;
 
-pub use icp_dir::discover;
+pub use icp_dir::{discover, read_all_identities};
 pub use types::{CanisterArtifact, Environment, IdentityRef, NamedCanister, Project};

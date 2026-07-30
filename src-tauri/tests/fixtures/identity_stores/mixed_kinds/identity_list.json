@@ -1,0 +1,24 @@
+{
+  "v": 1,
+  "identities": {
+    "keyring-one": {
+      "kind": "keyring",
+      "principal": "4773j-66d63-ojsup-pra54-4uto5-kxmpd-lizbp-nk6et-uvn4p-chybm-nae",
+      "algorithm": "secp256k1"
+    },
+    "pem-one": {
+      "kind": "pem",
+      "format": "plaintext",
+      "algorithm": "secp256k1",
+      "principal": "j524y-jtmzv-omb6g-wh6rn-mxhkh-dzg5v-ct2r5-2s742-rvyxm-jgqmi-xqe"
+    },
+    "future-kind": {
+      "kind": "delegation",
+      "algorithm": "secp256k1",
+      "principal": "aaaaa-aa"
+    },
+    "anonymous": {
+      "kind": "anonymous"
+    }
+  }
+}

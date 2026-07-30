@@ -180,6 +180,7 @@ mod tests {
             replica_url: "http://127.0.0.1:4943".into(),
             canisters: Vec::new(),
             identity: None,
+            identities: Vec::new(),
             artifacts: Vec::new(),
         }
     }

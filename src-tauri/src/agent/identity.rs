@@ -12,12 +12,25 @@ use crate::error::AppError;
 /// Supported algorithms are `"secp256k1"` (dfx's default) and `"ed25519"`.
 /// Any other algorithm name, or a pem file that can't be read or parsed,
 /// is reported as `AppError::Agent` naming the problem.
+///
+/// `identity.pem_path` is `None` for kinds whose key isn't a file on disk
+/// (e.g. `keyring`) — this function only implements pem loading, so that
+/// case is reported as an error naming the kind rather than attempted.
+/// Obtaining a key for those kinds (e.g. exporting a keyring identity via
+/// `icp`) is not yet wired up here.
 pub fn load_identity(identity: &IdentityRef) -> Result<Box<dyn Identity>, AppError> {
+    let pem_path = identity.pem_path.as_ref().ok_or_else(|| {
+        AppError::Agent(format!(
+            "identity \"{}\" (kind \"{}\") has no pem file to load",
+            identity.name, identity.kind
+        ))
+    })?;
+
     match identity.algorithm.as_str() {
-        "secp256k1" => Secp256k1Identity::from_pem_file(&identity.pem_path)
+        "secp256k1" => Secp256k1Identity::from_pem_file(pem_path)
             .map(|id| Box::new(id) as Box<dyn Identity>)
             .map_err(|e| AppError::Agent(format!("failed to load secp256k1 pem: {e}"))),
-        "ed25519" => BasicIdentity::from_pem_file(&identity.pem_path)
+        "ed25519" => BasicIdentity::from_pem_file(pem_path)
             .map(|id| Box::new(id) as Box<dyn Identity>)
             .map_err(|e| AppError::Agent(format!("failed to load ed25519 pem: {e}"))),
         other => Err(AppError::Agent(format!(
@@ -32,11 +45,12 @@ mod tests {
     use std::path::PathBuf;
 
     fn reference(algorithm: &str, file: &str) -> IdentityRef {
-        IdentityRef {
-            name: "demo-local".into(),
-            algorithm: algorithm.into(),
-            pem_path: PathBuf::from("tests/fixtures").join(file),
-        }
+        IdentityRef::new(
+            "demo-local".into(),
+            algorithm.into(),
+            "pem".into(),
+            Some(PathBuf::from("tests/fixtures").join(file)),
+        )
     }
 
     #[test]

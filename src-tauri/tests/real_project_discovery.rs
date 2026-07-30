@@ -120,7 +120,11 @@ fn discovers_a_toko_style_project_tree() {
         .expect("toko's project-local identity should resolve");
     assert_eq!(identity.algorithm, "secp256k1");
     assert!(
-        identity.pem_path.is_file(),
+        identity
+            .pem_path
+            .as_ref()
+            .expect("pem identity should have a pem_path")
+            .is_file(),
         "identity pem should exist on disk"
     );
 }

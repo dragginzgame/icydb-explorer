@@ -37,6 +37,10 @@ pub struct Environment {
     pub replica_url: String,
     pub canisters: Vec<NamedCanister>,
     pub identity: Option<IdentityRef>,
+    /// Every identity the resolved store declares, usable or not. The UI lists
+    /// all of them so an unsupported identity reads as unsupported rather than
+    /// missing.
+    pub identities: Vec<IdentityRef>,
     pub artifacts: Vec<CanisterArtifact>,
 }
 
@@ -49,12 +53,62 @@ pub struct NamedCanister {
     pub id: String,
 }
 
+/// One identity from an icp identity store.
+///
+/// `pem_path` is `None` for kinds whose key is not a file — a `keyring`
+/// identity's key lives in the OS keychain, which is why the previous
+/// non-optional `PathBuf` made keyring identities unrepresentable.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IdentityRef {
     pub name: String,
     pub algorithm: String,
-    pub pem_path: PathBuf,
+    pub kind: String,
+    pub pem_path: Option<PathBuf>,
+    /// Why this app cannot use this identity, or `None` if it can.
+    ///
+    /// A serialised field rather than a method, computed once in
+    /// [`IdentityRef::new`], so the frontend renders this text instead of
+    /// re-implementing the rule in TypeScript. The rule lives in exactly one
+    /// place in the codebase.
+    pub unusable_reason: Option<String>,
+}
+
+impl IdentityRef {
+    /// Builds an `IdentityRef`, deriving `unusable_reason` from the kind.
+    ///
+    /// icp's storage kinds are `plaintext`, `keyring`, and `password`
+    /// (`icp identity new --storage`). `plaintext` surfaces here as kind
+    /// `pem`. `password` has not been observed in a real store, so any
+    /// unrecognised kind is reported as unusable by name rather than
+    /// assumed loadable — a wrong guess would fail confusingly at query
+    /// time instead of clearly at selection time.
+    #[must_use]
+    pub fn new(name: String, algorithm: String, kind: String, pem_path: Option<PathBuf>) -> Self {
+        let unusable_reason = match kind.as_str() {
+            "pem" if pem_path.is_none() => {
+                Some("pem identity with no key file recorded".to_string())
+            }
+            "pem" | "keyring" => None,
+            "anonymous" => Some(
+                "the anonymous identity cannot be used: icydb's SQL endpoints are \
+                 controller-gated"
+                    .to_string(),
+            ),
+            other => Some(format!(
+                "identity kind \"{other}\" is not supported by this app: it cannot be \
+                 exported as a PEM"
+            )),
+        };
+
+        Self { name, algorithm, kind, pem_path, unusable_reason }
+    }
+
+    /// Whether this app can obtain a signing key for this identity.
+    #[must_use]
+    pub fn is_usable(&self) -> bool {
+        self.unusable_reason.is_none()
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]

@@ -34,6 +34,7 @@ pub fn discover(project_root: &Path) -> Result<Project, AppError> {
     }
 
     let identity = read_default_identity(&icp_dir)?;
+    let identities = read_all_identities_for_project(&icp_dir)?;
     let networks = read_networks(&icp_dir)?;
     // Only allow `read_canisters`'s "just use the only mapping file, whatever
     // it's named" fallback when there is exactly one network in this
@@ -54,6 +55,7 @@ pub fn discover(project_root: &Path) -> Result<Project, AppError> {
             replica_url: network.replica_url,
             canisters,
             identity: identity.clone(),
+            identities: identities.clone(),
             artifacts,
         });
     }
@@ -266,27 +268,50 @@ fn read_canisters(
     Ok(canisters)
 }
 
-/// Resolves the identity to use across this project's environments.
+/// Resolves which identity store this project's identities come from.
 ///
 /// Prefers a project-local `.icp/cli-home/identity/` store when present
 /// (verified against toko); falls back to icp-cli's user-level store
 /// (`~/Library/Application Support/org.dfinity.icp-cli/identity/` on
 /// macOS, derived from `$HOME` rather than hardcoded) when no project-local
-/// store exists (this repo's actual shape). Neither existing is not an
-/// error: a project need not have deployed anything yet.
-fn read_default_identity(icp_dir: &Path) -> Result<Option<IdentityRef>, AppError> {
+/// store exists (this repo's actual shape). `None` when neither exists — a
+/// project need not have deployed anything yet.
+///
+/// Both `read_default_identity` and `read_all_identities_for_project`
+/// resolve through this one function, so the default identity and the full
+/// identity list can never come from two different stores.
+fn resolve_identity_store(icp_dir: &Path) -> Option<PathBuf> {
     let project_local = icp_dir.join("cli-home").join("identity");
     if identity_store_present(&project_local) {
-        return read_identity_from_store(&project_local);
+        return Some(project_local);
     }
 
-    if let Some(user_level) = user_level_identity_dir() {
-        if identity_store_present(&user_level) {
-            return read_identity_from_store(&user_level);
-        }
+    let user_level = user_level_identity_dir()?;
+    if identity_store_present(&user_level) {
+        return Some(user_level);
     }
 
-    Ok(None)
+    None
+}
+
+/// Resolves the default identity to use across this project's environments.
+/// See `resolve_identity_store` for which store this reads from.
+fn read_default_identity(icp_dir: &Path) -> Result<Option<IdentityRef>, AppError> {
+    match resolve_identity_store(icp_dir) {
+        Some(store) => read_identity_from_store(&store),
+        None => Ok(None),
+    }
+}
+
+/// Reads every identity declared by the resolved store (see
+/// `resolve_identity_store`), for `Environment::identities`. An unresolved
+/// store (no identities configured yet) yields an empty list rather than an
+/// error, matching `read_default_identity`'s degradation for the same case.
+fn read_all_identities_for_project(icp_dir: &Path) -> Result<Vec<IdentityRef>, AppError> {
+    match resolve_identity_store(icp_dir) {
+        Some(store) => read_all_identities(&store),
+        None => Ok(Vec::new()),
+    }
 }
 
 fn identity_store_present(identity_dir: &Path) -> bool {
@@ -299,11 +324,9 @@ fn identity_store_present(identity_dir: &Path) -> bool {
 /// `identity_defaults.json`/`identity_list.json` shape as a project-local
 /// `cli-home/identity/` — but its default identity's `kind` was `"keyring"`,
 /// not `"pem"` (this repo has no project-local identity at all, so this is
-/// the path actually exercised for it). `read_identity_from_store` already
-/// treats a non-`"pem"` kind as "no identity to load" rather than an error,
-/// which is the correct degradation here too: this app has no keyring
-/// integration (loading a pem is the only mechanism it implements), so a
-/// keyring-backed identity is reported as absent rather than guessed at.
+/// the path actually exercised for it). `IdentityRef` can represent a
+/// keyring identity directly now (see `types::IdentityRef`), so this no
+/// longer needs to be treated as "no identity to load".
 #[cfg(target_os = "macos")]
 fn user_level_identity_dir() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
@@ -325,27 +348,46 @@ fn user_level_identity_dir() -> Option<PathBuf> {
     None
 }
 
-/// Reads the default identity's name from `identity_dir/identity_defaults.json`,
-/// looks it up in `identity_dir/identity_list.json` for its algorithm, and
-/// points at its pem file under `identity_dir/keys/`. An identity whose
-/// `kind` is not `"pem"` (e.g. `"anonymous"`, or icp-cli's user-level
-/// `"keyring"` default) resolves to `None` rather than an error, since it
-/// simply has no pem file for this app to load.
-fn read_identity_from_store(identity_dir: &Path) -> Result<Option<IdentityRef>, AppError> {
-    let defaults_path = identity_dir.join("identity_defaults.json");
-    let list_path = identity_dir.join("identity_list.json");
-
-    let defaults = read_json(&defaults_path)?;
-    let default_name = defaults
-        .get("default")
+/// Builds one `IdentityRef` from its `identity_list.json` entry. Used by
+/// both `read_all_identities` and `read_identity_from_store` so the two
+/// cannot disagree about `kind` or `pem_path` — see `IdentityRef::new`,
+/// which this always goes through.
+///
+/// `kind` is required: an entry with none is `AppError::Parse` naming the
+/// identity. `algorithm` defaults to `"secp256k1"` when absent, since
+/// `anonymous` entries carry no algorithm and must not fail the whole read.
+/// `pem_path` is `Some(<identity_dir>/keys/<name>.pem)` only when
+/// `kind == "pem"`.
+fn identity_ref_from_entry(
+    name: &str,
+    entry: &Value,
+    identity_dir: &Path,
+) -> Result<IdentityRef, AppError> {
+    let kind = entry
+        .get("kind")
         .and_then(Value::as_str)
-        .ok_or_else(|| {
-            AppError::Parse(format!(
-                "{} is missing a \"default\" string field",
-                defaults_path.display()
-            ))
-        })?;
+        .ok_or_else(|| AppError::Parse(format!("identity \"{name}\" is missing a \"kind\" field")))?
+        .to_string();
 
+    let algorithm = entry
+        .get("algorithm")
+        .and_then(Value::as_str)
+        .unwrap_or("secp256k1")
+        .to_string();
+
+    let pem_path =
+        (kind == "pem").then(|| identity_dir.join("keys").join(format!("{name}.pem")));
+
+    Ok(IdentityRef::new(name.to_string(), algorithm, kind, pem_path))
+}
+
+/// Reads every identity `identity_dir/identity_list.json` declares, usable
+/// or not — see `types::Environment::identities`. `name` is the map key;
+/// see `identity_ref_from_entry` for how the rest of each entry converts.
+/// Sorted by name for deterministic output, matching `read_networks` and
+/// `read_canisters` in this file.
+pub fn read_all_identities(identity_dir: &Path) -> Result<Vec<IdentityRef>, AppError> {
+    let list_path = identity_dir.join("identity_list.json");
     let list = read_json(&list_path)?;
     let identities = list
         .get("identities")
@@ -357,39 +399,46 @@ fn read_identity_from_store(identity_dir: &Path) -> Result<Option<IdentityRef>, 
             ))
         })?;
 
-    let entry = identities.get(default_name).ok_or_else(|| {
-        AppError::Parse(format!(
-            "{} names \"{default_name}\" as the default identity, but it is not listed in {}",
-            defaults_path.display(),
-            list_path.display()
-        ))
-    })?;
-
-    let kind = entry.get("kind").and_then(Value::as_str).unwrap_or("");
-    if kind != "pem" {
-        return Ok(None);
+    let mut result = Vec::with_capacity(identities.len());
+    for (name, entry) in identities {
+        result.push(identity_ref_from_entry(name, entry, identity_dir)?);
     }
+    result.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(result)
+}
 
-    let algorithm = entry
-        .get("algorithm")
+/// Reads the default identity's name from `identity_dir/identity_defaults.json`
+/// and finds it among `read_all_identities`'s entries — the same per-entry
+/// conversion `read_all_identities` uses, so the default identity and the
+/// full list can never disagree about `kind` or `pem_path`.
+///
+/// A default identity whose `kind` isn't `"pem"` (e.g. `"anonymous"`, or
+/// icp-cli's user-level `"keyring"` default) now resolves to `Some` too,
+/// with `unusable_reason` set rather than being hidden behind `None`:
+/// `IdentityRef` can represent it honestly, so there is no reason left to
+/// pretend it doesn't exist.
+fn read_identity_from_store(identity_dir: &Path) -> Result<Option<IdentityRef>, AppError> {
+    let defaults_path = identity_dir.join("identity_defaults.json");
+    let defaults = read_json(&defaults_path)?;
+    let default_name = defaults
+        .get("default")
         .and_then(Value::as_str)
         .ok_or_else(|| {
             AppError::Parse(format!(
-                "identity \"{default_name}\" in {} is missing an \"algorithm\" field",
-                list_path.display()
+                "{} is missing a \"default\" string field",
+                defaults_path.display()
             ))
-        })?
-        .to_string();
+        })?;
 
-    let pem_path = identity_dir
-        .join("keys")
-        .join(format!("{default_name}.pem"));
-
-    Ok(Some(IdentityRef {
-        name: default_name.to_string(),
-        algorithm,
-        pem_path,
-    }))
+    let identities = read_all_identities(identity_dir)?;
+    match identities.into_iter().find(|i| i.name == default_name) {
+        Some(identity) => Ok(Some(identity)),
+        None => Err(AppError::Parse(format!(
+            "{} names \"{default_name}\" as the default identity, but it is not listed in {}",
+            defaults_path.display(),
+            identity_dir.join("identity_list.json").display()
+        ))),
+    }
 }
 
 /// Each subdirectory of `.icp/<env>/canisters/` is one locally built
@@ -466,13 +515,16 @@ mod tests {
         // fixture has no `cli-home/`, so `read_default_identity` falls
         // through to the *developer's real* user-level icp-cli store
         // (derived from `$HOME`), which this test does not and cannot
-        // control. Reproduced live: with `HOME` pointed at a pem-default
-        // store, `env.identity` resolves `Some`; with it pointed at a
-        // keyring-default store (or unset), it resolves `None`. Either is
-        // correct behavior — asserting a specific outcome here would make
-        // this test's result depend on whoever runs it, not on this
-        // fixture. The two cases that ARE fixture-controlled —
-        // `non_pem_identity_kind_resolves_to_none` and
+        // control. Reproduced live: with `HOME` pointed at any real store
+        // (pem- or keyring-default), `env.identity` resolves `Some` — a
+        // keyring default is now a representable, usable `IdentityRef` (see
+        // `types::IdentityRef`), not the `None` an older version of this
+        // code produced for it. With `HOME` unset or pointed at no store at
+        // all, it resolves `None`. Any of these is correct behavior —
+        // asserting a specific outcome here would make this test's result
+        // depend on whoever runs it, not on this fixture. The two cases
+        // that ARE fixture-controlled —
+        // `keyring_default_identity_resolves_to_a_usable_identity_ref` and
         // `user_level_shaped_store_with_pem_identity_still_resolves` —
         // exercise `read_identity_from_store` directly against synthetic
         // stores instead, and are hermetic. This test only checks that
@@ -501,7 +553,11 @@ mod tests {
         let identity = env.identity.as_ref().expect("identity should resolve");
         assert_eq!(identity.name, "demo-local");
         assert_eq!(identity.algorithm, "secp256k1");
-        assert!(identity.pem_path.ends_with("keys/demo-local.pem"));
+        assert!(identity
+            .pem_path
+            .as_ref()
+            .expect("pem identity should have a pem_path")
+            .ends_with("keys/demo-local.pem"));
     }
 
     /// The fixture's `staging` network exists only as
@@ -553,14 +609,26 @@ mod tests {
         assert!(discover(Path::new("tests/fixtures/does_not_exist")).is_err());
     }
 
-    /// A non-`"pem"` default identity (e.g. icp-cli's user-level
-    /// `"keyring"` default, or `"anonymous"`) resolves to `None` rather than
-    /// an error — this app only implements pem loading.
+    /// A non-`"pem"` default identity (icp-cli's user-level `"keyring"`
+    /// default here) now resolves to `Some` rather than `None`: the
+    /// previous, pem-only-shaped `IdentityRef` had no way to represent a
+    /// keyring identity, so `read_identity_from_store` used to hide it
+    /// behind `None`. Now that `pem_path` is optional and `kind` is
+    /// carried, a keyring identity is representable and — per
+    /// `IdentityRef::new` — usable, so it surfaces honestly instead.
     #[test]
-    fn non_pem_identity_kind_resolves_to_none() {
+    fn keyring_default_identity_resolves_to_a_usable_identity_ref() {
         let dir = Path::new("tests/fixtures/identity_stores/keyring_default");
         assert!(identity_store_present(dir));
-        assert_eq!(read_identity_from_store(dir).unwrap(), None);
+        let identity = read_identity_from_store(dir)
+            .unwrap()
+            .expect("keyring identity should resolve");
+        assert_eq!(identity.kind, "keyring");
+        assert!(
+            identity.pem_path.is_none(),
+            "keyring identities have no file"
+        );
+        assert!(identity.is_usable());
     }
 
     /// `read_identity_from_store` is the same function used for both a
@@ -577,5 +645,55 @@ mod tests {
             .expect("pem identity should resolve");
         assert_eq!(identity.name, "demo-local");
         assert_eq!(identity.algorithm, "secp256k1");
+    }
+
+    #[test]
+    fn enumerates_every_identity_with_its_kind() {
+        let store = Path::new("tests/fixtures/identity_stores/mixed_kinds");
+        let identities = read_all_identities(store).expect("should read the store");
+        let mut names: Vec<&str> = identities.iter().map(|i| i.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["anonymous", "future-kind", "keyring-one", "pem-one"]);
+    }
+
+    #[test]
+    fn a_keyring_identity_has_a_kind_and_no_pem_path() {
+        let store = Path::new("tests/fixtures/identity_stores/mixed_kinds");
+        let identities = read_all_identities(store).unwrap();
+        let keyring = identities.iter().find(|i| i.name == "keyring-one").unwrap();
+        assert_eq!(keyring.kind, "keyring");
+        assert_eq!(keyring.algorithm, "secp256k1");
+        assert!(keyring.pem_path.is_none(), "keyring identities have no file");
+        assert!(keyring.is_usable());
+    }
+
+    #[test]
+    fn a_pem_identity_keeps_its_path() {
+        let store = Path::new("tests/fixtures/identity_stores/mixed_kinds");
+        let identities = read_all_identities(store).unwrap();
+        let pem = identities.iter().find(|i| i.name == "pem-one").unwrap();
+        assert_eq!(pem.kind, "pem");
+        assert!(pem.pem_path.as_ref().unwrap().ends_with("keys/pem-one.pem"));
+        assert!(pem.is_usable());
+    }
+
+    #[test]
+    fn anonymous_is_unusable_because_endpoints_are_controller_gated() {
+        let store = Path::new("tests/fixtures/identity_stores/mixed_kinds");
+        let identities = read_all_identities(store).unwrap();
+        let anonymous = identities.iter().find(|i| i.name == "anonymous").unwrap();
+        assert!(!anonymous.is_usable());
+        let reason = anonymous.unusable_reason.as_ref().expect("should give a reason");
+        assert!(reason.contains("controller-gated"), "got: {reason}");
+    }
+
+    #[test]
+    fn an_unrecognised_kind_is_unusable_and_names_itself() {
+        let store = Path::new("tests/fixtures/identity_stores/mixed_kinds");
+        let identities = read_all_identities(store).unwrap();
+        let future = identities.iter().find(|i| i.name == "future-kind").unwrap();
+        assert!(!future.is_usable());
+        let reason = future.unusable_reason.as_ref().expect("should give a reason");
+        assert!(reason.contains("delegation"), "should name the kind: {reason}");
     }
 }
