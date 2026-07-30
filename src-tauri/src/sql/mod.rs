@@ -7,6 +7,8 @@
 
 mod classify;
 mod limit;
+mod transport;
 
 pub use classify::{classify, Statement};
 pub use limit::{apply_default_limit, LimitedSql};
+pub use transport::{map_reject_message, run_query};
