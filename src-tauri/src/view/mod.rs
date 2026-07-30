@@ -118,7 +118,10 @@ mod tests {
 
     #[test]
     fn count_maps_to_count_dto() {
-        let result = SqlQueryResult::Count { entity: "demo_row".into(), row_count: 3 };
+        let result = SqlQueryResult::Count {
+            entity: "demo_row".into(),
+            row_count: 3,
+        };
         match result_to_dto(result).unwrap() {
             ResultDto::Count { entity, row_count } => {
                 assert_eq!(entity, "demo_row");
@@ -145,7 +148,10 @@ mod tests {
 
     #[test]
     fn serializes_with_a_type_tag() {
-        let dto = ResultDto::Count { entity: "demo_row".into(), row_count: 1 };
+        let dto = ResultDto::Count {
+            entity: "demo_row".into(),
+            row_count: 1,
+        };
         let json = serde_json::to_value(dto).unwrap();
         assert_eq!(json["type"], "count");
     }
@@ -157,7 +163,10 @@ mod tests {
     /// which this test guards against silently regressing.
     #[test]
     fn struct_variant_fields_are_camel_case() {
-        let dto = ResultDto::Count { entity: "demo_row".into(), row_count: 7 };
+        let dto = ResultDto::Count {
+            entity: "demo_row".into(),
+            row_count: 7,
+        };
         let json = serde_json::to_value(dto).unwrap();
         assert_eq!(json["rowCount"], 7);
         assert!(json.get("row_count").is_none());

@@ -52,14 +52,25 @@ mod tests {
 
     #[test]
     fn rejects_writes_and_ddl_by_naming_the_verb() {
-        for sql in ["INSERT INTO demo_row VALUES (1)", "UPDATE demo_row SET a = 1",
-                    "DELETE FROM demo_row", "CREATE INDEX i ON demo_row (a)",
-                    "DROP INDEX i", "ALTER TABLE demo_row ADD COLUMN a text"] {
+        for sql in [
+            "INSERT INTO demo_row VALUES (1)",
+            "UPDATE demo_row SET a = 1",
+            "DELETE FROM demo_row",
+            "CREATE INDEX i ON demo_row (a)",
+            "DROP INDEX i",
+            "ALTER TABLE demo_row ADD COLUMN a text",
+        ] {
             let error = classify(sql).expect_err("should reject");
             let text = error.explanation();
             let verb = sql.split_whitespace().next().unwrap();
-            assert!(text.contains(verb), "explanation should name {verb}: {text}");
-            assert!(text.contains("read-only"), "explanation should say read-only: {text}");
+            assert!(
+                text.contains(verb),
+                "explanation should name {verb}: {text}"
+            );
+            assert!(
+                text.contains("read-only"),
+                "explanation should say read-only: {text}"
+            );
         }
     }
 

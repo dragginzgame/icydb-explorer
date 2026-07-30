@@ -5,10 +5,15 @@ export function SqlConsole({
   onRun,
   error,
   limitAppended,
+  orderByMissing,
 }: {
   onRun: (sql: string) => void;
   error?: AppErrorDto;
   limitAppended?: boolean;
+  /** No default `LIMIT` was appended specifically because the statement has
+   * no `ORDER BY` — icydb rejects `LIMIT`/`OFFSET` without one, so this asks
+   * the user to add one rather than silently doing nothing. */
+  orderByMissing?: boolean;
 }) {
   const [sql, setSql] = useState("");
 
@@ -32,6 +37,12 @@ export function SqlConsole({
         </button>
         {limitAppended && (
           <span className="text-sm text-gray-500">A default LIMIT was added to this query.</span>
+        )}
+        {orderByMissing && (
+          <span className="text-sm text-gray-500">
+            No LIMIT was added: this SELECT has no ORDER BY, and icydb requires one before it will
+            allow pagination. Add an ORDER BY (e.g. by any column) to enable a default LIMIT.
+          </span>
         )}
       </div>
       {error && (

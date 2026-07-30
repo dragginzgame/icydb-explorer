@@ -1,9 +1,10 @@
 [package]
 name = "icydb-explorer"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "A read-only Tauri desktop app for browsing icydb databases living inside Internet Computer canisters"
+authors = ["rem.codes"]
 edition = "2021"
+rust-version = "1.96.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -25,7 +26,6 @@ candid = "0.10"
 ic-agent = "0.48"
 icydb = { workspace = true }
 tokio = { version = "1", features = ["sync"] }
-thiserror = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

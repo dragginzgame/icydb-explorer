@@ -4,4 +4,3 @@ resolver = "2"
 
 [workspace.dependencies]
 icydb = { version = "=0.202.1", features = ["sql-explain"] }
-icydb-build = "=0.202.1"

@@ -12,6 +12,11 @@ test("notifies when a default LIMIT was appended", () => {
   expect(screen.getByText(/limit/i)).toBeDefined();
 });
 
+test("hints that no LIMIT was added because of a missing ORDER BY", () => {
+  render(<SqlConsole onRun={() => {}} orderByMissing />);
+  expect(screen.getByText(/order by/i)).toBeDefined();
+});
+
 test("runs the statement on submit", () => {
   const onRun = vi.fn();
   render(<SqlConsole onRun={onRun} />);

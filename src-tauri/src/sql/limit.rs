@@ -4,6 +4,13 @@ use super::Statement;
 pub struct LimitedSql {
     pub sql: String,
     pub limit_appended: bool,
+    /// Set when this is a `SELECT` with neither its own `LIMIT` nor an
+    /// `ORDER BY`, so no default `LIMIT` was appended even though the
+    /// statement is otherwise unbounded — appending one would only
+    /// manufacture icydb's `UnorderedPagination` rejection (see the module
+    /// doc comment below). Lets a caller (the SQL console) hint at the fix
+    /// instead of the user finding out only after a round trip.
+    pub order_by_missing: bool,
 }
 
 /// Append a default `LIMIT` clause to a `SELECT` statement that doesn't
@@ -39,21 +46,34 @@ pub fn apply_default_limit(sql: &str, statement: Statement, default: u32) -> Lim
         return LimitedSql {
             sql: sql.to_string(),
             limit_appended: false,
+            order_by_missing: false,
         };
     }
 
     let trimmed = sql.trim().trim_end_matches(';').trim_end();
+    let has_limit = contains_limit_keyword(trimmed);
+    let has_order_by = contains_order_by_keywords(trimmed);
 
-    if contains_limit_keyword(trimmed) || !contains_order_by_keywords(trimmed) {
-        LimitedSql {
+    if has_limit {
+        return LimitedSql {
             sql: trimmed.to_string(),
             limit_appended: false,
-        }
-    } else {
-        LimitedSql {
+            order_by_missing: false,
+        };
+    }
+
+    if has_order_by {
+        return LimitedSql {
             sql: format!("{trimmed} LIMIT {default}"),
             limit_appended: true,
-        }
+            order_by_missing: false,
+        };
+    }
+
+    LimitedSql {
+        sql: trimmed.to_string(),
+        limit_appended: false,
+        order_by_missing: true,
     }
 }
 
@@ -104,6 +124,33 @@ mod tests {
         let result = apply_default_limit("SELECT * FROM demo_row", Statement::Select, 100);
         assert_eq!(result.sql, "SELECT * FROM demo_row");
         assert!(!result.limit_appended);
+        assert!(
+            result.order_by_missing,
+            "should flag that no LIMIT was added because of the missing ORDER BY"
+        );
+    }
+
+    /// The `order_by_missing` hint is specific to "we chose not to append a
+    /// LIMIT because there's no ORDER BY" — it must not fire for any of the
+    /// other untouched-statement cases (already has its own LIMIT, or isn't
+    /// a SELECT at all).
+    #[test]
+    fn order_by_missing_is_false_when_a_limit_was_appended() {
+        let result =
+            apply_default_limit("SELECT * FROM demo_row ORDER BY id", Statement::Select, 100);
+        assert!(!result.order_by_missing);
+    }
+
+    #[test]
+    fn order_by_missing_is_false_when_the_statement_already_has_its_own_limit() {
+        let result = apply_default_limit("SELECT * FROM demo_row LIMIT 5", Statement::Select, 100);
+        assert!(!result.order_by_missing);
+    }
+
+    #[test]
+    fn order_by_missing_is_false_for_non_select_statements() {
+        let result = apply_default_limit("SHOW ENTITIES", Statement::Show, 100);
+        assert!(!result.order_by_missing);
     }
 
     /// `ORDER BY` detection is case-insensitive, matching how `LIMIT`
@@ -127,6 +174,28 @@ mod tests {
     fn detects_limit_case_insensitively() {
         let result = apply_default_limit("select * from demo_row limit 5", Statement::Select, 100);
         assert!(!result.limit_appended);
+    }
+
+    /// Regression test for a bug the whole-word matchers must not
+    /// reintroduce: a column literally named `limit_reached` contains the
+    /// substring `"limit"`, so a `.contains("limit")` shortcut would
+    /// wrongly conclude the statement already has a `LIMIT` clause and
+    /// silently skip appending the default one. Both `contains_limit_keyword`
+    /// and `contains_order_by_keywords` are whole-word matchers precisely to
+    /// avoid this — this test would fail if either were ever refactored back
+    /// to a substring check.
+    #[test]
+    fn column_named_limit_reached_is_not_mistaken_for_a_limit_clause() {
+        let result = apply_default_limit(
+            "SELECT limit_reached FROM demo_row ORDER BY id",
+            Statement::Select,
+            100,
+        );
+        assert_eq!(
+            result.sql,
+            "SELECT limit_reached FROM demo_row ORDER BY id LIMIT 100"
+        );
+        assert!(result.limit_appended);
     }
 
     #[test]
