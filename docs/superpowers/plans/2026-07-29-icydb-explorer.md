@@ -1712,7 +1712,9 @@ test("right-aligns numeric kinds", () => {
 
 test("renders principals and ulids in a monospace font", () => {
   const { container } = render(<ValueCell value={{ kind: "principal", display: "aaaaa-aa" }} />);
-  expect(container.firstChild?.className).toContain("font-mono");
+  // Cast rather than reading `.className` off `ChildNode`, which has no such
+  // property. Keeping test files inside the type-checked program is worth one cast.
+  expect((container.firstChild as HTMLElement)?.className).toContain("font-mono");
 });
 ```
 
