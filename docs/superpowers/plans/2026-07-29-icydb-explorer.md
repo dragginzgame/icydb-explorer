@@ -44,14 +44,28 @@
 | `view/dto.rs` | All DTO type definitions (serde `Serialize`) |
 | `commands.rs` | Tauri command handlers |
 
-### Fixture canister (`fixture/`)
+### Fixture canister (`fixture/` + `fixture-schema/`)
+
+**Two crates, not one.** icydb's `#[canister]`/`#[entity]` macros register into a
+process-global registry via a `#[ctor]` hook that fires only in a process which
+links the compiled entity code. A build script is a separate binary compiled
+*before* its own crate's `lib.rs`, so entities declared in the canister crate are
+invisible to its `build.rs` and codegen fails with `PathNotFound`. Declarations
+must therefore live in a separate crate that the canister depends on **twice** —
+as a normal dependency and a build-dependency.
+
+This is exactly how the real consumer is arranged: `dragginz/toko` keeps schema in
+a `design` crate, lists it in both dependency sections, and opens its canister
+`build.rs` with `use design as _;` to force the link.
 
 | File | Responsibility |
 |---|---|
-| `fixture/Cargo.toml` | Canister crate with `icydb` + `sql` feature |
+| `fixture-schema/Cargo.toml` | Schema crate (plain rlib), depends only on `icydb` |
+| `fixture-schema/src/lib.rs` | `#[canister]`, `#[store]`, and entity declarations |
+| `fixture/Cargo.toml` | Canister crate; `fixture-schema` in **both** `[dependencies]` and `[build-dependencies]` |
 | `fixture/icydb.toml` | Read-only SQL surface config |
-| `fixture/build.rs` | `icydb-build` invocation |
-| `fixture/src/lib.rs` | Entity declarations + actor macro |
+| `fixture/build.rs` | `use fixture_schema as _;` then `build_configured_canister!` |
+| `fixture/src/lib.rs` | Re-exports the schema, `icydb::start!()`, seed wiring |
 | `fixture/src/seed.rs` | Seed rows covering `OutputValue` variants |
 
 ### Frontend (`src/`)
@@ -168,8 +182,11 @@ git commit -m "chore: scaffold Tauri 2 app with pinned icydb and Tailwind"
 ## Task 2: Fixture canister with the SQL surface enabled
 
 **Files:**
+- Create: `fixture-schema/Cargo.toml`, `fixture-schema/src/lib.rs`
 - Create: `fixture/Cargo.toml`, `fixture/icydb.toml`, `fixture/build.rs`, `fixture/src/lib.rs`, `fixture/src/seed.rs`
 - Modify: `Cargo.toml` (workspace root — create if absent)
+
+See the File Structure section for why the schema must be its own crate.
 
 **Interfaces:**
 - Consumes: nothing
@@ -181,7 +198,7 @@ git commit -m "chore: scaffold Tauri 2 app with pinned icydb and Tailwind"
 
 ```toml
 [workspace]
-members = ["src-tauri", "fixture"]
+members = ["src-tauri", "fixture", "fixture-schema"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -203,13 +220,21 @@ crate-type = ["cdylib"]
 
 [dependencies]
 candid = "0.10"
-ic-cdk = "0.17"
+ic-cdk = "0.20"
 icydb = { workspace = true }
+fixture-schema = { path = "../fixture-schema" }
 serde = { version = "1", features = ["derive"] }
 
 [build-dependencies]
 icydb = { workspace = true }
+fixture-schema = { path = "../fixture-schema" }
 ```
+
+`ic-cdk` must be `0.20`, not `0.17`: icydb 0.202.1 depends transitively on
+`ic-cdk ^0.20.1`, and Cargo's `links` uniqueness rule rejects two versions of it.
+
+`fixture-schema` appears in **both** dependency sections — that is the whole point
+of the split, not a redundancy to tidy away.
 
 `icydb` — not `icydb-build` — belongs in `[build-dependencies]`: the `icydb::build`
 facade is the advertised downstream build-script API, and `icydb-build` is an
@@ -234,12 +259,23 @@ ic = false
 - [ ] **Step 4: Create `fixture/build.rs`**
 
 ```rust
+use fixture_schema as _;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    icydb::build::build_configured_canister!((), "crate::Canister", "fixture")
+    icydb::build::build_configured_canister!((), "fixture_schema::Canister", "fixture");
 
     Ok(())
 }
 ```
+
+Three details, each of which breaks the build if wrong:
+
+- `use fixture_schema as _;` forces the build script to link the schema crate so its
+  `#[ctor]` registration hooks run. Without it the crate may be elided and codegen
+  fails with `PathNotFound`. toko's canister `build.rs` opens with the same line.
+- The canister path is `"fixture_schema::Canister"` — the crate's Cargo name with
+  hyphens turned to underscores, because that is what `module_path!()` yields.
+- The macro call needs a trailing semicolon.
 
 The macro takes `($canister_ty, $canister_path, $canister_name)` and expands to a
 `?` call, so `main` must return `Result`. `()` is the correct type argument from a
@@ -252,7 +288,9 @@ the SQL surface config would be ignored.
 
 - [ ] **Step 5: Declare entities covering the interesting value types**
 
-Create `fixture/src/lib.rs`. The exact macro syntax must be copied from icydb's own tests — read `~/.cargo/registry/src/*/icydb-0.202.1/tests/` for a working entity declaration and mirror it. The entity set to declare:
+Create `fixture-schema/src/lib.rs` for the declarations, and keep
+`fixture/src/lib.rs` thin — it re-exports the schema, calls `icydb::start!()`, and
+wires the seed module. The exact macro syntax must be copied from icydb's own tests — read `~/.cargo/registry/src/*/icydb-0.202.1/tests/` for a working entity declaration and mirror it. The entity set to declare:
 
 - `demo_row`: primary key `id` (Ulid); fields `name` (Text), `count` (Nat64), `balance` (Decimal), `owner` (Principal), `created` (Timestamp), `payload` (Blob), `active` (Bool), `note` (optional Text, to exercise `Null`), `tags` (List of Text)
 - `demo_child`: primary key `id` (Ulid); field `parent` (Ulid), plus a named index on `parent`
