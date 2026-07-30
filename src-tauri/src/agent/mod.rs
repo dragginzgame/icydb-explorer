@@ -5,8 +5,10 @@
 //! key. Neither is something callers should repeat on every query, so
 //! `AgentPool` builds one `Agent` per environment and reuses it.
 
+mod export;
 mod identity;
 
+pub use export::export_pem;
 pub use identity::load_identity;
 
 use std::collections::HashMap;

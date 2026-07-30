@@ -25,7 +25,7 @@ serde_json = "1"
 candid = "0.10"
 ic-agent = "0.48"
 icydb = { workspace = true }
-tokio = { version = "1", features = ["sync"] }
+tokio = { version = "1", features = ["sync", "process", "time"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
