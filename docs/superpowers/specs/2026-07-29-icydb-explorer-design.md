@@ -83,14 +83,14 @@ independent follow-up, not step zero.
 | Access | Read-only | `SELECT`/`SHOW`/`DESCRIBE`/`EXPLAIN` only; smallest surface, safe to point anywhere |
 | Transport | `ic-agent` in the Tauri backend | Faster and cleaner errors than shelling out to `icp`; no external binary on PATH |
 | Sharded entities | Canister tree, query one leaf | Never invents cross-canister query semantics or lies about where a row lives |
-| Canister discovery | Root id from `.icp/`, then live topology walk | Zero manual entry for canic-style projects; see "Discovery inputs" |
+| Canister discovery | Name→id map from `.icp/`, then a per-canister topology walk | Zero manual entry; a forest, not a single root — see "Discovery inputs" |
 | Frontend | React + Vite + Tailwind | Matches every other frontend in the user's projects |
 | icydb version | Pinned `=0.202.1` | Matches toko's pin; icydb moves fast and `SqlQueryResult` is version-coupled |
 
 ## Discovery inputs
 
-A canic-orchestrated project keeps everything the explorer needs under `.icp/`.
-Verified against `dragginz/toko`:
+An `icp`-managed project keeps everything the explorer needs under `.icp/`, but the
+exact layout varies between projects.
 
 **Corrected 2026-07-30 after the final whole-branch review.** The original version
 of this table generalized from a single sample (`dragginz/toko`), where the network
