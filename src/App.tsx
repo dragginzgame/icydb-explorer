@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   canisterTree,
   describeTable,
@@ -71,14 +71,29 @@ function App() {
 
   // The fleet tree is the only way canisters are discovered at all — a
   // failure to load it must be visible, never a silently empty tree.
+  //
+  // `cancelled` guards every `setState` below against a stale response: if
+  // `env` changes again before this fetch resolves, the cleanup flips
+  // `cancelled` to true so the in-flight promise's `.then`/`.catch` becomes
+  // a no-op instead of clobbering whatever the newer selection already set.
   useEffect(() => {
     setTree(null);
     setTreeError(null);
     setCanister(null);
     if (!env) return;
+    let cancelled = false;
     canisterTree(env)
-      .then(setTree)
-      .catch((error: AppErrorDto) => setTreeError(error));
+      .then((result) => {
+        if (cancelled) return;
+        setTree(result);
+      })
+      .catch((error: AppErrorDto) => {
+        if (cancelled) return;
+        setTreeError(error);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [env]);
 
   useEffect(() => {
@@ -86,15 +101,23 @@ function App() {
     setEntitiesError(null);
     setEntity(null);
     if (!env || !canister) return;
+    let cancelled = false;
     listTables(env, canister)
       .then((result) => {
+        if (cancelled) return;
         if (result.type === "entities") {
           setEntities(result.entities);
         } else {
           setEntitiesError(genericError("list_tables returned an unexpected result shape."));
         }
       })
-      .catch((error: AppErrorDto) => setEntitiesError(error));
+      .catch((error: AppErrorDto) => {
+        if (cancelled) return;
+        setEntitiesError(error);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [env, canister]);
 
   useEffect(() => {
@@ -105,19 +128,25 @@ function App() {
     setOffset(0);
     setLastPageRowCount(0);
     if (!env || !canister || !entity) return;
+    let cancelled = false;
 
     describeTable(env, canister, entity)
       .then((result) => {
+        if (cancelled) return;
         if (result.type === "schema") {
           setSchema(result);
         } else {
           setSchemaError(genericError("describe_table returned an unexpected result shape."));
         }
       })
-      .catch((error: AppErrorDto) => setSchemaError(error));
+      .catch((error: AppErrorDto) => {
+        if (cancelled) return;
+        setSchemaError(error);
+      });
 
     fetchRows(env, canister, entity, 0)
       .then((result) => {
+        if (cancelled) return;
         if (result.type === "rows") {
           setRows(result);
           setLastPageRowCount(result.rowCount);
@@ -125,14 +154,42 @@ function App() {
           setRowsError(genericError("fetch_rows returned an unexpected result shape."));
         }
       })
-      .catch((error: AppErrorDto) => setRowsError(error));
+      .catch((error: AppErrorDto) => {
+        if (cancelled) return;
+        setRowsError(error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [env, canister, entity]);
+
+  // `loadMore` isn't tied to a `useEffect` cleanup (it's fired from a click,
+  // not a selection change), so it uses a request-token equivalent instead:
+  // `selectionRef` always holds the *currently selected* env/canister/entity,
+  // updated by the effect below on every selection change. If the user picks
+  // a different table (or canister, or environment) while a "Load more"
+  // fetch for the old one is still in flight, the stale response's selection
+  // snapshot won't match `selectionRef.current` when it resolves, and it's
+  // dropped instead of appending pages from the wrong table onto the new
+  // selection's (just-reset-to-null) rows.
+  const selectionRef = useRef<{ env: string | null; canister: string | null; entity: string | null }>(
+    { env: null, canister: null, entity: null },
+  );
+  useEffect(() => {
+    selectionRef.current = { env, canister, entity };
   }, [env, canister, entity]);
 
   const loadMore = useCallback(() => {
     if (!env || !canister || !entity) return;
     const nextOffset = offset + DEFAULT_ROW_LIMIT;
+    const isStale = () => {
+      const current = selectionRef.current;
+      return current.env !== env || current.canister !== canister || current.entity !== entity;
+    };
     fetchRows(env, canister, entity, nextOffset)
       .then((result) => {
+        if (isStale()) return;
         if (result.type !== "rows") {
           setRowsError(genericError("fetch_rows returned an unexpected result shape."));
           return;
@@ -143,7 +200,10 @@ function App() {
         setLastPageRowCount(result.rowCount);
         setOffset(nextOffset);
       })
-      .catch((error: AppErrorDto) => setRowsError(error));
+      .catch((error: AppErrorDto) => {
+        if (isStale()) return;
+        setRowsError(error);
+      });
   }, [env, canister, entity, offset]);
 
   const handleRunSql = useCallback(
@@ -298,15 +358,24 @@ function SqlResultView({ result }: { result: ResultDto }) {
       </ul>
     );
   }
-  return (
-    <ul className="text-sm">
-      {result.memory.map((entry) => (
-        <li key={entry.memoryId}>
-          {entry.tag} (#{entry.memoryId}) — {entry.storePath}
-        </li>
-      ))}
-    </ul>
-  );
+  if (result.type === "memory") {
+    return (
+      <ul className="text-sm">
+        {result.memory.map((entry) => (
+          <li key={entry.memoryId}>
+            {entry.tag} (#{entry.memoryId}) — {entry.storePath}
+          </li>
+        ))}
+      </ul>
+    );
+  }
+
+  // Exhaustiveness guard: every `ResultDto` variant is handled by an `if`
+  // above, so `result` is narrowed to `never` here. Adding a ninth variant
+  // without a matching branch turns this into a compile error instead of a
+  // silent runtime no-op.
+  const exhaustiveCheck: never = result;
+  return exhaustiveCheck;
 }
 
 export default App;
