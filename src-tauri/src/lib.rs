@@ -2,6 +2,7 @@ pub mod agent;
 pub mod discovery;
 pub mod error;
 pub mod sql;
+pub mod topology;
 pub mod view;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
