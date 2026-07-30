@@ -92,21 +92,37 @@ independent follow-up, not step zero.
 A canic-orchestrated project keeps everything the explorer needs under `.icp/`.
 Verified against `dragginz/toko`:
 
+**Corrected 2026-07-30 after the final whole-branch review.** The original version
+of this table generalized from a single sample (`dragginz/toko`), where the network
+and the project are *both* named `toko` — so `toko.ids.json` read as "project name"
+when the convention is actually **network name**. It also assumed a project-local
+`.icp/cli-home/`, which this repo does not have at all. The layout varies, so
+discovery must handle both shapes.
+
 | Path | Yields |
 |---|---|
-| `.icp/cache/mappings/<project>.ids.json` | Statically known canister ids |
-| `.icp/cli-home/port-descriptors/<port>.json` | Replica `gateway.{ip,port}`, network name, cached `root-key` |
-| `.icp/cli-home/identity/identity_defaults.json` | Default identity name |
-| `.icp/cli-home/identity/identity_list.json` | Identity `algorithm` (e.g. `secp256k1`) and principal |
-| `.icp/cli-home/identity/keys/<name>.pem` | The identity key itself |
-| `.icp/<env>/canisters/<role>/<role>.did` | Known canister roles and their candid interfaces |
+| `.icp/cache/networks/<network>/descriptor.json` | Primary source: `network`, `gateway.{ip,port}`, cached `root-key` |
+| `.icp/cli-home/port-descriptors/<port>.json` | Same JSON shape; present in some projects, absent in others. Fallback. |
+| `.icp/cache/mappings/<network>.ids.json` | A **name → canister-id map**, keyed by network. Not guaranteed to contain a `root` entry. |
+| `.icp/cli-home/identity/…` | Project-local identity store, when present |
+| `~/Library/Application Support/org.dfinity.icp-cli/identity/` | User-level identity store; the fallback when no project-local store exists |
+| `.icp/<env>/canisters/<role>/<role>.did` | Built canister artifacts, when a project builds per-role |
 
-**Static ids are not sufficient.** `toko.ids.json` contains only `root`; canic creates
-the rest of the fleet dynamically at runtime. Canister ids for hubs, shards, and
-instances exist only in root's live topology. So the tree walk is not merely nicer
-navigation — it is the only way to obtain most canister ids:
+Verified against two real trees: this repo (`local.ids.json` → `{"fixture": …}`, no
+`cli-home/`, descriptor under `cache/networks/local/`) and `toko`
+(`toko.ids.json` → `{"root": …}`, with a `cli-home/`).
 
-1. Read the root canister id from `.icp/cache/mappings/<project>.ids.json`.
+**Static ids are not sufficient, but they are also not always rooted.** In a canic
+fleet like toko, `toko.ids.json` contains only `root` and the rest of the fleet is
+created at runtime, so the tree walk is the only way to reach most canisters. In a
+plain project like this repo's fixture, the mapping contains the canisters directly
+and there is no `root` at all.
+
+So the model is a **forest**: every entry in the mapping is a tree root, and each is
+walked for canic children if it has them. A canister without `canic_*` endpoints is
+simply a leaf. Hardcoding a `root` key breaks every non-canic project:
+
+1. Read the name → id map from `.icp/cache/mappings/<network>.ids.json`.
 2. Call `canic_canister_children` on it, paging with
    `record { offset : nat64; limit : nat64 }`.
 3. Each `CanisterInfo` is `record { pid : principal; role : text; created_at : nat64;
