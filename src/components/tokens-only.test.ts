@@ -154,8 +154,8 @@ test.each(sources)("$name sets no colour through an inline style", ({ source }) 
 
 /** The token names `@theme inline` actually defines, split by the utility family
  *  they back: `--color-*` backs `bg-`/`text-`/`border-`, `--radius-*` backs
- *  `rounded-`. */
-function definedTokens(): { colour: Set<string>; radius: Set<string> } {
+ *  `rounded-`, `--container-*` backs `max-w-`. */
+function definedTokens(): { colour: Set<string>; radius: Set<string>; container: Set<string> } {
   const start = themeCss.indexOf("@theme inline");
   const open = themeCss.indexOf("{", start);
   const close = themeCss.indexOf("}", open);
@@ -166,7 +166,7 @@ function definedTokens(): { colour: Set<string>; radius: Set<string> } {
         (match) => match[1],
       ),
     );
-  return { colour: named("color"), radius: named("radius") };
+  return { colour: named("color"), radius: named("radius"), container: named("container") };
 }
 
 /** The leading segment of every defined token name — `surface-inset` contributes
@@ -208,9 +208,10 @@ const themeCss = (
 
 test("the theme file is readable and defines tokens", () => {
   expect(themeCss).toBeTypeOf("string");
-  const { colour, radius } = definedTokens();
+  const { colour, radius, container } = definedTokens();
   expect(colour.size).toBeGreaterThan(10);
   expect(radius.size).toBeGreaterThan(1);
+  expect(container.size).toBeGreaterThan(0);
 });
 
 /// The highest-value check here, and the one nothing else covers: whether a
@@ -221,11 +222,24 @@ test("the theme file is readable and defines tokens", () => {
 /// the element renders transparent, and the only symptom is a panel that looks
 /// slightly wrong in every theme equally, which is precisely the symptom nobody
 /// attributes to a typo.
+///
+/// `max-w`/`container` joined the families for the same reason: `max-w-cell`
+/// resolving to nothing collapses the cell width cap silently — no rule, no
+/// error, every column blows out — which is exactly the phase-2a symptom this
+/// whole file exists to catch, and until now this was the one family it did
+/// not cover. `--container-cell` is a single, unnamespaced token name, so this
+/// inherits the same accepted gap `namespaces` already documents for colour:
+/// a typo that changes the *whole* leading segment (`max-w-cel` for
+/// `max-w-cell`, or a rename of the definition itself to something sharing no
+/// prefix) reads as one of Tailwind's own `max-w-*` values and passes. What
+/// this closes is the far more common case — the token exists, but a usage
+/// site's value doesn't match it exactly.
 test.each(sources)("$name references only tokens that exist", ({ source }) => {
-  const { colour, radius } = definedTokens();
+  const { colour, radius, container } = definedTokens();
   const families = [
     { utilities: ["bg", "text", "border"], tokens: colour },
     { utilities: ["rounded"], tokens: radius },
+    { utilities: ["max-w"], tokens: container },
   ];
 
   const unknown: string[] = [];

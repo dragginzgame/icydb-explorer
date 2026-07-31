@@ -651,7 +651,25 @@ function App() {
               className="border-r border-rule bg-surface-1"
             >
               {treeError && <ErrorBanner error={treeError} />}
-              {forest && (
+              {/* `forest === null` covers both "the fetch is still in flight"
+                  and "there is no env/identity to fetch with yet" (the effect
+                  early-returns on either, leaving `forest` null forever) — the
+                  latter already has its own banner above the pane row, so
+                  showing "loading" here is at worst redundant with it, never
+                  misleading on its own. A plain line, not `PaneEmpty`: real
+                  work may still be in flight, and `PaneEmpty` must never be
+                  mistaken for that (see its own doc comment). */}
+              {!treeError && forest === null && (
+                <p className="p-3 text-sm text-text-3">Loading canisters…</p>
+              )}
+              {/* A forest that resolved to nothing is a fact about the
+                  environment, not a loading state — `CanisterTree` itself
+                  draws no distinction and would otherwise render a silently
+                  empty `<ul>` here. */}
+              {!treeError && forest && forest.length === 0 && (
+                <PaneEmpty title="No canisters">This environment has nothing deployed yet.</PaneEmpty>
+              )}
+              {!treeError && forest && forest.length > 0 && (
                 <CanisterTree trees={forest} selectedPid={canister} onSelect={setCanister} />
               )}
             </Pane>
@@ -663,7 +681,24 @@ function App() {
               className="border-r border-rule bg-surface-1"
             >
               {entitiesError && <ErrorBanner error={entitiesError} />}
-              {entities && <TableList entities={entities} selected={entity} onSelect={setEntity} />}
+              {/* Three blank conditions used to collapse into one silent gap:
+                  no canister picked yet (every launch, since nothing
+                  auto-selects one), the `listTables` fetch in flight, and a
+                  canister with no entities — the last of which `TableList`
+                  already renders its own `PaneEmpty` for below. The first two
+                  need distinct states here, mirroring the Rows/Schema panes'
+                  own "no <upstream> selected" empty state. */}
+              {!entitiesError && canister === null && (
+                <PaneEmpty title="No canister selected">
+                  Select a canister to see its tables.
+                </PaneEmpty>
+              )}
+              {!entitiesError && canister !== null && entities === null && (
+                <p className="p-3 text-sm text-text-3">Loading tables…</p>
+              )}
+              {!entitiesError && entities && (
+                <TableList entities={entities} selected={entity} onSelect={setEntity} />
+              )}
             </Pane>
 
             {/* The banner and the grid render TOGETHER, not one or the other: a
@@ -793,7 +828,16 @@ function SqlBar({
           ×
         </button>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto p-2">
+      {/* `@container` gives this scroll region its own query container, so a
+          "rows" result rendered through `RowGrid` below (specifically
+          `SqlResultView`'s call site) has an ancestor for `max-w-cell`'s `cqw`
+          half to resolve against — the Rows pane's `@container` (see its own
+          comment) only covers *that* call site, not this one. Without it
+          `cqw` here resolves against no container at all: Chromium measured
+          that as a collapse to zero width, and the CSS container-query spec's
+          documented fallback is the small viewport size instead — different
+          failures, but both wrong, and this is the fix for either reading. */}
+      <div className="min-h-0 flex-1 overflow-auto p-2 @container">
         <SqlConsole
           onRun={onRun}
           error={error}

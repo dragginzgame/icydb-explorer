@@ -771,6 +771,98 @@ test("the shell presents four named panes", async () => {
   }
 });
 
+/// `overflow-hidden` on the pane row is about WIDTH, not height: the three
+/// side panes are `shrink-0` and `PANE_BOUNDS` allows up to 1520px of fixed
+/// width between them, so on a window narrower than that, dragged to those
+/// maxima, the row is wider than its container — without the clip that
+/// overflow reaches all the way to the document, which gains a horizontal
+/// scrollbar and slides the full-width header out of alignment with the panes
+/// (see the comment above the pane row in `App.tsx`). The phase's own mutation
+/// record shows removing this class is invisible to every other test in the
+/// suite; this is the cheap class-presence guard for it, the same shape as the
+/// `@container` guard above.
+test("the pane row clips its own overflow", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/toko",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    { pid: "aaaaa-aa", role: "canister-a", children: [] },
+  ]);
+
+  render(<App />);
+
+  const canistersPane = await screen.findByRole("region", { name: "Canisters" });
+  const paneRow = canistersPane.parentElement;
+  expect(paneRow).not.toBeNull();
+  expect(paneRow!.className).toMatch(/(?:^|\s)overflow-hidden(?:\s|$)/);
+});
+
+/// The Tables pane used to render nothing at all in two of its three blank
+/// conditions: no canister picked (every launch, since nothing
+/// auto-selects one) and `listTables` in flight. Only the third — a canister
+/// with no entities — had a state, drawn inside `TableList` itself. This
+/// drives the first two in one render, `deferred` holding `listTables` open
+/// so the loading state is observable before it resolves.
+test("the Tables pane shows a named empty state before a canister is picked, and a loading state while listing", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/toko",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    { pid: "aaaaa-aa", role: "canister-a", children: [] },
+  ]);
+  const forTables = deferred<ResultDto>();
+  vi.mocked(commands.listTables).mockReturnValue(forTables.promise);
+
+  render(<App />);
+
+  const tablesPane = await screen.findByRole("region", { name: "Tables" });
+  expect(within(tablesPane).getByText("No canister selected")).toBeInTheDocument();
+  expect(within(tablesPane).getByText(/select a canister to see its tables/i)).toBeInTheDocument();
+
+  fireEvent.click(await screen.findByText("canister-a"));
+
+  expect(within(tablesPane).getByText(/loading tables/i)).toBeInTheDocument();
+  expect(within(tablesPane).queryByText("No canister selected")).not.toBeInTheDocument();
+
+  forTables.resolve({ type: "entities", entities: [entity("DemoRow", 2)] });
+
+  expect(await within(tablesPane).findByText("DemoRow")).toBeInTheDocument();
+  expect(within(tablesPane).queryByText(/loading tables/i)).not.toBeInTheDocument();
+});
+
+/// The Canisters pane had neither a loading nor an empty state: `forest ===
+/// null` (a fetch in flight) and `forest === []` (an environment that
+/// genuinely lists none) both used to render an empty scroll region —
+/// indistinguishable from each other and from a project with nothing to show.
+/// `deferred` holds `canisterTree` open so the loading state is observable
+/// before it resolves to the empty forest.
+test("the Canisters pane shows a loading state while the tree fetches, and a named empty state when it resolves empty", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/toko",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  const forTree = deferred<TreeNode[]>();
+  vi.mocked(commands.canisterTree).mockReturnValue(forTree.promise);
+
+  render(<App />);
+
+  const canistersPane = await screen.findByRole("region", { name: "Canisters" });
+  expect(within(canistersPane).getByText(/loading canisters/i)).toBeInTheDocument();
+
+  forTree.resolve([]);
+
+  expect(await within(canistersPane).findByText("No canisters")).toBeInTheDocument();
+  expect(
+    within(canistersPane).getByText(/this environment has nothing deployed yet/i),
+  ).toBeInTheDocument();
+  expect(within(canistersPane).queryByText(/loading canisters/i)).not.toBeInTheDocument();
+});
+
 /// Each pane owns its own failure. The rows fetch failing used to insert a
 /// banner above the whole pane row, pushing every pane down; now the banner
 /// lives inside the pane that failed, and the panes beside it do not move.
@@ -973,30 +1065,81 @@ test("switching to a canister with no tables shows the empty state, not skeleton
 });
 
 /// `max-w-cell` is `min(22rem, 42cqw)`, and `cqw` resolves against the nearest
-/// ancestor with `container-type: inline-size` — which is what the Rows pane's
-/// `@container` class establishes. Lose that class and every capped cell in the
-/// grid resolves its cap against nothing.
+/// ancestor with `container-type: inline-size` — established by an
+/// `@container` class. The real invariant is not "the Rows pane has this
+/// class" (what this test used to assert): it is that EVERY `max-w-cell`
+/// element in the app has such an ancestor, whichever of `RowGrid`'s two call
+/// sites drew it. The narrower version passed while the SQL bar's call site
+/// (`SqlResultView`, which shares no ancestor with the Rows pane's
+/// `@container`) had no container of its own — exactly the defect this
+/// broader assertion exists to catch.
 ///
 /// Nothing else would catch it: jsdom evaluates no container queries and no
 /// layout, `tokens-only`'s existence check covers `bg-`/`text-`/`border-`/
-/// `rounded-` but NOT `max-w-`, and every width test asserts only that the class
-/// is present. So the whole suite stays green while the grid is broken. This is
-/// a class-presence assertion, which is all jsdom can offer — it cannot see the
-/// resolved width, only that the container the width depends on is declared.
-test("the rows pane declares the query container that the cell cap resolves against", async () => {
+/// `rounded-` but NOT `max-w-`, and every width test asserts only that a class
+/// is present somewhere. So the whole suite stayed green while one call site's
+/// grid was broken. This is a class-presence, DOM-structure assertion, which
+/// is all jsdom can offer — it cannot evaluate container queries or resolve
+/// widths, only confirm that the container the width depends on is declared
+/// in the ancestor chain.
+///
+/// Both call sites are driven in this one render: a table selected in the Rows
+/// pane populates `RowGrid` there, and running a `SELECT` in the SQL bar
+/// populates `SqlResultView`'s separate `RowGrid`. Distinct column names in
+/// the two fixtures (`a`/`b` vs `x`/`y`) keep the two grids' cell text from
+/// colliding under `findByText`.
+test("every max-w-cell element in the app has an @container ancestor", async () => {
   vi.mocked(commands.listEnvironments).mockResolvedValue({
     root: "/Users/me/projects/toko",
     environments: [environmentFixture()],
     error: null,
   });
   vi.mocked(commands.canisterTree).mockResolvedValue([
-    { pid: "root-id", role: "root", children: [] },
+    { pid: "aaaaa-aa", role: "canister-a", children: [] },
   ]);
+  vi.mocked(commands.listTables).mockResolvedValue({
+    type: "entities",
+    entities: [entity("DemoRow", 2)],
+  });
+  vi.mocked(commands.describeTable).mockResolvedValue({
+    type: "schema",
+    entity: "DemoRow",
+    columns: [],
+    indexes: [],
+  });
+  vi.mocked(commands.fetchRows).mockResolvedValue(rowsFixture("DemoRow", ["a", "b"], 1));
+  vi.mocked(commands.runSql).mockResolvedValue({
+    result: rowsFixture("DemoRow", ["x", "y"], 1),
+    limitAppended: false,
+    orderByMissing: false,
+  });
 
   render(<App />);
+  fireEvent.click(await screen.findByText("canister-a"));
+  fireEvent.click(await screen.findByText("DemoRow"));
+  expect(await screen.findByText("a-0")).toBeInTheDocument();
 
-  const rowsPane = await screen.findByRole("region", { name: "Rows" });
-  expect(rowsPane.className).toMatch(/(?:^|\s)@container(?:\s|$)/);
+  // The second call site: `SqlResultView`'s `RowGrid`, reached through the SQL
+  // bar, which starts collapsed.
+  fireEvent.click(screen.getByRole("button", { name: "SQL" }));
+  fireEvent.change(screen.getByRole("textbox"), { target: { value: "SELECT x, y FROM DemoRow" } });
+  fireEvent.click(screen.getByRole("button", { name: "Run" }));
+  expect(await screen.findByText("x-0")).toBeInTheDocument();
+
+  const cells = document.querySelectorAll('[class*="max-w-cell"]');
+  expect(cells.length).toBeGreaterThan(0);
+  for (const cell of cells) {
+    let node: Element | null = cell;
+    let hasContainerAncestor = false;
+    while (node) {
+      if (node.classList.contains("@container")) {
+        hasContainerAncestor = true;
+        break;
+      }
+      node = node.parentElement;
+    }
+    expect(hasContainerAncestor).toBe(true);
+  }
 });
 
 /// A paging failure must not throw away what the reader is already reading.
