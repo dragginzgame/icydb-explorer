@@ -43,12 +43,12 @@ function CanisterTreeNode({
         type="button"
         onClick={() => onSelect(node.pid)}
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
-        className={`block w-full rounded px-2 py-1 text-left ${
-          isSelected ? "bg-blue-100" : "hover:bg-gray-100"
+        className={`block w-full rounded-row px-2 py-1 text-left ${
+          isSelected ? "bg-sel-bg text-sel-text" : "hover:bg-surface-2"
         }`}
       >
         <div>{node.role}</div>
-        <div className="truncate font-mono text-xs text-gray-400">{node.pid}</div>
+        <div className="truncate font-mono text-xs text-text-3">{node.pid}</div>
       </button>
       {node.children.length > 0 && (
         <ul>

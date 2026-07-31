@@ -15,17 +15,17 @@ export function RowGrid({
   onLoadMore: () => void;
 }) {
   if (rows.rows.length === 0) {
-    return <p className="p-4 text-sm text-gray-500">No rows</p>;
+    return <p className="p-4 text-sm text-text-2">No rows</p>;
   }
 
   return (
     <div className="flex flex-col gap-2">
       <div className="overflow-auto">
         <table className="min-w-full border-collapse text-sm">
-          <thead className="sticky top-0 bg-gray-100">
+          <thead className="sticky top-0 bg-surface-inset">
             <tr>
               {rows.columns.map((column) => (
-                <th key={column} className="border-b px-2 py-1 text-left font-semibold">
+                <th key={column} className="border-b border-rule px-2 py-1 text-left font-semibold">
                   {column}
                 </th>
               ))}
@@ -34,7 +34,7 @@ export function RowGrid({
           <tbody>
             {rows.rows.map((row, rowIndex) => (
               // eslint-disable-next-line react/no-array-index-key
-              <tr key={rowIndex} className="border-b">
+              <tr key={rowIndex} className="border-b border-rule">
                 {row.map((cell, cellIndex) => (
                   // eslint-disable-next-line react/no-array-index-key
                   <td key={cellIndex} className="px-2 py-1">
@@ -50,7 +50,7 @@ export function RowGrid({
         <button
           type="button"
           onClick={onLoadMore}
-          className="self-start rounded border px-3 py-1 text-sm hover:bg-gray-100"
+          className="self-start rounded-control border border-rule px-3 py-1 text-sm hover:bg-surface-2"
         >
           Load more
         </button>

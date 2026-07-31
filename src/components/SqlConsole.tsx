@@ -24,29 +24,29 @@ export function SqlConsole({
         onChange={(event) => setSql(event.target.value)}
         rows={4}
         spellCheck={false}
-        className="w-full rounded border p-2 font-mono text-sm"
+        className="w-full rounded-control border border-rule p-2 font-mono text-sm"
         placeholder="SELECT * FROM ..."
       />
       <div className="flex items-center gap-2">
         <button
           type="button"
           onClick={() => onRun(sql)}
-          className="self-start rounded border px-3 py-1 text-sm hover:bg-gray-100"
+          className="self-start rounded-control border border-rule px-3 py-1 text-sm hover:bg-surface-2"
         >
           Run
         </button>
         {limitAppended && (
-          <span className="text-sm text-gray-500">A default LIMIT was added to this query.</span>
+          <span className="text-sm text-text-2">A default LIMIT was added to this query.</span>
         )}
         {orderByMissing && (
-          <span className="text-sm text-gray-500">
+          <span className="text-sm text-text-2">
             No LIMIT was added: this SELECT has no ORDER BY, and icydb requires one before it will
             allow pagination. Add an ORDER BY (e.g. by any column) to enable a default LIMIT.
           </span>
         )}
       </div>
       {error && (
-        <p className="whitespace-pre-wrap rounded border border-red-300 bg-red-50 p-2 text-sm text-red-800">
+        <p className="whitespace-pre-wrap rounded-control border border-danger-border bg-danger-bg p-2 text-sm text-danger-text">
           {error.explanation}
         </p>
       )}

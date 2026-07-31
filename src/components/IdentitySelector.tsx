@@ -28,7 +28,7 @@ export function IdentitySelector({
     <select
       value={selected ?? ""}
       onChange={(event) => onSelect(event.target.value)}
-      className="rounded border px-2 py-1 text-sm"
+      className="rounded-control border border-rule px-2 py-1 text-sm"
     >
       {identities.map((identity) => {
         const label =
