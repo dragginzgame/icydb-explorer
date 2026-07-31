@@ -2,6 +2,17 @@ import { act, renderHook } from "@testing-library/react";
 
 import { PANE_BOUNDS, PANE_STORAGE_KEY, clampWidth, readLayout, usePaneLayout } from "./usePaneLayout";
 
+// jsdom defaults `window.innerWidth` to 1024, which is narrow enough to
+// collide with fixtures elsewhere in this file that were never written with
+// window-awareness in mind (e.g. the DEFAULT_LAYOUT widths plus a
+// maxed-out pane already total 1080px). Resetting to a generously wide value
+// before every test keeps those pre-existing cases exercising only what they
+// were written to exercise, regardless of test order; the tests below that
+// care about a specific window size set `window.innerWidth` explicitly.
+beforeEach(() => {
+  window.innerWidth = 1920;
+});
+
 test("a stored layout round-trips", () => {
   localStorage.setItem(
     PANE_STORAGE_KEY,
@@ -111,4 +122,34 @@ test("a burst of same-tick updates writes once, not once per setter", () => {
   } finally {
     spy.mockRestore();
   }
+});
+
+/// Every one of these widths is individually legal, and together they exceed the
+/// window: 480 + 480 + 560 = 1520 on a 1280px window leaves the flex-1 Rows pane
+/// at 0px and pushes the Schema pane's own collapse control and drag handle off
+/// screen — persisted, so it survives a relaunch, and unrecoverable except by
+/// dragging the other two panes left first.
+test("stored widths that collectively exceed the window are repaired", () => {
+  window.innerWidth = 1280;
+  localStorage.setItem(
+    PANE_STORAGE_KEY,
+    JSON.stringify({ widths: { fleet: 480, tables: 480, schema: 560 }, schemaCollapsed: false, sqlExpanded: false }),
+  );
+
+  const layout = readLayout();
+  const fixed = layout.widths.fleet + layout.widths.tables + layout.widths.schema;
+
+  expect(fixed).toBeLessThan(window.innerWidth);
+  // And the rows pane keeps a usable share, not one pixel.
+  expect(window.innerWidth - fixed).toBeGreaterThanOrEqual(320);
+});
+
+test("widths that already fit are left exactly as stored", () => {
+  window.innerWidth = 1600;
+  localStorage.setItem(
+    PANE_STORAGE_KEY,
+    JSON.stringify({ widths: { fleet: 240, tables: 280, schema: 320 }, schemaCollapsed: false, sqlExpanded: false }),
+  );
+
+  expect(readLayout().widths).toEqual({ fleet: 240, tables: 280, schema: 320 });
 });

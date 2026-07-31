@@ -25,11 +25,72 @@ const DEFAULT_LAYOUT: PaneLayout = {
   sqlExpanded: false,
 };
 
-export function clampWidth(pane: PaneName, width: number): number {
+/** The three fixed panes' individual maxima (see `PANE_BOUNDS`) sum to 1520px,
+ *  but the Rows pane is `flex-1` and gets whatever is left of the window —
+ *  it is the pane the user came for, so it must always keep a usable share
+ *  rather than being squeezed to nothing. 320px is roughly the narrowest a
+ *  results grid stays legible (a handful of columns plus a scrollbar). */
+export const ROWS_MIN_WIDTH = 320;
+
+/** The current window width, or +Infinity if none is available (so callers
+ *  that divide the window's fixed-pane budget never spuriously trigger). */
+function currentWindowWidth(): number {
+  return typeof window !== "undefined" && Number.isFinite(window.innerWidth)
+    ? window.innerWidth
+    : Number.POSITIVE_INFINITY;
+}
+
+/** `maxAvailable`, when given, additionally caps the pane at whatever room is
+ *  left in the window for it specifically — but never below the pane's own
+ *  `PANE_BOUNDS` minimum, since a pane narrower than that is unreadable and no
+ *  amount of window pressure makes that the better trade. */
+export function clampWidth(pane: PaneName, width: number, maxAvailable?: number): number {
   const [min, max] = PANE_BOUNDS[pane];
   if (!Number.isFinite(width)) return DEFAULT_LAYOUT.widths[pane];
 
-  return Math.min(max, Math.max(min, Math.round(width)));
+  const effectiveMax = maxAvailable === undefined ? max : Math.max(min, Math.min(max, maxAvailable));
+  return Math.min(effectiveMax, Math.max(min, Math.round(width)));
+}
+
+/** Repairs a set of already bounds-legal widths that collectively leave the
+ *  Rows pane no room: every value can be individually legal per
+ *  `PANE_BOUNDS` (480 + 480 + 560 = 1520) and still starve a narrower window,
+ *  pushing panes' own controls off-screen. This only steps in once that's
+ *  actually about to happen — once the fixed panes would consume the entire
+ *  window (Rows at or below 0px) — not merely whenever Rows would end up
+ *  smaller than `ROWS_MIN_WIDTH`. That distinction matters because this runs
+ *  on every mount: a layout that is tight but still positive is one the user
+ *  arrived at deliberately on whatever window they had, and silently
+ *  reshaping it on every read (even by a few px) would be as wrong as never
+ *  repairing the genuinely broken case. Once triggered, the repair aims for
+ *  the full `ROWS_MIN_WIDTH`, not just barely positive, so the fix doesn't
+ *  immediately teeter on the same edge again.
+ *
+ *  The shrink is distributed across the three panes in proportion to how
+ *  much slack each has above its own minimum, so a pane already near its
+ *  floor gives up less than one still sitting at its maximum. */
+function fitWidthsToWindow(widths: Record<PaneName, number>): Record<PaneName, number> {
+  const windowWidth = currentWindowWidth();
+  const panes = Object.keys(PANE_BOUNDS) as PaneName[];
+  const total = panes.reduce((sum, pane) => sum + widths[pane], 0);
+  if (total < windowWidth) return widths;
+
+  const budget = Math.max(0, windowWidth - ROWS_MIN_WIDTH);
+  const excess = total - budget;
+  const slack = panes.map((pane) => Math.max(0, widths[pane] - PANE_BOUNDS[pane][0]));
+  const totalSlack = slack.reduce((sum, s) => sum + s, 0);
+  if (excess <= 0 || totalSlack <= 0) return widths;
+
+  // Floor (not round) each reduced width: the exact reductions sum to
+  // precisely `excess`, so flooring every pane only ever removes a little
+  // more than planned, which keeps the total safely at or under budget
+  // instead of risking rounding drift pushing it back over.
+  const scale = Math.min(1, excess / totalSlack);
+  const next = { ...widths };
+  panes.forEach((pane, i) => {
+    next[pane] = Math.max(PANE_BOUNDS[pane][0], Math.floor(widths[pane] - slack[i] * scale));
+  });
+  return next;
 }
 
 /** Reads the stored layout, repairing anything unusable. Never throws: a bad
@@ -60,7 +121,7 @@ export function readLayout(): PaneLayout {
   }
 
   return {
-    widths,
+    widths: fitWidthsToWindow(widths),
     schemaCollapsed: source.schemaCollapsed === true,
     sqlExpanded: source.sqlExpanded === true,
   };
@@ -99,9 +160,23 @@ export function usePaneLayout() {
 
   return {
     layout,
+    // Window-aware on top of `clampWidth`'s own bounds: a value legal for this
+    // pane in isolation can still, added to the *other* two panes' current
+    // widths, leave Rows no room. This covers the case a mount-time repair
+    // alone cannot — the window shrinking after the layout was already loaded,
+    // with no relaunch in between to re-run `readLayout` — by re-checking
+    // against the live window on every commit. When there's ample room,
+    // `maxAvailable` exceeds the pane's own max and this is a no-op, identical
+    // to the plain two-argument clamp.
     setWidth: useCallback(
       (pane: PaneName, width: number) =>
-        update((prev) => ({ ...prev, widths: { ...prev.widths, [pane]: clampWidth(pane, width) } })),
+        update((prev) => {
+          const others = (Object.keys(PANE_BOUNDS) as PaneName[])
+            .filter((p) => p !== pane)
+            .reduce((sum, p) => sum + prev.widths[p], 0);
+          const maxAvailable = currentWindowWidth() - ROWS_MIN_WIDTH - others;
+          return { ...prev, widths: { ...prev.widths, [pane]: clampWidth(pane, width, maxAvailable) } };
+        }),
       [update],
     ),
     toggleSchema: useCallback(
