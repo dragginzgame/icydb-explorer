@@ -745,7 +745,6 @@ fn recorded_project(config_dir: &std::path::Path) -> Option<Project> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
         .manage(AgentPool::new())
         .setup(|app| {
             let project = app
@@ -758,7 +757,6 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_environments,
-            commands::select_project,
             commands::select_identity,
             commands::canister_tree,
             commands::list_tables,
@@ -771,25 +769,9 @@ pub fn run() {
 }
 ```
 
-`commands::select_project` and `tauri_plugin_dialog` do not exist until Task 4 — this step will not compile on its own. Add the dependency and a stub now so the task ends green:
+The handler list is **unchanged from what's already there** — `select_project` and the dialog plugin belong to Task 4, which adds both together with the command itself. Do not add a placeholder command or the dialog dependency in this task; this task compiles and passes on its own without them.
 
-In `src-tauri/Cargo.toml`, under `[dependencies]`:
-
-```toml
-tauri-plugin-dialog = "2.7.2"
-```
-
-And a stub at the end of `src-tauri/src/commands.rs`, replaced wholesale in Task 4:
-
-```rust
-/// Replaced in full by Task 4 — this exists only so `run()`'s handler list
-/// compiles.
-#[tauri::command]
-pub async fn select_project(path: String) -> Result<(), AppError> {
-    let _ = path;
-    Err(AppError::NoProjectSelected)
-}
-```
+`AppError::NoProjectSelected` is added by Step 5 above and used by the six commands in Step 6, so it has real callers within this task.
 
 - [ ] **Step 8: Run the full suite**
 
@@ -799,7 +781,7 @@ Expected: PASS, 120 tests. There must be **zero** warnings about the removed `di
 - [ ] **Step 9: Commit**
 
 ```bash
-git add src-tauri/src/project src-tauri/src/error.rs src-tauri/src/commands.rs src-tauri/src/lib.rs src-tauri/Cargo.toml src-tauri/Cargo.lock
+git add src-tauri/src/project src-tauri/src/error.rs src-tauri/src/commands.rs src-tauri/src/lib.rs
 git commit -m "feat: make the open project mutable, optional managed state"
 ```
 
@@ -809,7 +791,9 @@ git commit -m "feat: make the open project mutable, optional managed state"
 
 **Files:**
 - Modify: `src-tauri/src/agent/mod.rs` (add `clear`)
-- Modify: `src-tauri/src/commands.rs` (replace the Task 3 stub)
+- Modify: `src-tauri/src/commands.rs` (add `ProjectSelection` and `select_project`)
+- Modify: `src-tauri/src/lib.rs` (register the dialog plugin and the new command)
+- Modify: `src-tauri/Cargo.toml` (add `tauri-plugin-dialog`)
 - Modify: `src-tauri/capabilities/default.json`
 
 **Interfaces:**
@@ -897,9 +881,9 @@ In `src-tauri/src/agent/mod.rs`, in `impl AgentPool`, after `get`:
 Run: `cd src-tauri && cargo test agent::tests::clear_empties_the_cache`
 Expected: PASS.
 
-- [ ] **Step 5: Replace the `select_project` stub**
+- [ ] **Step 5: Add `select_project`**
 
-In `src-tauri/src/commands.rs`, delete the Task 3 stub and put this in its place. Add `use tauri::{AppHandle, Manager, State};` (the file currently imports only `State`), plus `use crate::discovery::resolve_root;` and `use crate::project::config::write_recorded_root;`.
+Append to `src-tauri/src/commands.rs`. Add `use tauri::{AppHandle, Manager, State};` (the file currently imports only `State`), plus `use crate::discovery::resolve_root;` and `use crate::project::config::write_recorded_root;`.
 
 ```rust
 /// The result of switching projects: the newly-open project, plus a warning
@@ -984,7 +968,30 @@ Add `use crate::discovery::{self, Environment, IdentityRef, Project};` — the f
 
 **On testing the not-a-directory pre-flight.** The spec's testing table lists it, and it is deliberately *not* unit-tested here: it is a single `is_dir()` call inside a `#[tauri::command]`, and extracting it into a named function purely to assert `is_dir()` would be ceremony around a standard-library call. Its behaviour — the switch rejects and the previously open project survives — is asserted end-to-end by Task 6's "keeps the current project when a pick is rejected". If you find yourself wanting a unit test here anyway, that is fine, but do not extract a function whose only caller is the test.
 
-- [ ] **Step 6: Grant the dialog permission**
+- [ ] **Step 6: Register the plugin and the command**
+
+Add the dependency in `src-tauri/Cargo.toml`, under `[dependencies]`:
+
+```toml
+tauri-plugin-dialog = "2.7.2"
+```
+
+In `src-tauri/src/lib.rs`, register the plugin as the first builder call and add the command to the handler list:
+
+```rust
+    tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .manage(AgentPool::new())
+```
+
+```rust
+        .invoke_handler(tauri::generate_handler![
+            commands::list_environments,
+            commands::select_project,
+            commands::select_identity,
+```
+
+- [ ] **Step 7: Grant the dialog permission**
 
 Replace the `permissions` array in `src-tauri/capabilities/default.json`:
 
@@ -997,7 +1004,7 @@ Replace the `permissions` array in `src-tauri/capabilities/default.json`:
 
 `dialog:allow-open` only — `dialog:default` would additionally grant `allow-save` and `allow-message`, which this app never uses.
 
-- [ ] **Step 7: Run the full suite**
+- [ ] **Step 8: Run the full suite**
 
 Run: `cd src-tauri && cargo test`
 Expected: PASS, 121 tests.
@@ -1005,10 +1012,10 @@ Expected: PASS, 121 tests.
 Then confirm the app builds with the plugin registered: `cd src-tauri && cargo build`
 Expected: success, no warnings.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add src-tauri/src/agent/mod.rs src-tauri/src/commands.rs src-tauri/capabilities/default.json
+git add src-tauri/src/agent/mod.rs src-tauri/src/commands.rs src-tauri/src/lib.rs src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/capabilities/default.json
 git commit -m "feat: add select_project, clearing the agent pool on switch"
 ```
 
