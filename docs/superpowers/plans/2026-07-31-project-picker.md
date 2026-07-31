@@ -21,7 +21,7 @@
 - **Tauri macro constraint.** An `async` `#[tauri::command]` that takes a lifetime-bearing parameter (`State<'_, T>`) **must** return `Result<_, _>` — `tauri-macros-2.6.3/src/command/wrapper.rs:176`, upstream tauri-apps/tauri#2533. This is why `ProjectState`'s accessors are synchronous and `list_environments` is a plain `fn`: never add a `Result` that cannot be `Err` just to satisfy this macro.
 - **`AgentPool`'s cache key must include the project root**, not just `(environment, identity)`. Commands snapshot the project then await, so a command begun before a project switch can insert an agent for the old project *after* `clear()` has run; only a project-scoped key stops that entry being served to the new project. See Task 4's "load-bearing correctness point".
 - **Rust MSRV 1.96.0.** Do not use APIs newer than that.
-- **`cargo test` from `src-tauri/`, `npm test` from the repo root.** Both suites must be green at every commit. Baseline: 100 backend tests, 25 frontend tests. Final: 125 backend, 36 frontend.
+- **`cargo test` from `src-tauri/`, `npm test` from the repo root.** Both suites must be green at every commit. Baseline: 100 backend tests, 25 frontend tests. Final: 128 backend, 36 frontend.
 
 ## Spec deviation you must know about
 
