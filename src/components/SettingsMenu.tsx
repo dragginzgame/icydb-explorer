@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-import type { ThemeChoice } from "../theme/useTheme";
+import { THEME_CHOICES, type ThemeChoice } from "../theme/useTheme";
 
 const LABELS: Record<ThemeChoice, { name: string; hint: string }> = {
   // The hint must not name another theme: it becomes part of this row's
@@ -11,8 +11,6 @@ const LABELS: Record<ThemeChoice, { name: string; hint: string }> = {
   terminal: { name: "Terminal", hint: "dark · mono" },
   instrument: { name: "Instrument", hint: "light" },
 };
-
-const ORDER: ThemeChoice[] = ["system", "console", "terminal", "instrument"];
 
 /** The gear popover. Controlled: it owns only open/closed, never the theme —
  *  `App` holds that through `useTheme`, so there is one source of truth. */
@@ -65,7 +63,7 @@ export function SettingsMenu({
           className="absolute right-0 z-20 mt-1 w-56 rounded-control border border-rule-strong bg-surface-2 py-1"
         >
           <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-text-3">Theme</div>
-          {ORDER.map((option) => (
+          {THEME_CHOICES.map((option) => (
             <button
               key={option}
               type="button"
@@ -75,13 +73,13 @@ export function SettingsMenu({
                 onChoose(option);
                 setOpen(false);
               }}
-              className="flex w-full items-baseline gap-2 px-3 py-1 text-left text-sm text-text-1 hover:bg-sel-bg hover:text-sel-text"
+              className="group flex w-full items-baseline gap-2 px-3 py-1 text-left text-sm text-text-1 hover:bg-sel-bg hover:text-sel-text"
             >
-              <span aria-hidden="true" className="w-3 text-accent">
+              <span aria-hidden="true" className="w-3">
                 {option === choice ? "●" : ""}
               </span>
               <span>{LABELS[option].name}</span>
-              <span className="ml-auto font-mono text-[10px] text-text-3">
+              <span className="ml-auto font-mono text-[10px] text-text-3 group-hover:text-sel-text">
                 {LABELS[option].hint}
               </span>
             </button>

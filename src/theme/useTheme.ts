@@ -38,6 +38,11 @@ function apply(choice: ThemeChoice): void {
   }
 }
 
+// Applied at module scope, before React's first render, so a stored dark theme
+// never flashes the light default. `useEffect` alone runs after paint, which on
+// a desktop app launch is a visible white frame.
+apply(storedChoice());
+
 export function useTheme(): {
   choice: ThemeChoice;
   setChoice: (next: ThemeChoice) => void;

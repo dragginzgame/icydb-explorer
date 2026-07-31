@@ -494,7 +494,7 @@ function App() {
 
   return (
     <main className="flex h-screen flex-col bg-surface-0 font-ui text-text-1">
-      <header className="flex items-center gap-3 border-b border-rule px-4 py-2">
+      <header className="flex items-center gap-3 border-b border-rule bg-surface-1 px-4 py-2">
         <h1 className="text-lg font-semibold">icydb Explorer</h1>
         <ProjectSelector root={root} busy={projectBusy} onSelect={handleSelectProject} />
         {environments.length > 0 && (
@@ -587,7 +587,7 @@ function App() {
 
       {root !== null && (
         <div className="flex flex-1 overflow-hidden">
-          <aside className="w-64 shrink-0 overflow-auto border-r border-rule p-2">
+          <aside className="w-64 shrink-0 overflow-auto border-r border-rule bg-surface-1 p-2">
             <h2 className="mb-2 text-xs font-semibold uppercase text-text-2">Canisters</h2>
             {treeError && <ErrorBanner error={treeError} />}
             {forest && (
@@ -595,7 +595,7 @@ function App() {
             )}
           </aside>
 
-          <aside className="w-72 shrink-0 overflow-auto border-r border-rule p-2">
+          <aside className="w-72 shrink-0 overflow-auto border-r border-rule bg-surface-1 p-2">
             <h2 className="mb-2 text-xs font-semibold uppercase text-text-2">Tables</h2>
             {entitiesError && <ErrorBanner error={entitiesError} />}
             {entities && <TableList entities={entities} selected={entity} onSelect={setEntity} />}

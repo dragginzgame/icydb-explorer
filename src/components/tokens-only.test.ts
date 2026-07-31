@@ -47,6 +47,7 @@ test("the app shell is in the checked set", () => {
 /// component simply looks off in a theme nobody was testing when they wrote it.
 /// src/theme/tokens.css is the one place literals belong.
 test.each(sources)("$name contains no literal colour", ({ source }) => {
+  expect(source.length).toBeGreaterThan(100);
   const literals = [
     ...source.matchAll(/#[0-9a-f]{3,8}\b/gi),
     ...source.matchAll(/\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color-mix)\(/gi),
@@ -83,4 +84,14 @@ test.each(sources)("$name uses no bare colour keyword in an arbitrary value", ({
     ),
   ].map((match) => match[0]);
   expect(keywords).toEqual([]);
+});
+
+/// Terminal inverts selection (dark text on a moss fill) while the other themes
+/// use ordinary text on a tint, so a `bg-sel-bg` without `text-sel-text` is
+/// light-on-light in Terminal only. No token-parity test can see this.
+test.each(sources)("$name pairs bg-sel-bg with text-sel-text", ({ source }) => {
+  const unpaired = [...source.matchAll(/class(?:Name)?=\{?["`][^"`]*\bbg-sel-bg\b[^"`]*["`]/g)]
+    .map((match) => match[0])
+    .filter((snippet) => !/\btext-sel-text\b/.test(snippet));
+  expect(unpaired).toEqual([]);
 });

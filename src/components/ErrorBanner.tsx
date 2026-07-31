@@ -12,7 +12,7 @@ export function ErrorBanner({ error }: { error: AppErrorDto }) {
       role="alert"
       className="rounded-control border border-danger-border bg-danger-bg p-3 text-sm text-danger-text"
     >
-      <pre className="whitespace-pre-wrap font-sans">{error.explanation}</pre>
+      <pre className="whitespace-pre-wrap font-prose">{error.explanation}</pre>
     </div>
   );
 }

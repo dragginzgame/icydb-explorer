@@ -27,7 +27,7 @@ export function TableList({
               }`}
             >
               <div>{entity.name}</div>
-              <div className="text-xs text-text-3">
+              <div className={`text-xs ${isSelected ? "text-sel-text" : "text-text-3"}`}>
                 {entity.columns} columns · {entity.indexes} indexes
               </div>
             </button>

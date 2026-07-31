@@ -48,7 +48,11 @@ function CanisterTreeNode({
         }`}
       >
         <div>{node.role}</div>
-        <div className="truncate font-mono text-xs text-text-3">{node.pid}</div>
+        <div
+          className={`truncate font-mono text-xs ${isSelected ? "text-sel-text" : "text-text-3"}`}
+        >
+          {node.pid}
+        </div>
       </button>
       {node.children.length > 0 && (
         <ul>

@@ -60,7 +60,7 @@ test("the follow-system light block declares only tokens that exist in :root", (
 test("the follow-system light block overrides every colour token", () => {
   const declared = new Set(tokensIn(SYSTEM_LIGHT));
   const colourish = tokensIn(BASE).filter(
-    (token) => !/^--(?:ui-font|mono-font|r-control|r-row|row-h)$/.test(token),
+    (token) => !/^--(?:ui-font|mono-font|prose-font|r-control|r-row)$/.test(token),
   );
   expect(colourish.filter((token) => !declared.has(token))).toEqual([]);
 });
@@ -75,4 +75,30 @@ test("only the theme file carries literal colours", () => {
 /// states render differently. This is the only test that guards it.
 test("the console theme and the :root default hold identical values", () => {
   expect(declarationsIn(':root[data-theme="console"]')).toEqual(declarationsIn(BASE));
+});
+
+/// Every `--token: value(...)` reference inside `@theme inline`, keyed by the
+/// inner `var(--...)` name it points at — i.e. the set of :root tokens the
+/// bridge actually reaches.
+function bridgedTokens(): Set<string> {
+  const start = css.indexOf("@theme inline");
+  const open = css.indexOf("{", start);
+  const close = css.indexOf("}", open);
+  const block = css.slice(open + 1, close);
+  return new Set([...block.matchAll(/var\((--[a-z0-9-]+)\)/g)].map((m) => m[1]));
+}
+
+/// A token declared in every block but never bridged into `@theme inline`
+/// compiles clean and looks correct on inspection, but backs no Tailwind
+/// utility at all — no `bg-*`/`text-*`/etc. can ever reach it. `--row-h` was
+/// exactly this: present, parity-clean, and silently unusable. Font and radius
+/// tokens are excluded because they bridge under a different prefix
+/// (`--font-*`/`--radius-*`) than the mechanical `--color-<name>` naming this
+/// test checks by convention-free reference matching instead.
+test("every colour token in :root is bridged inside @theme inline", () => {
+  const bridged = bridgedTokens();
+  const colourTokens = tokensIn(BASE).filter(
+    (token) => !/^--(?:ui-font|mono-font|prose-font|r-control|r-row)$/.test(token),
+  );
+  expect(colourTokens.filter((token) => !bridged.has(token))).toEqual([]);
 });
