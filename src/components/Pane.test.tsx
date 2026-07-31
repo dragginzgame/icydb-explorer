@@ -50,6 +50,13 @@ test("a drag stops affecting the pane once the pointer is released", () => {
   fireEvent.pointerUp(window);
   const afterRelease = widths.length;
 
+  // Without these two the test is vacuous. If the drag never started at all,
+  // `afterRelease` is 0 and the final assertion trivially holds — it cannot
+  // tell "the drag stopped on release" from "the drag never ran", which is
+  // exactly how it passed when the listeners were mis-bound to the handle.
+  expect(afterRelease).toBeGreaterThan(0);
+  expect(widths[afterRelease - 1]).toBe(260);
+
   fireEvent.pointerMove(window, { clientX: 500 });
   expect(widths).toHaveLength(afterRelease);
 });
