@@ -91,9 +91,13 @@ function luminance(hex: string): number {
   );
 }
 
-function contrast(a: string, b: string): number {
-  const [x, y] = [luminance(a), luminance(b)];
-  return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+/** CIE L* (lightness, 0..100) for a relative luminance. Perceptually uniform by
+ *  construction — which is the whole reason the stripe floor below is expressed in
+ *  it — so one step of L* means about the same amount of visible difference at the
+ *  top of the range as at the bottom. Neither WCAG contrast ratio nor raw
+ *  luminance has that property; see that test's own comment. */
+function lstar(y: number): number {
+  return y <= 216 / 24389 ? (y * 24389) / 27 : 116 * Math.cbrt(y) - 16;
 }
 
 const SURFACES = ["--surface-0", "--surface-1", "--surface-2", "--surface-inset"];
@@ -113,18 +117,50 @@ test.each(ALL_BLOCKS)("%s gives each surface a distinct value", (selector) => {
 });
 
 /// Distinct is necessary but not sufficient: two hexes one unit apart are
-/// "distinct" and still invisible. The zebra stripe is the tightest of the
-/// surface relationships, so it carries the numeric floor. The bound is
-/// deliberately low — this is a stripe, not a divider — and the light blocks sit
-/// at 1.047, which is why the floor is asserted for the dark blocks where a flat
-/// near-black can hide a stripe completely.
-test.each([BASE, ':root[data-theme="console"]', ':root[data-theme="terminal"]'])(
-  "%s zebra stripe is measurably distinct from the pane ground",
-  (selector) => {
-    const declared = declarationsIn(selector);
-    expect(contrast(declared["--surface-1"], declared["--surface-0"])).toBeGreaterThanOrEqual(1.08);
-  },
-);
+/// "distinct" and still invisible, and the test above compares exact strings, so
+/// it would pass them. The zebra stripe is the tightest of the surface
+/// relationships, so it carries the numeric floor, in every block including the
+/// light ones.
+///
+/// The metric is CIE L*, not WCAG contrast ratio and not raw luminance, because
+/// neither of those can serve all five blocks:
+///
+///   - WCAG's ratio is (Y_hi + 0.05) / (Y_lo + 0.05), and near black that flare
+///     term is most of both operands — so it INFLATES the dark end. Terminal's
+///     #181d1c over #0f1211 is a luminance gap of 0.00582 and scores 1.1044,
+///     while light's #fcfcfa over #f7f7f1 is a gap of 0.04572 — nearly eight
+///     times larger — and scores only 1.0468. A single ratio floor set where the
+///     dark blocks sit would therefore condemn a light theme that is fine.
+///   - Raw luminance difference is not a perceptual metric at all, and reading it
+///     as one inverts the answer. By ΔY the light stripe looks like the most
+///     separated of the three (0.04572 against console's 0.00560 and terminal's
+///     0.00582). In L* it is the LEAST: ΔL* 1.83 for light, 3.90 for
+///     console/:root, 5.04 for terminal.
+///
+/// L* is perceptually uniform by construction, so one floor spans both ends and
+/// the two-metric split this file used to carry — a ratio floor for the dark
+/// blocks, a ΔY floor for the light ones — is gone. (The justification written
+/// for that split had the direction of the ratio distortion backwards and read
+/// ΔY as perceptual; every measured pair in it was right, the conclusion drawn
+/// from them was not. That ΔY floor of 0.03 was also a weak guarantee: near
+/// Y ≈ 0.97 it is about 3.5 grey levels, ΔL* ≈ 1.2, at or below the just-noticeable
+/// difference for two large adjacent fields.)
+///
+/// 1.5 is above that JND and below the tightest block's 1.83, so it holds every
+/// theme without demanding a retune of any. It is not raised to, say, 3 on
+/// purpose: the light blocks would fail, and pulling #fcfcfa and #f7f7f1 further
+/// apart is a visible change to the light theme's whole surface stack — a design
+/// call for whoever owns that theme, not something this floor gets to force. If
+/// the light theme is ever retuned with more headroom, raising this is the moment.
+const STRIPE_LSTAR_FLOOR = 1.5;
+
+test.each(ALL_BLOCKS)("%s zebra stripe clears the perceptual floor over the pane ground", (selector) => {
+  const declared = declarationsIn(selector);
+  const separation = Math.abs(
+    lstar(luminance(declared["--surface-1"])) - lstar(luminance(declared["--surface-0"])),
+  );
+  expect(separation).toBeGreaterThanOrEqual(STRIPE_LSTAR_FLOOR);
+});
 
 /// Terminal is near-black, so it has almost no headroom above the ground: the
 /// header has to recede rather than lift, and hover has to stay above the

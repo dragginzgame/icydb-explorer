@@ -45,6 +45,37 @@ test("the affordance reflects the expanded state", () => {
   expect(screen.getByRole("button", { name: /collapse/i })).toBeInTheDocument();
 });
 
+/// `aria-expanded` says a control discloses something; `aria-controls` says
+/// what it discloses. Without it, the relationship is visual only.
+test("an expanded cell exposes aria-controls pointing at its subRowId", () => {
+  render(
+    <ValueCell
+      value={{ kind: "map", display: STRUCTURED }}
+      expanded
+      subRowId="row-0-col-1-subrow"
+      onToggle={vi.fn()}
+    />,
+  );
+  expect(screen.getByRole("button", { name: /collapse/i })).toHaveAttribute(
+    "aria-controls",
+    "row-0-col-1-subrow",
+  );
+});
+
+/// A collapsed control has nothing open to point at. Even if a caller passes
+/// `subRowId` while the cell is collapsed, the attribute must not appear —
+/// assistive tech follows `aria-controls` and a dangling id is worse than none.
+test("a collapsed cell carries no aria-controls even if subRowId is passed", () => {
+  render(
+    <ValueCell
+      value={{ kind: "map", display: STRUCTURED }}
+      subRowId="row-0-col-1-subrow"
+      onToggle={vi.fn()}
+    />,
+  );
+  expect(screen.getByRole("button", { name: /expand/i })).not.toHaveAttribute("aria-controls");
+});
+
 /// The column name is what makes one expand control distinguishable from the
 /// next. Without it a row with three structured columns has three buttons all
 /// named "Expand value".

@@ -1,3 +1,5 @@
+import { SCHEMA_RAIL_WIDTH } from "../layout/usePaneLayout";
+
 import type { AppErrorDto, SchemaDto } from "../api/types";
 import { ErrorBanner } from "./ErrorBanner";
 import { Pane } from "./Pane";
@@ -61,7 +63,13 @@ export function SchemaInspector({
         onClick={onToggle}
         aria-label={error ? "Expand schema — failed to load" : "Expand schema"}
         aria-expanded={false}
-        className="flex w-8 shrink-0 flex-col items-center justify-center gap-1 border-l border-rule bg-surface-1 text-xs font-semibold uppercase tracking-wide text-text-2 hover:bg-surface-2"
+        // Width from `SCHEMA_RAIL_WIDTH` rather than a `w-8`, because the layout
+        // arithmetic in `usePaneLayout` has to subtract this exact number from
+        // the window to know what room is left: two independent 32s would drift
+        // apart on the first restyle, and the drift would show up as panes that
+        // silently refuse to resize rather than as anything visible here.
+        style={{ width: SCHEMA_RAIL_WIDTH }}
+        className="flex shrink-0 flex-col items-center justify-center gap-1 border-l border-rule bg-surface-1 text-xs font-semibold uppercase tracking-wide text-text-2 hover:bg-surface-2"
       >
         {error && (
           <span aria-hidden="true" className="text-base leading-none text-danger-text">

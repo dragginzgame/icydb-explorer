@@ -96,6 +96,7 @@ export function ValueCell({
   value,
   column,
   expanded = false,
+  subRowId,
   onToggle,
 }: {
   value: ValueDto;
@@ -106,6 +107,14 @@ export function ValueCell({
    *  `ValueCell` rendered outside a grid still names its control sensibly. */
   column?: string;
   expanded?: boolean;
+  /** The id of the sub-row this control discloses, for `aria-controls`. Only
+   *  ever rendered while `expanded` is true (see below) — a collapsed control
+   *  pointing at an id that is not in the document is worse than no
+   *  `aria-controls` at all, because assistive tech will still try to follow
+   *  it. `RowGrid` only passes this to the currently open cell, but the check
+   *  here is not merely redundant with that: it means this component enforces
+   *  its own invariant instead of trusting every caller to get it right. */
+  subRowId?: string;
   onToggle?: () => void;
 }) {
   const { kind, display } = value;
@@ -152,6 +161,7 @@ export function ValueCell({
         onClick={onToggle}
         aria-label={`${expanded ? "Collapse" : "Expand"} ${column ?? "value"}`}
         aria-expanded={expanded}
+        aria-controls={expanded ? subRowId : undefined}
         className="shrink-0 rounded-row px-1 text-xs leading-5 text-text-3 hover:bg-surface-2"
       >
         {expanded ? "▾" : "▸"}

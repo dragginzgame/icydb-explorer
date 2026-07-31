@@ -83,7 +83,7 @@ export function RowGrid({
     // Nothing to size against: the caller owns the empty state, and a
     // zero-column table would be noise on top of it.
     if (columnCount === 0) return null;
-    return <RowSkeletons columnCount={columnCount} columnNames={columnNames} />;
+    return <RowSkeletons columnCount={columnCount} columnNames={columnNames} loading={loading} />;
   }
 
   // A fetch that is no longer in flight and produced nothing: a rejection. The
@@ -103,7 +103,7 @@ export function RowGrid({
   return (
     <div className="flex flex-col gap-2">
       <div>
-        <table className="min-w-full border-collapse text-sm">
+        <table className="min-w-full border-collapse text-sm" aria-busy={loading}>
           <thead className="sticky top-0 bg-surface-inset">
             <tr>
               {rows.columns.map((column) => (
@@ -167,14 +167,20 @@ export function RowGrid({
 function RowSkeletons({
   columnCount,
   columnNames,
+  loading,
 }: {
   columnCount: number;
   columnNames: string[] | null;
+  /** Threaded through rather than hardcoded: this table is only ever rendered
+   *  from the branch that already knows a fetch is in flight, but writing
+   *  `aria-busy="true"` here and `aria-busy={loading}` on the real grid would
+   *  be two literals that could silently drift apart. One prop, one source. */
+  loading: boolean;
 }) {
   const columns = Array.from({ length: columnCount }, (_, index) => index);
 
   return (
-    <table className="min-w-full border-collapse text-sm">
+    <table className="min-w-full border-collapse text-sm" aria-busy={loading}>
       <thead className="sticky top-0 bg-surface-inset">
         <tr>
           {columns.map((columnIndex) => (
@@ -249,6 +255,12 @@ function ExpandableRow({
   // render nothing instead.
   const openCell = openColumn === null ? undefined : row[openColumn];
 
+  // Stable and grid-unique: a row/column pair never repeats within one
+  // render of this grid. Computed only when something is open — an id with
+  // nothing in the document to match it is not a fallback, it is the exact
+  // dangling reference `aria-controls` must never point at.
+  const subRowId = openColumn === null ? undefined : `row-${rowIndex}-col-${openColumn}-subrow`;
+
   return (
     <>
       {/* Zebra on `surface-1`, not `surface-inset`: the sticky header uses
@@ -262,6 +274,7 @@ function ExpandableRow({
               value={cell}
               column={columns[columnIndex]}
               expanded={openColumn === columnIndex}
+              subRowId={openColumn === columnIndex ? subRowId : undefined}
               onToggle={
                 isExpandable(cell) ? () => onToggle(rowIndex, columnIndex) : undefined
               }
@@ -270,7 +283,7 @@ function ExpandableRow({
         ))}
       </tr>
       {openCell && (
-        <tr className="border-b border-rule">
+        <tr id={subRowId} className="border-b border-rule">
           <td colSpan={row.length} className="bg-surface-2 px-2 py-2 pl-8">
             <pre className="whitespace-pre-wrap break-words font-mono text-xs text-text-2">
               {formatExpanded(openCell.display)}

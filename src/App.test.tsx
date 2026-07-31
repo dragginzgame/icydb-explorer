@@ -228,6 +228,38 @@ test("shows the discovery error rather than a silent blank pane", async () => {
   expect(screen.queryByText(/no environments were found/i)).toBeNull();
 });
 
+/// A long explanation must scroll inside its own region rather than pushing the
+/// panes out of the window. Bounding the container is fine; truncating the text
+/// is not — the backend's explanation is the most useful thing it produces on a
+/// failure and is rendered verbatim in full (see `ErrorBanner`'s own comment).
+///
+/// jsdom has no layout engine, so this cannot observe panes actually being
+/// squeezed — it pins the mechanism instead: a bounded, scrollable container
+/// that still carries the whole string, plus a pane still mounted alongside it.
+test("a very long error explanation scrolls in its own region instead of squeezing the panes", async () => {
+  const explanation = "SQL surface disabled. ".repeat(400);
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/project",
+    error: { kind: "unknown", explanation },
+    environments: [],
+  });
+
+  render(<App />);
+
+  expect(await screen.findByText(new RegExp(explanation.slice(0, 40)))).toBeInTheDocument();
+  const region = document.querySelector("[data-banner-region]");
+  expect(region).not.toBeNull();
+  expect(region!.className).toMatch(/overflow-(?:auto|y-auto)/);
+  expect(region!.className).toMatch(/max-h-/);
+  // The panes are still mounted, not squeezed out of existence.
+  expect(await screen.findByRole("region", { name: "Rows" })).toBeInTheDocument();
+  // This is the one fixture where the banner region is actually mounted, so it is
+  // where the shrinkability walk (see its own test further down) gets to confirm
+  // that this region's `shrink-0` is still a legal opt-out: it is a scroll region
+  // with a `max-h` bound of its own, not an unbounded ancestor of one.
+  expect(unshrinkableAncestors()).toEqual([]);
+});
+
 test("a stale SQL console run never overwrites a newer canister's result", async () => {
   vi.mocked(commands.listEnvironments).mockResolvedValue({
     root: "/project",
@@ -1280,6 +1312,122 @@ test("the SQL bar starts closed, opens on click, and closes again", async () => 
 
   expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "SQL" })).toBeInTheDocument();
+});
+
+/** Every element in the rendered tree that scrolls its own overflow. */
+function scrollRegions(): HTMLElement[] {
+  return [
+    ...document.querySelectorAll<HTMLElement>(
+      ".overflow-auto, .overflow-y-auto, .overflow-scroll",
+    ),
+  ];
+}
+
+/** Every element on some scroll region's ancestor chain that is a flex item in a
+ *  COLUMN container and cannot shrink — see the test below for what that means
+ *  and why `shrink-0` counts only on a scroll region itself. Returned as class
+ *  lists so a failure names the offender instead of just counting it. */
+function unshrinkableAncestors(): string[] {
+  const offenders: string[] = [];
+  for (const scroller of scrollRegions()) {
+    for (let node: HTMLElement | null = scroller; node && node !== document.body; ) {
+      // Annotated rather than inferred: `node` is reassigned from `parent` at the
+      // bottom of the loop, so leaving this to inference makes the two types
+      // depend on each other and `tsc` reports TS7022 (`vitest` alone does not).
+      const parent: HTMLElement | null = node.parentElement;
+      if (!parent) break;
+      const inColumn = parent.classList.contains("flex-col");
+      const isFlexItem = parent.classList.contains("flex");
+      const exempt =
+        node.classList.contains("min-h-0") ||
+        (node === scroller && node.classList.contains("shrink-0"));
+      if (isFlexItem && inColumn && !exempt) {
+        offenders.push(`${node.tagName.toLowerCase()}.${[...node.classList].join(".")}`);
+      }
+      node = parent;
+    }
+  }
+  return offenders;
+}
+
+/// A flex item's default `min-height: auto` refuses to shrink below its content,
+/// so a scroll region whose column-flex ancestors lack `min-h-0` makes its pane
+/// grow instead of scrolling. Phase 2b measured that in a browser (an 800px page
+/// becoming 11312px, with nothing scrolling) and left it unguarded because jsdom
+/// has no layout engine.
+///
+/// It does not need one: the requirement is structural. Walk up from each scroll
+/// region and assert every column-flex ancestor on its chain carries `min-h-0`.
+/// This is the real property, not a proxy for it.
+///
+/// `shrink-0` is accepted only on a scroll region ITSELF, never on an ancestor of
+/// one. The distinction is the whole point: an element that owns its own bound
+/// (the banner region below is `max-h-[40vh] shrink-0 overflow-auto` — capped by
+/// the `max-h`, scrolling because of the `overflow`, and `shrink-0` so tight
+/// vertical space squeezes the pane shell instead of it) is legitimately
+/// unshrinkable. An intermediate ancestor is not: it has no bound of its own, so
+/// refusing to shrink is exactly how it grows to its content height and stops its
+/// descendant scroller from ever scrolling. Accepting `shrink-0` everywhere made
+/// this walk blind to precisely the bug it describes — swapping the open SQL
+/// bar's `min-h-0` for `shrink-0` left it reporting zero offenders while the bar
+/// grew past its `basis-1/3` on a tall result.
+///
+/// `Pane`'s own `<section>` is deliberately exempt and must stay that way: it is a
+/// flex item in a ROW container, where per CSS Flexbox §4.5 the automatic minimum
+/// applies only on the main axis — so `min-width` binds (covered by its `min-w-0`)
+/// and `min-height: auto` computes to 0. That is why the walk tests the PARENT's
+/// direction rather than blindly demanding `min-h-0` on every ancestor.
+test("every scroll region can actually shrink: its column-flex ancestors carry min-h-0", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/toko",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    { pid: "aaaaa-aa", role: "canister-a", children: [] },
+  ]);
+  vi.mocked(commands.listTables).mockResolvedValue({
+    type: "entities",
+    entities: [entity("DemoRow", 2)],
+  });
+  vi.mocked(commands.describeTable).mockResolvedValue({
+    type: "schema",
+    entity: "DemoRow",
+    columns: [{ name: "id", typeName: "Ulid", primaryKey: true, optional: false }],
+    indexes: [],
+  });
+  vi.mocked(commands.fetchRows).mockResolvedValue(rowsFixture("DemoRow", ["a", "b"], 1));
+
+  render(<App />);
+
+  // Mount every pane's scroll region at once: a canister and a table selected
+  // (so Rows and Schema populate) and the SQL bar opened — it starts closed.
+  // The schema pane is expanded by default (`schemaCollapsed` is false unless
+  // something set it), so no click is needed to reach its scroll region.
+  fireEvent.click(await screen.findByText("canister-a"));
+  fireEvent.click(await screen.findByText("DemoRow"));
+  await screen.findByText("a-0");
+  fireEvent.click(screen.getByRole("button", { name: "SQL" }));
+  expect(screen.getByRole("textbox")).toBeInTheDocument();
+
+  const scrollers = scrollRegions();
+
+  // Canisters, Tables, Rows, and Schema each own exactly one scroll region
+  // (`Pane`'s own invariant, see `Pane.test.tsx`), plus the SQL bar's own —
+  // five in total. A lower count would mean some pane failed to mount and
+  // this walk is weaker than it looks.
+  //
+  // Counted excluding the banner region, which also carries `overflow-auto` but
+  // is not a pane's. It is absent from this fixture (nothing here warns or
+  // errors), so the count would happen to be right today — and would turn into a
+  // baffling `6 !== 5` inside a test about `min-h-0` the moment a future fixture
+  // surfaced a warning here. Excluded by its `data-banner-region` marker so the
+  // number keeps meaning "every pane mounted its scroll region". The walk below
+  // still covers it.
+  const paneScrollers = scrollers.filter((node) => !node.matches("[data-banner-region]"));
+  expect(paneScrollers.length).toBe(5);
+
+  expect(unshrinkableAncestors()).toEqual([]);
 });
 
 test("the settings gear offers theme choices from the header", async () => {
