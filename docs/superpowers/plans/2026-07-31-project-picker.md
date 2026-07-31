@@ -19,7 +19,7 @@
 - **Exact dependency versions:** `tauri-plugin-dialog = "2.7.2"` (Rust), `@tauri-apps/plugin-dialog` `^2.7.2` (JS). Capability permission string is `dialog:allow-open` — least privilege; `dialog:default` would also grant `allow-save` and `allow-message`, which this app does not use.
 - **Test fixtures mirror reality.** Filesystem fixtures follow the existing pattern: committed directories under `src-tauri/tests/fixtures/`. A fixture authored to match the code's assumptions caused this project's one Critical finding.
 - **Rust MSRV 1.96.0.** Do not use APIs newer than that.
-- **`cargo test` from `src-tauri/`, `npm test` from the repo root.** Both suites must be green at every commit. Baseline: 100 backend tests, 25 frontend tests. Final: 120 backend, 36 frontend.
+- **`cargo test` from `src-tauri/`, `npm test` from the repo root.** Both suites must be green at every commit. Baseline: 100 backend tests, 25 frontend tests. Final: 121 backend, 36 frontend.
 
 ## Spec deviation you must know about
 
@@ -167,15 +167,28 @@ mod tests {
         assert_eq!(resolve_root(&home, Some(&home)), home);
     }
 
-    /// With no home to stop at, the walk must still stop at the filesystem
-    /// root rather than considering `/` a candidate.
+    /// With no `home` to stop at, the ancestor walk must still terminate.
+    ///
+    /// Candid about what this does and does not prove: nothing along a
+    /// nonexistent path holds a `.icp`, so this cannot show that `/` is
+    /// *excluded* as an ancestor — demonstrating that would require creating
+    /// `/.icp`, which no test may do. What it does prove is termination: an
+    /// unbounded `while let Some(parent)` walk over an absolute path either
+    /// returns or hangs, and a hang fails this test by timeout rather than
+    /// passing quietly.
     #[test]
-    fn the_walk_stops_at_the_filesystem_root_when_home_is_none() {
-        // An absolute path guaranteed not to exist, so nothing along it can
-        // hold a `.icp`. The assertion that matters is that this returns at
-        // all, unchanged, instead of adopting `/`.
+    fn the_ancestor_walk_terminates_when_home_is_none() {
         let picked = Path::new("/icydb-explorer-nonexistent/a/b");
         assert_eq!(resolve_root(picked, None), picked.to_path_buf());
+    }
+
+    /// The filesystem root as the *picked* directory. Unlike the ancestor
+    /// case above this is fully observable: `/` is its own last candidate,
+    /// there is no `/.icp` on any sane system, so it must come back
+    /// unchanged rather than the function walking off the end of the path.
+    #[test]
+    fn picking_the_filesystem_root_returns_it_unchanged() {
+        assert_eq!(resolve_root(Path::new("/"), None), PathBuf::from("/"));
     }
 }
 ```
@@ -254,10 +267,10 @@ pub use root::resolve_root;
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `cd src-tauri && cargo test discovery::root`
-Expected: PASS, 7 tests.
+Expected: PASS, 8 tests.
 
 Then run the whole suite: `cd src-tauri && cargo test`
-Expected: PASS, 107 tests (100 baseline + 7).
+Expected: PASS, 108 tests (100 baseline + 8).
 
 - [ ] **Step 7: Commit**
 
@@ -473,7 +486,7 @@ Run: `cd src-tauri && cargo test project::config`
 Expected: PASS, 8 tests.
 
 Then: `cd src-tauri && cargo test`
-Expected: PASS, 115 tests.
+Expected: PASS, 116 tests.
 
 - [ ] **Step 6: Commit**
 
@@ -781,7 +794,7 @@ pub async fn select_project(path: String) -> Result<(), AppError> {
 - [ ] **Step 8: Run the full suite**
 
 Run: `cd src-tauri && cargo test`
-Expected: PASS, 119 tests. There must be **zero** warnings about the removed `discover_project`; if the compiler reports dead code, delete what it names.
+Expected: PASS, 120 tests. There must be **zero** warnings about the removed `discover_project`; if the compiler reports dead code, delete what it names.
 
 - [ ] **Step 9: Commit**
 
@@ -987,7 +1000,7 @@ Replace the `permissions` array in `src-tauri/capabilities/default.json`:
 - [ ] **Step 7: Run the full suite**
 
 Run: `cd src-tauri && cargo test`
-Expected: PASS, 120 tests.
+Expected: PASS, 121 tests.
 
 Then confirm the app builds with the plugin registered: `cd src-tauri && cargo build`
 Expected: success, no warnings.
@@ -1588,7 +1601,7 @@ Add a line under it recording why: `The spec originally separated these; impleme
 
 - [ ] **Step 3: Verify both suites are still green**
 
-Run: `cd src-tauri && cargo test` — expected PASS, 120 tests.
+Run: `cd src-tauri && cargo test` — expected PASS, 121 tests.
 Run: `npm test` — expected PASS, 36 tests.
 
 - [ ] **Step 4: Commit**
