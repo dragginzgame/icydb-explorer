@@ -46,3 +46,27 @@ test("setWidth clamps a request that falls outside the pane's bounds", () => {
   act(() => result.current.setWidth("fleet", 1));
   expect(result.current.layout.widths.fleet).toBe(PANE_BOUNDS.fleet[0]);
 });
+
+/// Two setters called in the same tick (a resize immediately followed by a
+/// schema toggle, say) must each land, not just the last one. Both calls are
+/// inside ONE `act` on purpose: two separate `act` blocks would each flush a
+/// render before the next call runs, so the second setter would already see
+/// the first's result even with a captured-snapshot implementation — the
+/// test would pass against broken code and prove nothing. Only forcing both
+/// calls into the same batch/tick exercises the stale-closure hazard.
+test("two setters invoked in the same tick both take effect, in state and in storage", () => {
+  localStorage.removeItem(PANE_STORAGE_KEY);
+  const { result } = renderHook(() => usePaneLayout());
+
+  act(() => {
+    result.current.setWidth("fleet", 300);
+    result.current.toggleSchema();
+  });
+
+  expect(result.current.layout.widths.fleet).toBe(300);
+  expect(result.current.layout.schemaCollapsed).toBe(true);
+
+  const persisted = JSON.parse(localStorage.getItem(PANE_STORAGE_KEY)!);
+  expect(persisted.widths.fleet).toBe(300);
+  expect(persisted.schemaCollapsed).toBe(true);
+});

@@ -60,3 +60,49 @@ test("a drag stops affecting the pane once the pointer is released", () => {
   fireEvent.pointerMove(window, { clientX: 500 });
   expect(widths).toHaveLength(afterRelease);
 });
+
+/// `window` listeners outlive the React tree that registered them. If the pane
+/// unmounts mid-drag (the user switches projects before releasing), the drag
+/// must not keep calling a dead instance's `onResize` until some later,
+/// possibly-never `pointerup` arrives.
+test("unmounting mid-drag stops the drag from continuing to resize", () => {
+  const widths: number[] = [];
+  const { unmount } = render(
+    <Pane title="Fleet" width={240} onResize={(width) => widths.push(width)}>
+      <p>content</p>
+    </Pane>,
+  );
+
+  const handle = screen.getByRole("separator", { name: /resize fleet/i });
+  fireEvent.pointerDown(handle, { clientX: 300 });
+  fireEvent.pointerMove(window, { clientX: 320 });
+  const beforeUnmount = widths.length;
+  expect(beforeUnmount).toBeGreaterThan(0);
+
+  unmount();
+
+  fireEvent.pointerMove(window, { clientX: 500 });
+  fireEvent.pointerUp(window);
+  expect(widths).toHaveLength(beforeUnmount);
+});
+
+/// A live drag whose `pointerup` never arrived (dropped by the OS, or lost to
+/// a focus change) must not leave its listener pair registered forever: a
+/// second drag beginning afterward has to replace it, not stack alongside it,
+/// or a single pointer move would report two resizes for one gesture.
+test("starting a new drag replaces a still-live one rather than stacking", () => {
+  const widths: number[] = [];
+  render(
+    <Pane title="Fleet" width={240} onResize={(width) => widths.push(width)}>
+      <p>content</p>
+    </Pane>,
+  );
+
+  const handle = screen.getByRole("separator", { name: /resize fleet/i });
+  fireEvent.pointerDown(handle, { clientX: 300 }); // first drag begins, never released
+  fireEvent.pointerDown(handle, { clientX: 300 }); // a second begins before the first ends
+
+  fireEvent.pointerMove(window, { clientX: 340 });
+
+  expect(widths).toHaveLength(1);
+});

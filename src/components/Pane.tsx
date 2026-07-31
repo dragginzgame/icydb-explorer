@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 
 /** A pane: a header that stays put, one scroll region, and an optional drag
  *  handle on the trailing edge.
@@ -43,7 +43,15 @@ export function Pane({
  *
  *  A `separator` with `aria-orientation="vertical"` because that is what this
  *  is; the drag is tracked on `window` rather than on the handle so that moving
- *  the pointer faster than React re-renders does not drop the drag. */
+ *  the pointer faster than React re-renders does not drop the drag.
+ *
+ *  `window` listeners outlive the component that created them, so a pane that
+ *  unmounts mid-drag (the user switches projects before releasing) must tear
+ *  its listeners down itself rather than waiting for a `pointerup` that may
+ *  arrive late or never. `stopRef` holds whichever drag is currently live so
+ *  both the unmount effect and a fresh `start()` can find and remove it — the
+ *  latter matters because a stray, already-orphaned `pointerup` can leave a
+ *  pair registered that a second drag must replace rather than stack on. */
 function PaneHandle({
   width,
   onResize,
@@ -53,7 +61,17 @@ function PaneHandle({
   onResize: (width: number) => void;
   label: string;
 }) {
+  const stopRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    return () => stopRef.current?.();
+  }, []);
+
   const start = (event: React.PointerEvent) => {
+    // A drag already live (e.g. its `pointerup` never arrived) must be torn
+    // down before a new one begins, or the two listener pairs both fire.
+    stopRef.current?.();
+
     const originX = event.clientX;
     const originWidth = width ?? 0;
 
@@ -62,10 +80,12 @@ function PaneHandle({
     const end = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", end);
+      stopRef.current = null;
     };
 
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", end);
+    stopRef.current = end;
   };
 
   return (

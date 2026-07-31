@@ -78,25 +78,35 @@ function persist(layout: PaneLayout): void {
 export function usePaneLayout() {
   const [layout, setLayout] = useState<PaneLayout>(readLayout);
 
-  const update = useCallback((next: PaneLayout) => {
-    setLayout(next);
-    persist(next);
+  // The functional-updater form is load-bearing: two setters called in the
+  // same tick (e.g. a resize immediately followed by `toggleSchema()`) must
+  // each derive from the *other's* result, not from `layout` as captured at
+  // render time, or the second call silently discards the first — in React
+  // state and in what gets persisted. `persist` is given the exact object
+  // the reducer produced, from inside the same updater, so the two can never
+  // disagree.
+  const update = useCallback((updater: (prev: PaneLayout) => PaneLayout) => {
+    setLayout((prev) => {
+      const next = updater(prev);
+      persist(next);
+      return next;
+    });
   }, []);
 
   return {
     layout,
     setWidth: useCallback(
       (pane: PaneName, width: number) =>
-        update({ ...layout, widths: { ...layout.widths, [pane]: clampWidth(pane, width) } }),
-      [layout, update],
+        update((prev) => ({ ...prev, widths: { ...prev.widths, [pane]: clampWidth(pane, width) } })),
+      [update],
     ),
     toggleSchema: useCallback(
-      () => update({ ...layout, schemaCollapsed: !layout.schemaCollapsed }),
-      [layout, update],
+      () => update((prev) => ({ ...prev, schemaCollapsed: !prev.schemaCollapsed })),
+      [update],
     ),
     setSqlExpanded: useCallback(
-      (expanded: boolean) => update({ ...layout, sqlExpanded: expanded }),
-      [layout, update],
+      (expanded: boolean) => update((prev) => ({ ...prev, sqlExpanded: expanded })),
+      [update],
     ),
   };
 }
