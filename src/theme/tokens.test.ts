@@ -77,6 +77,68 @@ test("the console theme and the :root default hold identical values", () => {
   expect(declarationsIn(':root[data-theme="console"]')).toEqual(declarationsIn(BASE));
 });
 
+/** WCAG relative luminance of a `#rrggbb` literal. */
+function luminance(hex: string): number {
+  const channel = (byte: number) => {
+    const c = byte / 255;
+    return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  const n = Number.parseInt(hex.slice(1), 16);
+  return (
+    0.2126 * channel((n >> 16) & 255) +
+    0.7152 * channel((n >> 8) & 255) +
+    0.0722 * channel(n & 255)
+  );
+}
+
+function contrast(a: string, b: string): number {
+  const [x, y] = [luminance(a), luminance(b)];
+  return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+}
+
+const SURFACES = ["--surface-0", "--surface-1", "--surface-2", "--surface-inset"];
+const ALL_BLOCKS = [BASE, SYSTEM_LIGHT, ...THEMES];
+
+/// Terminal set --surface-0, --surface-1 and --surface-inset to the same
+/// #0f1211: a contrast ratio of exactly 1.000. --surface-1 is the zebra stripe
+/// and --surface-inset the sticky header fill, so both were invisible in that
+/// theme while looking correct in the other two — the exact failure mode the
+/// token layer exists to prevent, and one no parity or bridging test can see,
+/// because every token is present and well-formed.
+test.each(ALL_BLOCKS)("%s gives each surface a distinct value", (selector) => {
+  const declared = declarationsIn(selector);
+  const values = SURFACES.map((token) => declared[token]).filter(Boolean);
+  expect(values).toHaveLength(SURFACES.length);
+  expect(new Set(values).size).toBe(SURFACES.length);
+});
+
+/// Distinct is necessary but not sufficient: two hexes one unit apart are
+/// "distinct" and still invisible. The zebra stripe is the tightest of the
+/// surface relationships, so it carries the numeric floor. The bound is
+/// deliberately low — this is a stripe, not a divider — and the light blocks sit
+/// at 1.047, which is why the floor is asserted for the dark blocks where a flat
+/// near-black can hide a stripe completely.
+test.each([BASE, ':root[data-theme="console"]', ':root[data-theme="terminal"]'])(
+  "%s zebra stripe is measurably distinct from the pane ground",
+  (selector) => {
+    const declared = declarationsIn(selector);
+    expect(contrast(declared["--surface-1"], declared["--surface-0"])).toBeGreaterThanOrEqual(1.08);
+  },
+);
+
+/// Terminal is near-black, so it has almost no headroom above the ground: the
+/// header has to recede rather than lift, and hover has to stay above the
+/// stripe. Pinned as an ordering rather than as ratios so a future retune can
+/// move the values without rewriting the test, while still failing if the
+/// header and the stripe ever cross.
+test("terminal orders its surfaces inset < 0 < 1 < 2 by luminance", () => {
+  const declared = declarationsIn(':root[data-theme="terminal"]');
+  const ordered = ["--surface-inset", "--surface-0", "--surface-1", "--surface-2"].map((token) =>
+    luminance(declared[token]),
+  );
+  expect(ordered).toEqual([...ordered].sort((a, b) => a - b));
+});
+
 /// Every `--token: value(...)` reference inside `@theme inline`, keyed by the
 /// inner `var(--...)` name it points at — i.e. the set of :root tokens the
 /// bridge actually reaches.

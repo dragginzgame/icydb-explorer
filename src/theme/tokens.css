@@ -92,12 +92,27 @@
    mono stack is the entire mechanism — no component branches on the theme.
    `--prose-font` is the one deliberate exception: operator prose (ErrorBanner)
    stays sans here too, because the design pass chose Console over Terminal
-   specifically to keep that prose readable, not code-like. */
+   specifically to keep that prose readable, not code-like.
+
+   The four surfaces were three identical values plus a hover tone: --surface-0,
+   --surface-1 and --surface-inset were all #0f1211, a contrast ratio of exactly
+   1.000 against the pane ground. --surface-1 is the zebra stripe and
+   --surface-inset the sticky header fill, so both were simply invisible here
+   while working in the other two themes.
+
+   They are now spread either side of the ground, keeping the near-black
+   green-phosphor character — the header reads as recessed (darker than the
+   ground) rather than raised, which is the one ordering choice that lets a
+   near-black theme afford both a header and a stripe at all. Measured WCAG
+   ratios: surface-1 vs surface-0 1.1044, surface-inset vs surface-0 1.0554,
+   surface-2 vs surface-1 1.0976; luminance strictly ordered
+   inset < 0 < 1 < 2. Console's own equivalents are 1.0926 and 1.0536, so the
+   steps here read at the same strength rather than louder. */
 :root[data-theme="terminal"] {
   --surface-0: #0f1211;
-  --surface-1: #0f1211;
-  --surface-2: #171b1a;
-  --surface-inset: #0f1211;
+  --surface-1: #181d1c;
+  --surface-2: #202524;
+  --surface-inset: #070a09;
   --text-1: #cfd6d2;
   --text-2: #9aa5a0;
   --text-3: #5e6866;
