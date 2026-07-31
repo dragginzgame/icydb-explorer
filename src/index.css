@@ -1,2 +1,17 @@
-@import "tailwindcss";
+@import "tailwindcss" source(none);
 @import "./theme/tokens.css";
+
+/* `source(none)` disables Tailwind 4's automatic content detection, and the
+   `@source` below reinstates it for the source tree only.
+
+   Automatic detection scans the whole project, which pulled in
+   `docs/design/plans/*.md` — those quote class names in prose, so `max-w-88` kept
+   shipping a live rule long after the last component stopped using it. The dead
+   bytes were trivial; the real cost was that "grep the built CSS for the class"
+   stopped being a valid check, and that grep is how this project verified the
+   container-relative cell cap actually compiles.
+
+   Note `@source` alone does not fix this: it ADDS a path to the automatic set
+   rather than replacing it, so the docs kept being scanned and the stylesheet
+   grew instead of shrinking. `source(none)` is the part that does the work. */
+@source "../src";

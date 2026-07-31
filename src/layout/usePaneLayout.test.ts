@@ -11,6 +11,11 @@ import { PANE_BOUNDS, PANE_STORAGE_KEY, clampWidth, readLayout, usePaneLayout } 
 // care about a specific window size set `window.innerWidth` explicitly.
 beforeEach(() => {
   window.innerWidth = 1920;
+  // Also clear the stored layout. Every test that needs a specific one sets it,
+  // and vitest shares one jsdom per file — without this, a test added later
+  // inherits whichever layout the previous test happened to leave behind, and
+  // passes or fails on declaration order rather than on its own subject.
+  localStorage.removeItem(PANE_STORAGE_KEY);
 });
 
 test("a stored layout round-trips", () => {
@@ -38,7 +43,11 @@ test("a corrupt or partial stored layout falls back to the default", () => {
   for (const raw of ["{{{", "null", "[]", '{"widths":{"fleet":"wide"}}', '{"widths":{}}']) {
     localStorage.setItem(PANE_STORAGE_KEY, raw);
     const layout = readLayout();
-    expect(layout.widths.fleet).toBe(clampWidth("fleet", layout.widths.fleet));
+    // Asserted against the actual default, not against `clampWidth` of whatever
+    // came back — that form is an idempotence check that holds for ANY in-bounds
+    // number, so a defaults mixup handing fleet the schema pane's 320 would sit
+    // inside fleet's [160, 480] bounds and pass.
+    expect(layout.widths.fleet).toBe(240);
     expect(typeof layout.schemaCollapsed).toBe("boolean");
   }
 });

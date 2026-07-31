@@ -39,7 +39,9 @@ export function Pane({
 }) {
   return (
     <section
-      className={`relative flex min-w-0 flex-col ${width === undefined ? "flex-1" : "shrink-0"} ${className ?? ""}`}
+      className={["relative flex min-w-0 flex-col", width === undefined ? "flex-1" : "shrink-0", className]
+        .filter(Boolean)
+        .join(" ")}
       style={width === undefined ? undefined : { width }}
       aria-label={title}
     >
