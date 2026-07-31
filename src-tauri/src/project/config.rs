@@ -103,6 +103,30 @@ mod tests {
         assert_eq!(read_recorded_root(&dir), None);
     }
 
+    /// A file that exists but can't be read as a string — as opposed to the
+    /// missing-file case above, which fails with `NotFound`. A *directory*
+    /// at the config file's path makes `fs::read_to_string` fail with an
+    /// `EISDIR`-style I/O error instead, exercising the other branch of
+    /// `.ok()?` so a future `.expect(...)` mistake there would be caught.
+    #[test]
+    fn an_unreadable_file_is_none_not_an_error() {
+        let dir = scratch("unreadable");
+        fs::create_dir_all(dir.join("project.json")).expect("directory should be creatable");
+        assert_eq!(read_recorded_root(&dir), None);
+    }
+
+    /// The other half of "absent or not a string": a `root` that parses as
+    /// valid JSON but isn't a string. A number is the value most likely to
+    /// survive a lossy-stringification bug (e.g. `.to_string()` on the
+    /// `serde_json::Value` instead of `.as_str()`), so it's the most
+    /// valuable case to pin.
+    #[test]
+    fn a_non_string_root_is_none() {
+        let dir = scratch("non-string-root");
+        fs::write(dir.join("project.json"), r#"{"root": 123}"#).expect("write should succeed");
+        assert_eq!(read_recorded_root(&dir), None);
+    }
+
     /// The stale-path case: the user moved or deleted the project. This must
     /// read as a first run, not as an error on every launch.
     #[test]
