@@ -126,6 +126,33 @@ test.each([BASE, ':root[data-theme="console"]', ':root[data-theme="terminal"]'])
   },
 );
 
+/// The light blocks are exempt from the ratio floor above, and that exemption is
+/// correct — but it left them with no stripe-visibility assertion at all. The only
+/// thing covering them was the pairwise-distinct test, which compares exact
+/// strings, so two hexes one unit apart passed it and a future retune could make
+/// the light zebra invisible with the whole suite green.
+///
+/// The metric differs because contrast ratio understates separation at high
+/// luminance. Measured: light is #fcfcfa against #f7f7f1 — ratio 1.0468, absolute
+/// luminance gap 0.0457. Terminal is #0f1211 against #181d1c — ratio 1.1044, gap
+/// 0.0058. The light stripe is separated 8.2x more in absolute terms while
+/// scoring lower as a ratio, so holding it to the dark blocks' ratio floor would
+/// flatten a theme that is already correct.
+///
+/// Do NOT "unify" this with the ratio test above. The two metrics are chosen for
+/// the two ends of the luminance range on purpose; collapsing them reintroduces
+/// exactly the mistake this test exists to prevent.
+const LIGHT_BLOCKS = [SYSTEM_LIGHT, ':root[data-theme="instrument"]'];
+const LIGHT_STRIPE_FLOOR = 0.03;
+
+test.each(LIGHT_BLOCKS)("%s zebra stripe is measurably distinct by luminance", (selector) => {
+  const declared = declarationsIn(selector);
+  const separation = Math.abs(
+    luminance(declared["--surface-1"]) - luminance(declared["--surface-0"]),
+  );
+  expect(separation).toBeGreaterThanOrEqual(LIGHT_STRIPE_FLOOR);
+});
+
 /// Terminal is near-black, so it has almost no headroom above the ground: the
 /// header has to recede rather than lift, and hover has to stay above the
 /// stripe. Pinned as an ordering rather than as ratios so a future retune can
