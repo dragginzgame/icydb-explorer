@@ -79,18 +79,20 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    fn pem_identity(algorithm: &str, file: &str) -> IdentityRef {
+    /// Points at a freshly generated key rather than a committed `.pem` — see
+    /// `crate::test_support` for why this repository ships none.
+    fn pem_identity(algorithm: &str, key_name: &str) -> IdentityRef {
         IdentityRef::new(
             "demo-local".into(),
             algorithm.into(),
             "pem".into(),
-            Some(PathBuf::from("tests/fixtures").join(file)),
+            Some(crate::test_support::generated_secp256k1_pem(key_name)),
         )
     }
 
     #[tokio::test]
     async fn loads_a_secp256k1_pem_from_disk() {
-        let identity = load_identity(&pem_identity("secp256k1", "secp256k1.pem"))
+        let identity = load_identity(&pem_identity("secp256k1", "loads-from-disk"))
             .await
             .expect("secp256k1 pem should load");
         assert!(identity.sender().is_ok());
@@ -98,7 +100,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_algorithm_is_an_error_naming_it() {
-        let error = load_identity(&pem_identity("rsa9000", "secp256k1.pem"))
+        let error = load_identity(&pem_identity("rsa9000", "unknown-algorithm"))
             .await
             .err()
             .expect("should fail");
