@@ -35,3 +35,9 @@ dist-ssr
 # (Anchored to the repo root only; test fixtures under
 # src-tauri/tests/fixtures/*/.icp/ are unaffected and stay tracked.)
 /.icp/
+
+# No private key material in this repository — tests generate keys at run
+# time (src-tauri/src/test_support.rs). Two committed fixture keys were purged
+# from history; this stops one being reintroduced by accident.
+*.pem
+*.key

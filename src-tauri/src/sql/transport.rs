@@ -246,9 +246,9 @@ mod tests {
     fn identity_descriptor_includes_the_resolved_principal() {
         use ic_agent::identity::Secp256k1Identity;
         use ic_agent::Identity;
-        use std::path::PathBuf;
 
-        let pem_path = PathBuf::from("tests/fixtures/secp256k1.pem");
+        // Generated, not committed — see `crate::test_support`.
+        let pem_path = crate::test_support::generated_secp256k1_pem("transport-descriptor");
         let identity = Secp256k1Identity::from_pem_file(&pem_path).expect("test pem should load");
         let principal = identity
             .sender()

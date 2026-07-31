@@ -4,6 +4,9 @@ pub mod discovery;
 pub mod error;
 pub mod project;
 pub mod sql;
+
+#[cfg(test)]
+mod test_support;
 pub mod topology;
 pub mod view;
 
