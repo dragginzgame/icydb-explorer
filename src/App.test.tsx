@@ -45,8 +45,34 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function entity(name: string): EntityDto {
-  return { name, storePath: "", storage: "stable", columns: 1, indexes: 0, relations: 0, schemaVersion: 1 };
+// `columns` is a parameter, not a fixed 1, because the app now sizes the row
+// skeletons from `EntityDto.columns` — so a test whose `entity()` arity
+// disagrees with the arity its `fetchRows` fixture returns is testing a
+// contradiction. Defaulted so the tests that do not care stay unchanged.
+function entity(name: string, columns = 1): EntityDto {
+  return { name, storePath: "", storage: "stable", columns, indexes: 0, relations: 0, schemaVersion: 1 };
+}
+
+/** A `RowsDto` of `columns.length` columns and `rowCount` rows, where every cell
+ *  is `<column>-<rowIndex>` — so any cell on screen names both the table it came
+ *  from and the row it belongs to. */
+function rowsFixture(entityName: string, columns: string[], rowCount: number): ResultDto {
+  return {
+    type: "rows",
+    entity: entityName,
+    columns,
+    rows: Array.from({ length: rowCount }, (_, rowIndex) =>
+      columns.map((column) => ({ kind: "text", display: `${column}-${rowIndex}` })),
+    ),
+    rowCount,
+    nextCursor: null,
+  };
+}
+
+/** Every skeleton placeholder in the grid's body, excluding the header row's —
+ *  so a count means "8 rows x N columns" and nothing else. */
+function bodySkeletons(): NodeListOf<Element> {
+  return document.querySelectorAll('tbody [data-skeleton="true"]');
 }
 
 function environmentFixture(): Environment {
@@ -787,6 +813,13 @@ test("a failed rows fetch is anchored inside the Rows pane", async () => {
   // in one pane is not a failure of the shell.
   expect(within(await screen.findByRole("region", { name: "Schema" })).getByText("id"))
     .toBeInTheDocument();
+  // Nothing is in flight any more, so the pane must not also be pretending to
+  // load. `rows` is null here for the same reason it is null mid-fetch, so the
+  // only thing separating the two states is the error itself.
+  expect(bodySkeletons()).toHaveLength(0);
+  // Nor may it claim the table is empty: nobody managed to look. "No rows" is a
+  // statement about the data, and a rejected fetch produced none to speak of.
+  expect(screen.queryByText(/no rows/i)).not.toBeInTheDocument();
 });
 
 /// The skeleton state was shipped in phase 2a with no call site: `App` set rows
@@ -794,12 +827,13 @@ test("a failed rows fetch is anchored inside the Rows pane", async () => {
 /// "mounted, loading, no rows" was unreachable and the words "Loading rows…"
 /// stayed on screen. This is the test that would have caught that.
 ///
-/// Two table selections, not one: the skeletons are sized from the *previous*
-/// shape (see `lastShape` in `App.tsx`), so on the very first fetch of a
-/// session there is no column count to honour and none render. Holding the
-/// second `fetchRows` open with `deferred` is what lets this observe the app
-/// while a fetch is genuinely still pending.
-test("a pending row fetch shows skeletons, not the words Loading rows", async () => {
+/// The two tables have DIFFERENT arities on purpose — 2 columns then 6 — and
+/// that is the whole point of the test. An earlier version of this file used two
+/// 2-column fixtures, so its asserted count was satisfied by *either* entity's
+/// arity, and it passed while the app was in fact sizing the skeletons from the
+/// previously selected table's shape and then reflowing when the real data
+/// landed. With different arities, only the selected entity's own count passes.
+test("a pending row fetch shows skeletons at the SELECTED table's column count", async () => {
   vi.mocked(commands.listEnvironments).mockResolvedValue({
     root: "/Users/me/projects/toko",
     environments: [environmentFixture()],
@@ -810,7 +844,147 @@ test("a pending row fetch shows skeletons, not the words Loading rows", async ()
   ]);
   vi.mocked(commands.listTables).mockResolvedValue({
     type: "entities",
-    entities: [entity("DemoRow"), entity("OtherRow")],
+    entities: [entity("NarrowRow", 2), entity("WideRow", 6)],
+  });
+  vi.mocked(commands.describeTable).mockResolvedValue({
+    type: "schema",
+    entity: "NarrowRow",
+    columns: [],
+    indexes: [],
+  });
+
+  const wide = deferred<ResultDto>();
+  vi.mocked(commands.fetchRows).mockImplementation((_env, _canister, entityName) =>
+    entityName === "NarrowRow"
+      ? Promise.resolve(rowsFixture("NarrowRow", ["narrow_a", "narrow_b"], 1))
+      : wide.promise,
+  );
+
+  render(<App />);
+  fireEvent.click(await screen.findByText("canister-a"));
+  fireEvent.click(await screen.findByText("NarrowRow"));
+  expect(await screen.findByText("narrow_a-0")).toBeInTheDocument();
+
+  // The wide table's fetch never settles, so the app stays in the state that
+  // used to be unreachable: grid mounted, loading, no rows.
+  fireEvent.click(screen.getByText("WideRow"));
+
+  // 8 skeleton rows × WideRow's OWN 6 columns — not NarrowRow's 2.
+  await waitFor(() => expect(bodySkeletons()).toHaveLength(48));
+  expect(screen.queryByText(/loading rows/i)).not.toBeInTheDocument();
+  // And not under the previous table's headers, which would reflow away the
+  // instant the real data arrived.
+  expect(screen.queryByText("narrow_a")).not.toBeInTheDocument();
+  expect(screen.queryByText("narrow_b")).not.toBeInTheDocument();
+});
+
+/// The first fetch of a session has no previous page to borrow a shape from, and
+/// used to render nothing at all — an empty pane for the length of an IC call.
+/// It does not need one: `SHOW ENTITIES` already reported the arity, so the
+/// skeletons are correctly sized before a single row exists.
+test("the first fetch of a session already shows correctly sized skeletons", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/toko",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    { pid: "aaaaa-aa", role: "canister-a", children: [] },
+  ]);
+  vi.mocked(commands.listTables).mockResolvedValue({
+    type: "entities",
+    entities: [entity("WideRow", 6)],
+  });
+  vi.mocked(commands.describeTable).mockResolvedValue({
+    type: "schema",
+    entity: "WideRow",
+    columns: [],
+    indexes: [],
+  });
+  const first = deferred<ResultDto>();
+  vi.mocked(commands.fetchRows).mockReturnValue(first.promise);
+
+  render(<App />);
+  fireEvent.click(await screen.findByText("canister-a"));
+  fireEvent.click(await screen.findByText("WideRow"));
+
+  await waitFor(() => expect(bodySkeletons()).toHaveLength(48));
+  // The header row is drawn too, at the same count, so the grid does not shift
+  // down when the real names arrive. Deliberately unnamed: the arity is known
+  // this early but the names are not, and the previous table's names — what
+  // this used to show — were a lie.
+  expect(document.querySelectorAll('thead [data-skeleton="true"]')).toHaveLength(6);
+});
+
+/// Selecting a canister with no tables clears the entity selection, so nothing
+/// is in flight and there is nothing to load. This used to show 8 skeleton rows
+/// at the *previous* table's arity under its column names, forever, because the
+/// shape was held in a ref that outlived the selection — and the empty state was
+/// unreachable. After a project switch those were the previous project's column
+/// names.
+test("switching to a canister with no tables shows the empty state, not skeletons", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/toko",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    {
+      pid: "root-id",
+      role: "root",
+      children: [
+        { pid: "aaaaa-aa", role: "canister-a", children: [] },
+        { pid: "bbbbb-bb", role: "canister-empty", children: [] },
+      ],
+    },
+  ]);
+  vi.mocked(commands.listTables).mockImplementation((_env, canisterId) =>
+    Promise.resolve(
+      canisterId === "aaaaa-aa"
+        ? { type: "entities", entities: [entity("WideRow", 6)] }
+        : { type: "entities", entities: [] },
+    ),
+  );
+  vi.mocked(commands.describeTable).mockResolvedValue({
+    type: "schema",
+    entity: "WideRow",
+    columns: [],
+    indexes: [],
+  });
+  vi.mocked(commands.fetchRows).mockResolvedValue(
+    rowsFixture("WideRow", ["w1", "w2", "w3", "w4", "w5", "w6"], 1),
+  );
+
+  render(<App />);
+  fireEvent.click(await screen.findByText("canister-a"));
+  fireEvent.click(await screen.findByText("WideRow"));
+  expect(await screen.findByText("w1-0")).toBeInTheDocument();
+
+  fireEvent.click(screen.getByText("canister-empty"));
+
+  expect(await screen.findByText(/select a table to see its rows/i)).toBeInTheDocument();
+  expect(bodySkeletons()).toHaveLength(0);
+  // Nor the departed table's headers sitting above a fake loading state.
+  expect(screen.queryByText("w1")).not.toBeInTheDocument();
+  expect(screen.getByText("No tables")).toBeInTheDocument();
+});
+
+/// A paging failure must not throw away what the reader is already reading.
+/// Rendering the banner and the grid as alternatives (`{!rowsError && …}`) meant
+/// a rejected "Load more" replaced 100 rows with an error, recoverable only by
+/// re-selecting the table.
+test("a failed Load more keeps the rows already on screen", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/toko",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    { pid: "aaaaa-aa", role: "canister-a", children: [] },
+  ]);
+  vi.mocked(commands.listTables).mockResolvedValue({
+    type: "entities",
+    entities: [entity("DemoRow", 2)],
   });
   vi.mocked(commands.describeTable).mockResolvedValue({
     type: "schema",
@@ -818,40 +992,27 @@ test("a pending row fetch shows skeletons, not the words Loading rows", async ()
     columns: [],
     indexes: [],
   });
-
-  const second = deferred<ResultDto>();
-  vi.mocked(commands.fetchRows).mockImplementation((_env, _canister, entityName) =>
-    entityName === "DemoRow"
-      ? Promise.resolve({
-          type: "rows",
-          entity: "DemoRow",
-          columns: ["id", "handle"],
-          rows: [[{ kind: "ulid", display: "u-1" }, { kind: "text", display: "alice" }]],
-          rowCount: 1,
-          nextCursor: null,
-        })
-      : second.promise,
+  // A full first page (100 == the backend's DEFAULT_ROW_LIMIT) is what makes
+  // "Load more" appear at all; the second page then rejects.
+  vi.mocked(commands.fetchRows).mockImplementation((_env, _canister, _entity, offset) =>
+    offset === 0
+      ? Promise.resolve(rowsFixture("DemoRow", ["id", "handle"], 100))
+      : Promise.reject({ kind: "backend", explanation: "E9: the replica rejected the query" }),
   );
 
   render(<App />);
   fireEvent.click(await screen.findByText("canister-a"));
   fireEvent.click(await screen.findByText("DemoRow"));
-  // The first fetch lands, giving the grid a two-column shape to size the next
-  // fetch's skeletons against.
-  expect(await screen.findByText("alice")).toBeInTheDocument();
+  expect(await screen.findByText("id-0")).toBeInTheDocument();
 
-  // The second selection's fetch never settles, so the app stays in the state
-  // that used to be unreachable: grid mounted, loading, no rows.
-  fireEvent.click(screen.getByText("OtherRow"));
+  fireEvent.click(screen.getByRole("button", { name: /load more/i }));
 
-  // 8 skeleton rows × the 2 columns carried over from the previous shape. The
-  // count is the assertion: a skeleton that guessed its column count would
-  // reflow the moment the real data landed, which is the whole reason the
-  // skeleton exists.
-  await waitFor(() =>
-    expect(document.querySelectorAll('[data-skeleton="true"]')).toHaveLength(16),
-  );
-  expect(screen.queryByText(/loading rows/i)).not.toBeInTheDocument();
+  expect(await screen.findByText(/E9: the replica rejected the query/)).toBeInTheDocument();
+  // The page the reader was looking at is still there — first row, last row, and
+  // the header — beside the banner rather than replaced by it.
+  expect(screen.getByText("id-0")).toBeInTheDocument();
+  expect(screen.getByText("id-99")).toBeInTheDocument();
+  expect(screen.getByText("handle")).toBeInTheDocument();
 });
 
 /// Keeping the grid mounted across a fetch — which is what gives `loading` a
@@ -879,7 +1040,7 @@ test("switching tables with a cell expanded clears the expansion", async () => {
   ]);
   vi.mocked(commands.listTables).mockResolvedValue({
     type: "entities",
-    entities: [entity("DemoRow"), entity("OtherRow")],
+    entities: [entity("DemoRow", 2), entity("OtherRow", 2)],
   });
   vi.mocked(commands.describeTable).mockResolvedValue({
     type: "schema",

@@ -55,6 +55,35 @@ test("the collapsed rail is still a labelled control that can reopen", () => {
   expect(toggles).toHaveLength(1);
 });
 
+/// Collapsed, the inspector returns the rail and never reaches its error branch
+/// — and `collapsed` persists across launches. So a reader who keeps it shut and
+/// selects a table on a canister with introspection disabled used to get silence
+/// in every pane: the failure had nowhere to land once the schema left the
+/// always-visible Tables aside. The rail has to say something.
+///
+/// Asserted on the accessible NAME, not just a coloured glyph: the name is the
+/// only part a screen reader gets, and a 32px rail is not somewhere a visual
+/// marker alone will be noticed.
+test("the collapsed rail announces a schema error rather than staying silent", () => {
+  const error = { kind: "backend", explanation: "E7: introspection is disabled" };
+  render(
+    <SchemaInspector {...props} schema={null} error={error} collapsed onToggle={() => {}} />,
+  );
+
+  const rail = screen.getByRole("button", { name: /expand schema/i });
+  expect(rail).toHaveAccessibleName(/failed to load/i);
+  // Visible as well as announced.
+  expect(rail).toHaveTextContent("!");
+});
+
+test("a healthy collapsed rail carries no failure marker", () => {
+  render(<SchemaInspector {...props} collapsed onToggle={() => {}} />);
+
+  const rail = screen.getByRole("button", { name: /expand schema/i });
+  expect(rail).toHaveAccessibleName("Expand schema");
+  expect(rail).not.toHaveTextContent("!");
+});
+
 test("an error is shown inside the inspector, verbatim", () => {
   // `AppErrorDto` is exactly `{ kind, explanation }` — there is no `message`
   // field. `explanation` is the operator-facing prose and is rendered whole.

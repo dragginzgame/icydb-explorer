@@ -42,14 +42,31 @@ export function SchemaInspector({
   onResize: (width: number) => void;
 }) {
   if (collapsed) {
+    // A failure has to be reachable from the collapsed state too. `collapsed`
+    // persists across launches, and the error branch below is unreachable from
+    // here, so a reader who keeps the inspector shut and selects a table on a
+    // canister with introspection disabled would otherwise get silence in every
+    // pane — the failure previously had the always-visible Tables aside to land
+    // in, and no longer does.
+    //
+    // The marker is in the accessible NAME, not only in the glyph: a coloured
+    // "!" alone is invisible to a screen reader and to anyone not looking at a
+    // 32px rail. The name says a failure happened, not what it was —
+    // `explanation` is prose that belongs in `ErrorBanner`, rendered whole,
+    // which is one click away.
     return (
       <button
         type="button"
         onClick={onToggle}
-        aria-label="Expand schema"
+        aria-label={error ? "Expand schema — failed to load" : "Expand schema"}
         aria-expanded={false}
-        className="flex w-8 shrink-0 items-center justify-center border-l border-rule bg-surface-1 text-xs font-semibold uppercase tracking-wide text-text-2 hover:bg-surface-2"
+        className="flex w-8 shrink-0 flex-col items-center justify-center gap-1 border-l border-rule bg-surface-1 text-xs font-semibold uppercase tracking-wide text-text-2 hover:bg-surface-2"
       >
+        {error && (
+          <span aria-hidden="true" className="text-base leading-none text-danger-text">
+            !
+          </span>
+        )}
         <span className="[writing-mode:vertical-rl]">Schema</span>
       </button>
     );

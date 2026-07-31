@@ -454,25 +454,32 @@ function App() {
   // claims a total.
   const hasMore = lastPageRowCount === DEFAULT_ROW_LIMIT;
 
-  // The last shape we saw, so a pending fetch can render skeletons at the real
-  // column count instead of guessing. Holding the previous *shape* (not its
-  // rows) is what keeps the grid from reflowing when the data lands.
+  // How many columns the selected entity has, for sizing the row skeletons
+  // while its first page is still in flight. `SHOW ENTITIES` already reports
+  // this per entity, so the count is known before any row arrives — including
+  // on the FIRST load of a session.
   //
-  // This exists because the rows effect sets `rows` to null before each fetch,
-  // which is what makes "loading" observable at all — but `RowGrid` needs a
-  // `RowsDto` to size anything. Feeding it the previous shape with an empty
-  // `rows` array keeps the grid mounted across the fetch (so `loading` finally
-  // has a call site) at the real column count.
-  //
-  // On the very first fetch of a session `lastShape.current` is still null, so
-  // nothing renders and the pane is briefly empty. That is deliberate: there
-  // is no column count to honour yet, and inventing one would produce exactly
-  // the reflow the skeleton exists to prevent.
-  const lastShape = useRef<RowsDto | null>(null);
-  if (rows !== null) lastShape.current = rows;
+  // Read from the *selected* entity, deliberately not carried over from the
+  // previous page. An earlier version held the last `RowsDto` in a ref and fed
+  // the grid that shape with an empty `rows` array; because `rows` only goes
+  // null when the selection changes, the shape in such a ref is by construction
+  // some *other* table's — so the skeletons showed the wrong arity under the
+  // wrong headers and then reflowed when the real data landed, which is the one
+  // thing a skeleton exists to prevent. After a project switch they were the
+  // previous project's column names. A count derived from the live selection
+  // cannot outlive that selection.
+  const skeletonColumns = entities?.find((candidate) => candidate.name === entity)?.columns;
 
-  const gridRows: RowsDto | null =
-    rows ?? (lastShape.current && { ...lastShape.current, rows: [], rowCount: 0, nextCursor: null });
+  // `rows` is null both while a fetch is in flight and after one failed, and the
+  // error is the only thing that tells the two apart — without this a rejected
+  // fetch would leave skeletons spinning underneath its own banner.
+  //
+  // The other half of the rule — that a fetch is only in flight while a table is
+  // actually selected — is the `entity === null` branch in the Rows pane below,
+  // which is the ONE place that decision is made. Do not restate it here: two
+  // gates for one rule means either can be removed with every test still green,
+  // which is how the perpetual-skeleton bug survived review the first time.
+  const rowsPending = rows === null && rowsError === null;
 
   const currentEnvironment = environments.find((candidate) => candidate.name === env) ?? null;
 
@@ -622,10 +629,20 @@ function App() {
           `min-h-0` because it is a flex item in a ROW container, where
           `min-height: auto` computes to 0 and `align-items: stretch` already
           gives it a definite height — its `min-w-0` covers the axis that does
-          bind there. */}
+          bind there.
+
+          `overflow-hidden` on the pane row is the other half, and it is about
+          WIDTH, which `min-w-0` does not cover: the three side panes are
+          `shrink-0`, and `PANE_BOUNDS` allows 480 + 480 + 560 = 1520px of fixed
+          width, so on a narrower window dragged to those maxima the row is wider
+          than its container. Without the clip that overflow escapes all the way
+          to the document, which gains a horizontal scrollbar and slides the
+          full-width header out of alignment with the panes (measured at 1280px:
+          page scrollWidth 1520 vs clientWidth 1280). Clipped here, the rightmost
+          pane is cut off instead — local, visible, and undone by dragging back. */}
       {root !== null && (
         <div className="flex min-h-0 flex-1 flex-col">
-          <div className="flex min-h-0 flex-1">
+          <div className="flex min-h-0 flex-1 overflow-hidden">
             <Pane
               title="Canisters"
               width={layout.widths.fleet}
@@ -648,18 +665,28 @@ function App() {
               {entities && <TableList entities={entities} selected={entity} onSelect={setEntity} />}
             </Pane>
 
+            {/* The banner and the grid render TOGETHER, not one or the other: a
+                "Load more" that fails must not discard the hundred rows the
+                reader is already looking at. `RowGrid` renders nothing at all
+                when there is no page and nothing in flight, so a failed FIRST
+                fetch still leaves the banner alone in the pane.
+
+                `entity === null` is the single gate on "is anything loading at
+                all" — with no table selected the rows effect early-returns and
+                nothing is pending, so the pane must say so rather than render a
+                grid that would have nothing to draw but placeholders. */}
             <Pane title="Rows">
               {rowsError && <ErrorBanner error={rowsError} />}
-              {!rowsError && gridRows && (
+              {entity === null ? (
+                <p className="p-3 text-sm text-text-3">Select a table to see its rows.</p>
+              ) : (
                 <RowGrid
-                  rows={gridRows}
+                  rows={rows}
                   hasMore={hasMore}
                   onLoadMore={loadMore}
-                  loading={rows === null}
+                  loading={rowsPending}
+                  skeletonColumns={skeletonColumns}
                 />
-              )}
-              {!rowsError && !gridRows && !entity && (
-                <p className="p-3 text-sm text-text-3">Select a table to see its rows.</p>
               )}
             </Pane>
 

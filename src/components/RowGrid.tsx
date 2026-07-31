@@ -20,30 +20,47 @@ export function RowGrid({
   hasMore,
   onLoadMore,
   loading = false,
+  skeletonColumns,
 }: {
-  rows: RowsDto;
+  /** The page to render, or `null` when there is no page: a fetch is in flight
+   *  (with `loading`) or one failed (without it). Nullable rather than a
+   *  caller-synthesised empty `RowsDto`, because every synthesised shape has to
+   *  come from *somewhere* — and the only shape a caller has lying around is the
+   *  previously selected entity's, which is the wrong table's. */
+  rows: RowsDto | null;
   hasMore: boolean;
   onLoadMore: () => void;
   loading?: boolean;
+  /** How many columns the entity being loaded has, for sizing skeletons while
+   *  `rows` is null. A count, not names: the caller knows the arity from
+   *  `EntityDto.columns` before any row arrives, but not the names — those come
+   *  with the schema or the first page. See the skeleton branch below for what
+   *  is drawn in the header when the names are not known yet. */
+  skeletonColumns?: number;
 }) {
   const [expanded, setExpanded] = useState<Expanded>(null);
 
   // `expanded` holds indices into `rows`, so it is only meaningful for the data
-  // it was captured against. Today nothing stale is reachable, but only by
-  // accident: `App.tsx` nulls `rows` before each fetch and renders the grid
-  // conditionally, so this component unmounts and its state resets. Keeping the
-  // grid mounted across a fetch — which wiring `loading` requires — arms a real
-  // crash: with a cell open in column 4 of a 6-column entity, switching to a
-  // 2-column entity leaves `row[openColumn]` undefined.
+  // it was captured against. The grid now stays mounted across a fetch (which is
+  // what wiring `loading` requires), so without this a cell open in column 4 of
+  // a 6-column entity would leave `row[openColumn]` undefined the moment a
+  // 2-column entity arrived — a TypeError with no error boundary above it.
   //
   // The identity is the entity plus the column count, NOT the row count:
   // `loadMore` appends rows, and an open sub-row surviving that is the desired
-  // behaviour. Adjusting state during render (rather than in an effect) is
-  // React's documented pattern for exactly this — it discards the stale render
-  // before anything is committed, so no sub-row ever paints against the wrong
-  // data.
-  const identity = `${rows.entity}/${rows.columns.length}`;
-  const [seenIdentity, setSeenIdentity] = useState(identity);
+  // behaviour. `null` is its own identity, so the null `rows` that a caller
+  // passes while a fetch is in flight also clears the expansion — which means
+  // in `App` the clearing happens one render *earlier* than the new entity's
+  // data arriving. That does not make the entity/arity comparison redundant:
+  // it is what covers a caller that swaps one page for another without a null
+  // in between (`SqlResultView`, and any future one), which is the case
+  // `RowGrid.test.tsx` drives directly.
+  //
+  // Adjusting state during render (rather than in an effect) is React's
+  // documented pattern for exactly this — it discards the stale render before
+  // anything is committed, so no sub-row ever paints against the wrong data.
+  const identity = rows === null ? null : `${rows.entity}/${rows.columns.length}`;
+  const [seenIdentity, setSeenIdentity] = useState<string | null>(identity);
   if (seenIdentity !== identity) {
     setSeenIdentity(identity);
     setExpanded(null);
@@ -55,41 +72,23 @@ export function RowGrid({
       current && current.row === row && current.column === column ? null : { row, column },
     );
 
-  // Loading and empty are different states. Skeletons carry the real column
-  // count so the grid does not reflow when data lands.
-  if (loading && rows.rows.length === 0) {
-    return (
-      <table className="min-w-full border-collapse text-sm">
-        <thead className="sticky top-0 bg-surface-inset">
-          <tr>
-            {rows.columns.map((column) => (
-              <th
-                key={column}
-                className="border-b border-rule px-2 py-1 text-left text-xs font-semibold uppercase tracking-wide text-text-3"
-              >
-                {column}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {Array.from({ length: SKELETON_ROWS }, (_, rowIndex) => (
-            <tr key={rowIndex} className="border-b border-rule">
-              {rows.columns.map((column) => (
-                <td key={column} className="px-2 py-1">
-                  <div
-                    data-skeleton="true"
-                    aria-hidden="true"
-                    className="h-3 w-24 rounded-row bg-surface-2"
-                  />
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    );
+  // Loading, empty, failed and "nothing selected" are four different states.
+  // Skeletons carry the real column count so the grid does not reflow when data
+  // lands — the count comes from `rows` when a page is already in hand, and from
+  // `skeletonColumns` (the selected entity's own arity) when one is not.
+  if (loading && (rows === null || rows.rows.length === 0)) {
+    const columnNames = rows?.columns ?? null;
+    const columnCount = columnNames?.length ?? skeletonColumns ?? 0;
+    // Nothing to size against: the caller owns the empty state, and a
+    // zero-column table would be noise on top of it.
+    if (columnCount === 0) return null;
+    return <RowSkeletons columnCount={columnCount} columnNames={columnNames} />;
   }
+
+  // A fetch that is no longer in flight and produced nothing: a rejection. The
+  // caller renders the error; this must not fall through to "No rows", which
+  // would claim the table is empty when nobody managed to look.
+  if (rows === null) return null;
 
   if (rows.rows.length === 0) {
     return <p className="p-4 text-sm text-text-3">No rows</p>;
@@ -139,6 +138,73 @@ export function RowGrid({
         </button>
       )}
     </div>
+  );
+}
+
+/** The loading grid: a header row and `SKELETON_ROWS` placeholder rows at the
+ *  entity's real column count, so nothing reflows when the data lands.
+ *
+ *  `columnNames` is null on a first load — the caller knows the arity from
+ *  `EntityDto.columns` long before it knows the names, which arrive with the
+ *  schema or the first page. In that case each header cell gets a skeleton bar
+ *  rather than a name.
+ *
+ *  A bar, not an empty `<th>`: an empty cell has no line box, so the header row
+ *  would be shorter than the real one and the whole grid would shift down by a
+ *  few pixels the moment the names arrived — the exact reflow this component
+ *  exists to prevent, reintroduced in the one row that frames everything else.
+ *  And a bar, not a guessed name: inventing "column 1" would be a claim about
+ *  the data, and the previous entity's names (what this used to show) were a
+ *  false one. The tradeoff is that a reader cannot tell *which* columns are
+ *  coming until they arrive; they can tell how many, and that the pane is
+ *  working rather than empty, which is what the skeleton is for. */
+function RowSkeletons({
+  columnCount,
+  columnNames,
+}: {
+  columnCount: number;
+  columnNames: string[] | null;
+}) {
+  const columns = Array.from({ length: columnCount }, (_, index) => index);
+
+  return (
+    <table className="min-w-full border-collapse text-sm">
+      <thead className="sticky top-0 bg-surface-inset">
+        <tr>
+          {columns.map((columnIndex) => (
+            <th
+              key={columnIndex}
+              className="border-b border-rule px-2 py-1 text-left text-xs font-semibold uppercase tracking-wide text-text-3"
+            >
+              {columnNames ? (
+                columnNames[columnIndex]
+              ) : (
+                <div
+                  data-skeleton="true"
+                  aria-hidden="true"
+                  className="h-3 w-16 rounded-row bg-surface-2"
+                />
+              )}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {Array.from({ length: SKELETON_ROWS }, (_, rowIndex) => (
+          <tr key={rowIndex} className="border-b border-rule">
+            {columns.map((columnIndex) => (
+              <td key={columnIndex} className="px-2 py-1">
+                <div
+                  data-skeleton="true"
+                  aria-hidden="true"
+                  className="h-3 w-24 rounded-row bg-surface-2"
+                />
+              </td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 
