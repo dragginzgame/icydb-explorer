@@ -2,6 +2,7 @@ pub mod agent;
 pub mod commands;
 pub mod discovery;
 pub mod error;
+pub mod project;
 pub mod sql;
 pub mod topology;
 pub mod view;
