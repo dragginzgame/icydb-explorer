@@ -199,4 +199,9 @@
   --font-prose: var(--prose-font);
   --radius-control: var(--r-control);
   --radius-row: var(--r-row);
+  /* The cell width cap. Container-relative so that collapsing the schema
+     inspector actually widens cells rather than adding whitespace — that
+     reclaimed width is the entire point of the collapse. Bounded above so a
+     very wide window does not hand one column half the grid. */
+  --container-cell: min(22rem, 42cqw);
 }

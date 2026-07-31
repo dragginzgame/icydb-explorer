@@ -16,7 +16,7 @@ import { elide } from "../lib/elide";
  *
  *  Two layout rules, both learned the hard way:
  *
- *  `max-w-88` and `truncate` match `ValueCell`'s other branches. Before them the
+ *  `max-w-cell` and `truncate` match `ValueCell`'s other branches. Before them the
  *  only bound on this cell's width was however many characters `elide` happened
  *  to return — which for a group-based elision is unbounded in the length of the
  *  groups kept, so a long-grouped identifier blew the column out anyway.
@@ -55,7 +55,7 @@ export function Identifier({ value, className }: { value: string; className?: st
   };
 
   return (
-    <span className="relative inline-flex max-w-88 align-baseline">
+    <span className="relative inline-flex max-w-cell align-baseline">
       <button
         type="button"
         onClick={copy}

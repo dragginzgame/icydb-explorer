@@ -82,10 +82,11 @@ test("a clipped value exposes its full text in title", () => {
 /// The test above passes `onToggle`, so it only ever exercises the EXPANDABLE
 /// branch — which is why a dropped `title` on the plain branch survived a full
 /// green suite. This one pins the other branch, and it matters because the two
-/// bounds are in different units: `CLIP_AFTER` counts 48 characters, `max-w-88`
-/// is 352 pixels. A 45-character value of digits and capitals overflows the box
-/// and clips while `isExpandable` reports false, so there is no chevron either —
-/// `title` is then the ONLY way to read the value.
+/// bounds are in different units: `CLIP_AFTER` counts 48 characters, `max-w-cell`
+/// is a container-relative width capped at 22rem (352px) — see `tokens.css`. A
+/// 45-character value of digits and capitals overflows the box and clips while
+/// `isExpandable` reports false, so there is no chevron either — `title` is
+/// then the ONLY way to read the value.
 test("a non-expandable value still exposes its full text in title", () => {
   const belowThreshold = "A9B8C7D6E5F4G3H2-J1K0L9M8N7O6P5Q4R3-0000000".slice(0, 45);
   expect(isExpandable({ kind: "text", display: belowThreshold })).toBe(false);
@@ -104,7 +105,7 @@ test("a big number is width-capped, clips, and keeps its full value in title", (
   expect(isExpandable({ kind: "natbig", display: huge })).toBe(false);
 
   const { container } = render(<ValueCell value={{ kind: "natbig", display: huge }} />);
-  expect(container.firstChild).toHaveClass("max-w-88");
+  expect(container.firstChild).toHaveClass("max-w-cell");
   expect(container.firstChild).toHaveClass("truncate");
   expect(container.firstChild).toHaveClass("text-right");
   expect(container.firstChild).toHaveClass("tabular-nums");
@@ -139,7 +140,7 @@ test("isExpandable is false at the threshold and true one character over", () =>
 /// standing between a future edit and its return.
 test("a non-expandable value renders in a width-bounded, clipping box", () => {
   const { container } = render(<ValueCell value={{ kind: "text", display: "short" }} />);
-  expect(container.firstChild).toHaveClass("max-w-88");
+  expect(container.firstChild).toHaveClass("max-w-cell");
   expect(container.firstChild).toHaveClass("truncate");
 });
 
@@ -151,7 +152,7 @@ test("an expandable value bounds the row and lets its text shrink to clip", () =
   const { container } = render(
     <ValueCell value={{ kind: "map", display: STRUCTURED }} onToggle={vi.fn()} />,
   );
-  expect(container.firstChild).toHaveClass("max-w-88");
+  expect(container.firstChild).toHaveClass("max-w-cell");
 
   const text = screen.getByTitle(STRUCTURED);
   expect(text).toHaveClass("truncate");

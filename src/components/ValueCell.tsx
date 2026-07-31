@@ -121,7 +121,7 @@ export function ValueCell({
   // route to the full value and must always be there.
   if (NUMERIC_KINDS.has(kind)) {
     return (
-      <div className="max-w-88 truncate text-right tabular-nums" title={display}>
+      <div className="max-w-cell truncate text-right tabular-nums" title={display}>
         {display}
       </div>
     );
@@ -132,20 +132,21 @@ export function ValueCell({
   }
 
   // `title` is load-bearing here, not a nicety. `CLIP_AFTER` counts characters
-  // while `max-w-88` is 352 pixels — unrelated units that do not coincide, so a
-  // 45-character value of digits or capitals overflows the box and clips while
-  // `isExpandable` still reports false. Without `title` there is then no
-  // tooltip and no chevron, and the value is unreadable by any means.
+  // while `max-w-cell` is container-relative (see `tokens.css`) — unrelated
+  // units that do not coincide, so a 45-character value of digits or capitals
+  // overflows the box and clips while `isExpandable` still reports false.
+  // Without `title` there is then no tooltip and no chevron, and the value is
+  // unreadable by any means.
   if (!isExpandable(value) || !onToggle) {
     return (
-      <div className="max-w-88 truncate" title={display}>
+      <div className="max-w-cell truncate" title={display}>
         {display}
       </div>
     );
   }
 
   return (
-    <div className="flex max-w-88 items-start gap-1">
+    <div className="flex max-w-cell items-start gap-1">
       <button
         type="button"
         onClick={onToggle}
@@ -155,7 +156,7 @@ export function ValueCell({
       >
         {expanded ? "▾" : "▸"}
       </button>
-      {/* `truncate` only clips inside a bounded box, which `max-w-88` on the
+      {/* `truncate` only clips inside a bounded box, which `max-w-cell` on the
           parent and `min-w-0` here provide. Without them the cell grows to fit
           its content and shoves every later column off-screen — which is
           exactly what a structured value used to do. */}

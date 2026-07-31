@@ -107,7 +107,7 @@ test("leaves a short value unelided", () => {
 /// value. Same cap and same clip as every other `ValueCell` branch.
 test("bounds its own width and clips, like every other cell branch", () => {
   const { container } = render(<Identifier value={PRINCIPAL} />);
-  expect(container.firstChild).toHaveClass("max-w-88");
+  expect(container.firstChild).toHaveClass("max-w-cell");
 
   const button = screen.getByRole("button");
   expect(button).toHaveClass("truncate");

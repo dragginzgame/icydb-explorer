@@ -675,8 +675,19 @@ function App() {
                 `entity === null` is the single gate on "is anything loading at
                 all" — with no table selected the rows effect early-returns and
                 nothing is pending, so the pane must say so rather than render a
-                grid that would have nothing to draw but placeholders. */}
-            <Pane title="Rows">
+                grid that would have nothing to draw but placeholders.
+
+                `@container` makes this pane the query container `max-w-cell`
+                (see `tokens.css`) resolves its `cqw` half against. Placed here
+                via the existing `className` prop rather than a new `container`
+                prop on `Pane` itself — `Pane` is shared by all four panes, and
+                only the rows pane's cells read a container-relative cap, so a
+                prop on the shared component would be unused surface on the
+                other three. `container-type: inline-size` needs no explicit
+                size of its own: this section's width already comes from
+                `flex-1` in the row above, not from its content, so containment
+                changes nothing about how it's sized. */}
+            <Pane title="Rows" className="@container">
               {rowsError && <ErrorBanner error={rowsError} />}
               {entity === null ? (
                 <PaneEmpty title="No table selected">Select a table to see its rows.</PaneEmpty>
