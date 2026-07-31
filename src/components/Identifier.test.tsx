@@ -171,3 +171,36 @@ test("the confirmation stays announceable rather than hidden from assistive tech
   fireEvent.click(screen.getByRole("button"));
   await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent(/copied/i));
 });
+
+/// Out of flow is not enough on its own: positioned past the value (`left-full`)
+/// the confirmation left this cell's box and painted over the next column's
+/// text, because an elided identifier is only ~20 characters wide so a
+/// neighbouring cell is almost always right there. That traded a layout shift
+/// for unreadable overlapping text. It has to overlay the tail of its own value
+/// instead — and the opaque fill has to belong to the chip, not to the live
+/// region, or the always-mounted region would sit as a permanent block over the
+/// value it is meant to be confirming.
+test("the confirmation overlays its own value rather than the next column", async () => {
+  Object.defineProperty(navigator, "clipboard", {
+    value: { writeText: async () => {} },
+    configurable: true,
+  });
+
+  render(<Identifier value={PRINCIPAL} />);
+  const region = document.querySelector<HTMLElement>('[data-copy-confirmation="true"]');
+  if (!region) throw new Error("no confirmation element");
+
+  expect(region).toHaveClass("right-0");
+  expect(region.className).not.toMatch(/\bleft-full\b/);
+  // Nothing opaque while idle, or it would cover the value permanently.
+  expect(region.className).not.toMatch(/\bbg-/);
+  expect(region.querySelector("[class*='bg-']")).toBeNull();
+
+  fireEvent.click(screen.getByRole("button"));
+  const chip = await screen.findByText(/copied/i);
+
+  // The fill arrives with the chip, and the chip is a child of the region, so
+  // the region's own box — and therefore its position — never changes.
+  expect(chip).toHaveClass("bg-surface-2");
+  expect(region.contains(chip)).toBe(true);
+});

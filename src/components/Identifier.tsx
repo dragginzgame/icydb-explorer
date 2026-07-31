@@ -27,7 +27,15 @@ import { elide } from "../lib/elide";
  *  them back — clicking one ULID made the whole table jump. The live region is
  *  mounted empty from the start rather than appearing with the text, because a
  *  screen reader announces a change *within* an existing live region far more
- *  reliably than the insertion of a new one. */
+ *  reliably than the insertion of a new one.
+ *
+ *  It overlays the *tail of its own value* (`right-0`) rather than sitting past
+ *  it (`left-full`). Positioned past the value it left this cell's box entirely
+ *  and painted over the next column's text — an elided identifier is only ~20
+ *  characters wide, so there is almost always a neighbour right there. That
+ *  merely traded a layout shift for unreadable overlapping text. Only the chip
+ *  carries the opaque fill, not the live region, so the region can stay mounted
+ *  without a permanent block sitting over the value. */
 export function Identifier({ value, className }: { value: string; className?: string }) {
   const [copied, setCopied] = useState(false);
   // The pending hide, so a second click cannot have its confirmation cut short
@@ -59,9 +67,15 @@ export function Identifier({ value, className }: { value: string; className?: st
       <span
         role="status"
         data-copy-confirmation="true"
-        className="pointer-events-none absolute left-full top-0 ml-1 whitespace-nowrap font-mono text-xs not-italic text-text-3"
+        className="pointer-events-none absolute inset-y-0 right-0 z-10 flex items-center"
       >
-        {copied ? "copied" : ""}
+        {copied ? (
+          <span className="rounded-row bg-surface-2 px-1 whitespace-nowrap font-mono text-xs not-italic text-text-3">
+            copied
+          </span>
+        ) : (
+          ""
+        )}
       </span>
     </span>
   );
