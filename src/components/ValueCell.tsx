@@ -23,7 +23,7 @@ export function ValueCell({ value }: { value: ValueDto }) {
   const { kind, display } = value;
 
   if (kind === "null") {
-    return <div className="italic text-gray-400">null</div>;
+    return <div className="italic text-text-3">null</div>;
   }
 
   if (NUMERIC_KINDS.has(kind)) {
@@ -32,7 +32,7 @@ export function ValueCell({ value }: { value: ValueDto }) {
 
   if (IDENTIFIER_KINDS.has(kind)) {
     return (
-      <div className="font-mono text-xs truncate" title={display}>
+      <div className="font-mono text-xs truncate text-pk" title={display}>
         {display}
       </div>
     );

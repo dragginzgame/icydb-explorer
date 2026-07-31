@@ -700,3 +700,17 @@ test("switching projects clears the stale 'default LIMIT was added' note", async
     expect(screen.queryByText(/A default LIMIT was added/)).not.toBeInTheDocument(),
   );
 });
+
+test("the settings gear offers theme choices from the header", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/toko",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([]);
+
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: /settings/i }));
+
+  expect(screen.getByRole("menuitemradio", { name: /terminal/i })).toBeInTheDocument();
+});

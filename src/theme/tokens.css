@@ -1,0 +1,187 @@
+/* Semantic tokens. The one file in this project allowed to contain literal
+   colours — see src/components/tokens-only.test.ts, which enforces that.
+
+   Themes work by redefining these, never by branching in a component. That is
+   why a third theme costs a block here instead of an edit everywhere. */
+
+:root {
+  --surface-0: #191a1f;
+  --surface-1: #202228;
+  --surface-2: #23262c;
+  --surface-inset: #1d1f24;
+  --text-1: #dfe1e6;
+  --text-2: #c3c7cf;
+  --text-3: #767c88;
+  --rule: #3c3f47;
+  --rule-strong: #52555d;
+  --accent: #a8c6ea;
+  --sel-bg: #2b3543;
+  --sel-text: #dfe1e6;
+  --pk: #a8c6ea;
+  --danger-text: #f0a9a9;
+  --danger-bg: #2c1e20;
+  --danger-border: #5c3336;
+  --warn-text: #e8c98a;
+  --warn-bg: #2a2418;
+  --warn-border: #574a2e;
+  --ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --mono-font: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  /* Operator prose (ErrorBanner) stays sans in every theme, Terminal included:
+     the backend's explanations are read as prose, not code, and Terminal's own
+     mono chrome would undersell them. This is a deliberate per-theme choice,
+     not an accidental Tailwind default — see the Terminal block below. */
+  --prose-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --r-control: 7px;
+  --r-row: 5px;
+}
+
+/* Follow-system, light half. No `data-theme` attribute is set in this mode, so
+   these win over :root's dark defaults by virtue of the media query. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    --surface-0: #fcfcfa;
+    --surface-1: #f7f7f1;
+    --surface-2: #efefe8;
+    --surface-inset: #f2f2ec;
+    --text-1: #1c1e1b;
+    --text-2: #6f6f62;
+    --text-3: #8a8a7c;
+    --rule: #cacabf;
+    --rule-strong: #a8a8a0;
+    --accent: #5c7a49;
+    --sel-bg: #e7ecdf;
+    --sel-text: #1c1e1b;
+    --pk: #5c7a49;
+    --danger-text: #8a2f2f;
+    --danger-bg: #fbeceb;
+    --danger-border: #e4b4b1;
+    --warn-text: #7a5a13;
+    --warn-bg: #fbf3e2;
+    --warn-border: #e3d0a4;
+  }
+}
+
+:root[data-theme="console"] {
+  --surface-0: #191a1f;
+  --surface-1: #202228;
+  --surface-2: #23262c;
+  --surface-inset: #1d1f24;
+  --text-1: #dfe1e6;
+  --text-2: #c3c7cf;
+  --text-3: #767c88;
+  --rule: #3c3f47;
+  --rule-strong: #52555d;
+  --accent: #a8c6ea;
+  --sel-bg: #2b3543;
+  --sel-text: #dfe1e6;
+  --pk: #a8c6ea;
+  --danger-text: #f0a9a9;
+  --danger-bg: #2c1e20;
+  --danger-border: #5c3336;
+  --warn-text: #e8c98a;
+  --warn-bg: #2a2418;
+  --warn-border: #574a2e;
+  --ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --mono-font: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --prose-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --r-control: 7px;
+  --r-row: 5px;
+}
+
+/* Terminal: monospace chrome and inverse selection. `--font-ui` pointing at the
+   mono stack is the entire mechanism — no component branches on the theme.
+   `--prose-font` is the one deliberate exception: operator prose (ErrorBanner)
+   stays sans here too, because the design pass chose Console over Terminal
+   specifically to keep that prose readable, not code-like. */
+:root[data-theme="terminal"] {
+  --surface-0: #0f1211;
+  --surface-1: #0f1211;
+  --surface-2: #171b1a;
+  --surface-inset: #0f1211;
+  --text-1: #cfd6d2;
+  --text-2: #9aa5a0;
+  --text-3: #5e6866;
+  --rule: #323736;
+  --rule-strong: #464f4c;
+  --accent: #8fae5d;
+  --sel-bg: #8fae5d;
+  --sel-text: #0f1211;
+  --pk: #8fae5d;
+  --danger-text: #e88b8b;
+  --danger-bg: #1e1413;
+  --danger-border: #4a2a28;
+  --warn-text: #d8b46a;
+  --warn-bg: #1c1810;
+  --warn-border: #453a22;
+  --ui-font: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --mono-font: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --prose-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --r-control: 4px;
+  --r-row: 0px;
+}
+
+:root[data-theme="instrument"] {
+  --surface-0: #fcfcfa;
+  --surface-1: #f7f7f1;
+  --surface-2: #efefe8;
+  --surface-inset: #f2f2ec;
+  --text-1: #1c1e1b;
+  --text-2: #6f6f62;
+  --text-3: #8a8a7c;
+  --rule: #cacabf;
+  --rule-strong: #a8a8a0;
+  --accent: #5c7a49;
+  --sel-bg: #e7ecdf;
+  --sel-text: #1c1e1b;
+  --pk: #5c7a49;
+  --danger-text: #8a2f2f;
+  --danger-bg: #fbeceb;
+  --danger-border: #e4b4b1;
+  --warn-text: #7a5a13;
+  --warn-bg: #fbf3e2;
+  --warn-border: #e3d0a4;
+  --ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --mono-font: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --prose-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --r-control: 7px;
+  --r-row: 5px;
+}
+
+/* Keyboard focus. One global rule rather than per-component classes, so no
+   component can forget it and every theme gets it from --accent. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The Tailwind bridge. `inline` is load-bearing: it makes `bg-surface-1` emit
+   `background-color: var(--surface-1)` — a live reference — so a runtime
+   `data-theme` swap re-themes everything. Without `inline` the utility points at
+   `--color-surface-1` instead, moving the switchable layer off these names.
+   Verified by compiling tailwindcss 4.3.3 directly. */
+@theme inline {
+  --color-surface-0: var(--surface-0);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-surface-inset: var(--surface-inset);
+  --color-text-1: var(--text-1);
+  --color-text-2: var(--text-2);
+  --color-text-3: var(--text-3);
+  --color-rule: var(--rule);
+  --color-rule-strong: var(--rule-strong);
+  --color-accent: var(--accent);
+  --color-sel-bg: var(--sel-bg);
+  --color-sel-text: var(--sel-text);
+  --color-pk: var(--pk);
+  --color-danger-text: var(--danger-text);
+  --color-danger-bg: var(--danger-bg);
+  --color-danger-border: var(--danger-border);
+  --color-warn-text: var(--warn-text);
+  --color-warn-bg: var(--warn-bg);
+  --color-warn-border: var(--warn-border);
+  --font-ui: var(--ui-font);
+  --font-mono: var(--mono-font);
+  --font-prose: var(--prose-font);
+  --radius-control: var(--r-control);
+  --radius-row: var(--r-row);
+}

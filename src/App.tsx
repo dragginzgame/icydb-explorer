@@ -25,8 +25,10 @@ import { IdentitySelector } from "./components/IdentitySelector";
 import { ProjectSelector } from "./components/ProjectSelector";
 import { RowGrid } from "./components/RowGrid";
 import { SchemaPanel } from "./components/SchemaPanel";
+import { SettingsMenu } from "./components/SettingsMenu";
 import { SqlConsole } from "./components/SqlConsole";
 import { TableList } from "./components/TableList";
+import { useTheme } from "./theme/useTheme";
 
 // Matches `DEFAULT_ROW_LIMIT` in `src-tauri/src/commands.rs`: `fetch_rows`
 // always pages this many rows at a time. Scalar paging is LIMIT/OFFSET, not
@@ -78,6 +80,8 @@ function noUsableIdentitySummary(environment: Environment): string {
 }
 
 function App() {
+  const { choice: themeChoice, setChoice: setThemeChoice } = useTheme();
+
   const [environments, setEnvironments] = useState<Environment[]>([]);
   const [environmentsError, setEnvironmentsError] = useState<AppErrorDto | null>(null);
   const [environmentsLoaded, setEnvironmentsLoaded] = useState(false);
@@ -489,15 +493,15 @@ function App() {
   );
 
   return (
-    <main className="flex h-screen flex-col bg-white text-gray-900">
-      <header className="flex items-center gap-3 border-b px-4 py-2">
+    <main className="flex h-screen flex-col bg-surface-0 font-ui text-text-1">
+      <header className="flex items-center gap-3 border-b border-rule bg-surface-1 px-4 py-2">
         <h1 className="text-lg font-semibold">icydb Explorer</h1>
         <ProjectSelector root={root} busy={projectBusy} onSelect={handleSelectProject} />
         {environments.length > 0 && (
           <select
             value={env ?? ""}
             onChange={(event) => handleSelectEnvironment(event.target.value)}
-            className="rounded border px-2 py-1 text-sm"
+            className="rounded-control border border-rule px-2 py-1 text-sm"
           >
             {environments.map((environment) => (
               <option key={environment.name} value={environment.name}>
@@ -511,6 +515,9 @@ function App() {
           selected={identity}
           onSelect={handleSelectIdentity}
         />
+        <div className="ml-auto">
+          <SettingsMenu choice={themeChoice} onChoose={setThemeChoice} />
+        </div>
       </header>
 
       {environmentsError && (
@@ -527,7 +534,7 @@ function App() {
 
       {persistWarning && (
         <div className="p-2">
-          <p className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
+          <p className="rounded-control border border-warn-border bg-warn-bg p-3 text-sm text-warn-text">
             This project is open, but the choice won&apos;t be remembered next launch:{" "}
             {persistWarning}
           </p>
@@ -539,8 +546,8 @@ function App() {
           environments" below — that one is about a project that exists. */}
       {environmentsLoaded && root === null && !environmentsError && (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8">
-          <p className="text-sm text-gray-600">Choose a project to explore.</p>
-          <p className="text-xs text-gray-500">
+          <p className="text-sm text-text-2">Choose a project to explore.</p>
+          <p className="text-xs text-text-3">
             Pick a directory containing an <code>.icp/</code> layout — or any directory inside
             one.
           </p>
@@ -554,7 +561,7 @@ function App() {
           project that simply hasn't been deployed yet. */}
       {environmentsLoaded && root !== null && environments.length === 0 && !environmentsError && (
         <div className="p-2">
-          <p className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
+          <p className="rounded-control border border-warn-border bg-warn-bg p-3 text-sm text-warn-text">
             No environments were found in this project&apos;s <code>.icp/</code> layout. Deploy
             it (e.g. <code>icp network start</code>, <code>icp canister create</code>,{" "}
             <code>icp canister install</code>) and relaunch this app.
@@ -572,7 +579,7 @@ function App() {
           call, never by there being nothing to select in the first place. */}
       {environmentsLoaded && currentEnvironment && identity === null && (
         <div className="p-2">
-          <p className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
+          <p className="rounded-control border border-warn-border bg-warn-bg p-3 text-sm text-warn-text">
             {noUsableIdentitySummary(currentEnvironment)}
           </p>
         </div>
@@ -580,16 +587,16 @@ function App() {
 
       {root !== null && (
         <div className="flex flex-1 overflow-hidden">
-          <aside className="w-64 shrink-0 overflow-auto border-r p-2">
-            <h2 className="mb-2 text-xs font-semibold uppercase text-gray-500">Canisters</h2>
+          <aside className="w-64 shrink-0 overflow-auto border-r border-rule bg-surface-1 p-2">
+            <h2 className="mb-2 text-xs font-semibold uppercase text-text-2">Canisters</h2>
             {treeError && <ErrorBanner error={treeError} />}
             {forest && (
               <CanisterTree trees={forest} selectedPid={canister} onSelect={setCanister} />
             )}
           </aside>
 
-          <aside className="w-72 shrink-0 overflow-auto border-r p-2">
-            <h2 className="mb-2 text-xs font-semibold uppercase text-gray-500">Tables</h2>
+          <aside className="w-72 shrink-0 overflow-auto border-r border-rule bg-surface-1 p-2">
+            <h2 className="mb-2 text-xs font-semibold uppercase text-text-2">Tables</h2>
             {entitiesError && <ErrorBanner error={entitiesError} />}
             {entities && <TableList entities={entities} selected={entity} onSelect={setEntity} />}
 
@@ -600,7 +607,7 @@ function App() {
             )}
             {schema && (
               <div className="mt-4">
-                <h2 className="mb-2 text-xs font-semibold uppercase text-gray-500">Schema</h2>
+                <h2 className="mb-2 text-xs font-semibold uppercase text-text-2">Schema</h2>
                 <SchemaPanel schema={schema} />
               </div>
             )}
@@ -611,12 +618,12 @@ function App() {
               {rowsError && <ErrorBanner error={rowsError} />}
               {rows && <RowGrid rows={rows} hasMore={hasMore} onLoadMore={loadMore} />}
               {!rows && !rowsError && entity && (
-                <p className="p-2 text-sm text-gray-500">Loading rows…</p>
+                <p className="p-2 text-sm text-text-2">Loading rows…</p>
               )}
             </div>
 
-            <div className="mt-4 shrink-0 border-t pt-2">
-              <h2 className="mb-2 text-xs font-semibold uppercase text-gray-500">SQL console</h2>
+            <div className="mt-4 shrink-0 border-t border-rule pt-2">
+              <h2 className="mb-2 text-xs font-semibold uppercase text-text-2">SQL console</h2>
               <SqlConsole
                 onRun={handleRunSql}
                 error={sqlError}
@@ -706,7 +713,7 @@ function SqlResultView({ result }: { result: ResultDto }) {
     return (
       <table className="text-sm">
         <thead>
-          <tr className="text-left text-xs uppercase text-gray-500">
+          <tr className="text-left text-xs uppercase text-text-2">
             <th className="pr-4">Name</th>
             <th className="pr-4">Kind</th>
             <th className="pr-4">Origin</th>
