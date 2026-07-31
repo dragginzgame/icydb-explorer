@@ -20,6 +20,16 @@ noted further down:
   "Architecture" below.
 - **The lock invariant is pinned by a compile-time `Send` assertion in the test, not by
   the test's own `.await`.** See "Architecture" below.
+- **`adoptProject` must also invalidate the canister tree, via a generation counter, not
+  just the state this document originally listed.** The frontend bullet below named
+  canister, entity, schema, rows, and SQL state but not the tree, which is exactly why
+  the tree was missed: a whole-branch review found that two projects sharing an
+  environment name (`local`) and a derived identity name (`default`) — the common case,
+  not an edge case — leave `env` and `identity` unchanged across a switch, so React bails
+  out of the update and the tree-fetch effect never re-runs. The fix adds a
+  `projectGeneration` counter, bumped on every `adoptProject` call and added to that
+  effect's dependencies, so adoption always forces a refetch regardless of whether the
+  names happen to coincide. See the corrected frontend bullet below.
 
 ## Purpose
 
@@ -251,9 +261,22 @@ The wrapper exists for one reason: a config-write failure has nowhere to go in a
   containing `.icp/`. Not three blank panes. A vanished persisted path lands here too.
 - **`adoptProject(project)`** — the mount effect's body, extracted. Sets environments,
   the discovery error, the initial environment and the initial identity, and clears
-  canister, entity, schema, rows, and SQL state. Launch and switch both call it, so
-  they cannot drift — the same reasoning that makes `resolve_identity_store` a single
-  function in `discovery`.
+  canister, entity, schema, rows, **the canister tree**, and SQL state. Launch and
+  switch both call it, so they cannot drift — the same reasoning that makes
+  `resolve_identity_store` a single function in `discovery`.
+
+  **Corrected — this bullet originally omitted the canister tree.** Implementation
+  found that a whole-branch review caught a genuine gap here: `adoptProject` sets `env`
+  and `identity` from the incoming project, and the tree-fetch effect is keyed on
+  `[env, identity]`, but two projects commonly share an environment name (`local`) and a
+  derived identity name (`default`) — not an edge case. When they do, `adoptProject`
+  sets both to values identical to the outgoing project's, React bails out of the
+  no-op `setState`, the effect's dependencies never change, and it never re-runs — the
+  previous project's canister tree stays on screen, where clicking one of its canisters
+  queries the *old* project's canister id through the *new* project's agent. The fix is
+  a `projectGeneration` counter, incremented on every `adoptProject` call and added to
+  the tree effect's dependency array, so adoption always forces a tree refetch
+  regardless of whether the environment/identity names happen to coincide.
 - **Cancelling the dialog is a no-op.** `open()` returns `null`; nothing is called,
   nothing changes, no error is shown.
 
@@ -285,7 +308,7 @@ the app enforces read-only access as a security boundary.
 |---|---|
 | `resolve_root` | Table tests over real temp directories: `.icp/` in the picked dir, in the parent, in the grandparent, nowhere at all; a `.icp` in the fake `$HOME` is **not** adopted when picking a descendant; the *same* `.icp` **is** adopted when `$HOME` is picked exactly; `home = None` still stops before the filesystem root |
 | Persistence | Round-trip write/read; missing file → `None`; corrupt JSON → `None`, not an error; recorded path no longer exists → treated as first run |
-| `ProjectState` | `snapshot`/`replace`; a `tokio::test` asserting a snapshot held across an `.await` does not block a second snapshot — the lock invariant tested, not merely commented |
+| `ProjectState` | `snapshot`/`replace`; a compile-time `fn requires_send<T: Send>(_: &T) {}` assertion is what actually pins the never-hold-a-lock-across-`.await` invariant — a `std::sync::MutexGuard` would fail to satisfy it, so a guard-returning `snapshot` would fail to compile. (**Corrected** — this row previously credited a `tokio::test` asserting a snapshot held across an `.await`; a `#[tokio::test]` runs on `block_on`, which imposes no `Send` bound, so that `.await` alone proves nothing. See "Architecture" above.) |
 | `AgentPool::clear` | Insert two agents into the map from the in-module test, clear, assert empty |
 | `select_project` helpers | The pure parts — root resolution, config read/write, the not-a-directory pre-flight — tested without Tauri `State`, matching how `commands.rs` tests its existing helpers |
 | Frontend | Empty state renders the picker; a successful pick re-renders environments; cancel changes nothing; an embedded discovery error shows the banner; a `persistWarning` shows the note and *not* the error banner; switching clears the canister and entity selection |

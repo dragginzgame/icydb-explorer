@@ -122,6 +122,17 @@ function App() {
   const [sqlOrderByMissing, setSqlOrderByMissing] = useState(false);
   const [sqlResult, setSqlResult] = useState<ResultDto | null>(null);
 
+  // Incremented by every `adoptProject` call. The canister tree effect
+  // depends on it so that adopting a project ALWAYS refetches the tree —
+  // including when the incoming project's environment and identity names
+  // happen to equal the outgoing one's, which is the common case (two
+  // projects each having a `local` environment and a `default` identity).
+  // Without this, `env` and `identity` are set to identical values, React
+  // bails out of the update, the effect's dependencies never change, and the
+  // previous project's canisters stay on screen — where clicking one would
+  // query the OLD project's canister id through the NEW project's agent.
+  const [projectGeneration, setProjectGeneration] = useState(0);
+
   // Tracks the *latest requested* `handleSelectIdentity` call — see that
   // handler's doc comment below for why. Declared here, ahead of both
   // handlers that touch it, because `handleSelectEnvironment` also needs to
@@ -152,22 +163,47 @@ function App() {
     // invalidates all of it. The effects keyed on env/canister/entity clear
     // their own state, but `canister` and `entity` are selections, not
     // derived data, and would otherwise survive into a project where they
-    // mean nothing.
+    // mean nothing. The canister tree itself is invalidated below by the
+    // generation bump, not by `env`/`identity` changing — those can come out
+    // identical to the outgoing project's when both happen to share an
+    // environment and identity name, which is common, not an edge case.
     setCanister(null);
     setEntity(null);
     setSqlResult(null);
     setSqlError(undefined);
+    setSqlLimitAppended(false);
+    setSqlOrderByMissing(false);
+    setProjectGeneration((generation) => generation + 1);
   }, []);
 
   // Load whatever project was remembered. `null` means none was — the
   // "choose a project" state, not a failure.
+  //
+  // `cancelled` guards against the near-zero-but-nonzero case where a user
+  // completes a folder-picker dialog (`handleSelectProject`) before this
+  // mount-time load resolves: without the guard, this call's `.then` would
+  // fire after the picked project was already adopted and clobber it,
+  // leaving the frontend showing the picked project while the backend's
+  // `ProjectState` (and pool) had already moved on to it — the same
+  // frontend/backend split the generation counter above exists to prevent.
   useEffect(() => {
+    let cancelled = false;
     listEnvironments()
       .then((project) => {
+        if (cancelled) return;
         if (project) adoptProject(project);
       })
-      .catch((error: AppErrorDto) => setEnvironmentsError(error))
-      .finally(() => setEnvironmentsLoaded(true));
+      .catch((error: AppErrorDto) => {
+        if (cancelled) return;
+        setEnvironmentsError(error);
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setEnvironmentsLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [adoptProject]);
 
   // A rejected pick changes nothing: `select_project` only rejects on a path
@@ -221,6 +257,16 @@ function App() {
   // `env` changes again before this fetch resolves, the cleanup flips
   // `cancelled` to true so the in-flight promise's `.then`/`.catch` becomes
   // a no-op instead of clobbering whatever the newer selection already set.
+  //
+  // Depends on `projectGeneration`, not just `env`/`identity`: two projects
+  // commonly share an environment name (`local`) and a derived identity name
+  // (`default`), in which case `adoptProject` sets `env` and `identity` to
+  // values identical to the outgoing project's. React bails out of a
+  // no-op `setState`, so without the generation counter this effect's
+  // dependencies would never actually change and it would never re-run —
+  // leaving the previous project's canister tree on screen, where clicking
+  // one would query the *old* project's canister id through the *new*
+  // project's agent.
   useEffect(() => {
     setForest(null);
     setTreeError(null);
@@ -239,7 +285,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [env, identity]);
+  }, [env, identity, projectGeneration]);
 
   useEffect(() => {
     setEntities(null);

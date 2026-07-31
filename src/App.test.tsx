@@ -614,3 +614,89 @@ test("switching projects clears the canister and entity selection", async () => 
   // the selection cleared there is nothing to list.
   await waitFor(() => expect(screen.queryByText("DemoRow")).not.toBeInTheDocument());
 });
+
+/// Both projects declare a `local` environment with a `default` identity —
+/// the common case, and the one that used to break. The canister tree effect
+/// is keyed on a project-adoption generation counter precisely so that
+/// identical env/identity names still force a refetch; without it React bails
+/// out of the state updates, the effect never re-runs, and the previous
+/// project's canisters stay on screen, where clicking one would query the old
+/// project's canister id through the new project's agent.
+test("switching projects reloads the canister tree even when env and identity names match", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/first",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree)
+    .mockResolvedValueOnce([{ pid: "aaaaa-aa", role: "canister-from-first", children: [] }])
+    .mockResolvedValueOnce([{ pid: "bbbbb-bb", role: "canister-from-second", children: [] }]);
+  vi.mocked(commands.listTables).mockResolvedValue({
+    type: "entities",
+    entities: [entity("DemoRow")],
+  });
+  vi.mocked(commands.selectProject).mockResolvedValue({
+    project: {
+      root: "/Users/me/projects/second",
+      environments: [environmentFixture()],
+      error: null,
+    },
+    persistWarning: null,
+  });
+  dialogOpen.mockResolvedValue("/Users/me/projects/second");
+
+  render(<App />);
+  fireEvent.click(await screen.findByText("canister-from-first"));
+  expect(await screen.findByText("DemoRow")).toBeInTheDocument();
+
+  // Selected by `title` (the project selector button's full path), not by
+  // its visible text: the visible text is `📁 first`, which a loose
+  // `/first/i` name match would also match against the
+  // "canister-from-first" tree node rendered above.
+  fireEvent.click(await screen.findByTitle("/Users/me/projects/first"));
+
+  // The new project's tree must replace the old one's.
+  expect(await screen.findByText("canister-from-second")).toBeInTheDocument();
+  expect(screen.queryByText("canister-from-first")).not.toBeInTheDocument();
+  // And the old canister's entity list must not survive the switch.
+  expect(screen.queryByText("DemoRow")).not.toBeInTheDocument();
+});
+
+/// `adoptProject` used to reset `sqlResult`/`sqlError` but leave
+/// `sqlLimitAppended`/`sqlOrderByMissing` stale: run an unbounded `SELECT` in
+/// project A (the console reports a default LIMIT was added), switch to
+/// project B, and the note used to persist beside an empty console with no
+/// query ever having run against B.
+test("switching projects clears the stale 'default LIMIT was added' note", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/first",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    { pid: "aaaaa-aa", role: "canister-a", children: [] },
+  ]);
+  vi.mocked(commands.listTables).mockResolvedValue({ type: "entities", entities: [] });
+  vi.mocked(commands.runSql).mockResolvedValue({
+    result: { type: "count", entity: "demo_row", rowCount: 3 },
+    limitAppended: true,
+    orderByMissing: false,
+  });
+  vi.mocked(commands.selectProject).mockResolvedValue({
+    project: { root: "/Users/me/projects/second", environments: [environmentFixture()], error: null },
+    persistWarning: null,
+  });
+  dialogOpen.mockResolvedValue("/Users/me/projects/second");
+
+  render(<App />);
+  fireEvent.click(await screen.findByText("canister-a"));
+  fireEvent.click(await screen.findByRole("button", { name: "Run" }));
+
+  expect(await screen.findByText(/A default LIMIT was added/)).toBeInTheDocument();
+
+  fireEvent.click(await screen.findByTitle("/Users/me/projects/first"));
+
+  await waitFor(() =>
+    expect(screen.queryByText(/A default LIMIT was added/)).not.toBeInTheDocument(),
+  );
+});

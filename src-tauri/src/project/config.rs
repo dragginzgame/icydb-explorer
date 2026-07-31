@@ -38,6 +38,10 @@ pub fn write_recorded_root(config_dir: &Path, root: &Path) -> Result<(), String>
             config_dir.display()
         )
     })?;
+    // `.display()` is lossy for non-UTF-8 paths (rare, platform-dependent);
+    // a faithful round-trip would need a different on-disk encoding (e.g.
+    // base64 or a byte array) for `root`, which this file's JSON shape is
+    // deliberately kept simple to avoid — see this module's finding notes.
     let contents = serde_json::json!({ "root": root.display().to_string() });
     fs::write(&path, contents.to_string())
         .map_err(|error| format!("Could not write {}: {error}", path.display()))

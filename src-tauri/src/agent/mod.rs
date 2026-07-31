@@ -3,8 +3,12 @@
 //! Building an agent means loading an identity (pem from disk, or a keyring
 //! export) and — for local replicas only — an extra network round-trip to
 //! fetch the root key. Neither is something callers should repeat on every
-//! query, so `AgentPool` builds one `Agent` per `(environment, identity)`
-//! pair and reuses it.
+//! query, so `AgentPool` builds one `Agent` per `(project root, environment,
+//! identity)` triple and reuses it. The project root is part of the key, not
+//! just the environment and identity names, because two different projects
+//! commonly declare a `local` environment with a `default` identity — an
+//! agent built for one project's replica must never be handed to another
+//! project's queries (see `cache_key`'s doc comment).
 
 mod export;
 mod identity;
@@ -27,8 +31,12 @@ use tokio::sync::Mutex;
 use crate::discovery::{Environment, IdentityRef};
 use crate::error::AppError;
 
-/// Caches one `ic_agent::Agent` per `(Environment::name, IdentityRef::name)`
-/// pair — see `cache_key`.
+/// Caches one `ic_agent::Agent` per `(project root, Environment::name,
+/// IdentityRef::name)` triple — see `cache_key`. The root is part of the key
+/// (not merely a redundant scoping detail) because two different projects
+/// can each declare an environment and identity with the same names; without
+/// the root in the key, a command for one project could be served an agent
+/// built for another project's replica.
 pub struct AgentPool {
     agents: Mutex<HashMap<String, Arc<Agent>>>,
 }
@@ -172,10 +180,24 @@ impl AgentPool {
 /// root means such a late insert lands where only the project it belongs to
 /// can find it.
 fn cache_key(root: &Path, env: &str, identity: &str) -> String {
-    let root = root.to_string_lossy();
+    // `to_string_lossy` is not injective: two roots differing only in
+    // invalid UTF-8 bytes of equal length both render as the same `U+FFFD`
+    // replacement-character sequence, which would make two different
+    // projects' roots collide in the cache key — precisely the guarantee
+    // this function exists to provide. Hex-encoding `OsStr::as_encoded_bytes`
+    // (stable since Rust 1.74) instead is injective: two `OsStr`s are equal
+    // iff their encoded bytes are equal, and no two distinct byte sequences
+    // produce the same hex string. The length
+    // prefix is still the raw byte count (not the hex string's length),
+    // keeping the same length-prefixed scheme as `env` and `identity` below.
+    let root_bytes = root.as_os_str().as_encoded_bytes();
+    let mut root_hex = String::with_capacity(root_bytes.len() * 2);
+    for byte in root_bytes {
+        root_hex.push_str(&format!("{byte:02x}"));
+    }
     format!(
-        "{}:{root}:{}:{env}:{}:{identity}",
-        root.len(),
+        "{}:{root_hex}:{}:{env}:{}:{identity}",
+        root_bytes.len(),
         env.len(),
         identity.len()
     )
@@ -287,13 +309,39 @@ mod tests {
 
     /// The length prefixes exist so no combination of separator characters
     /// inside a root, environment, or identity name can make two different
-    /// triples collide. A project literally named `local` is the kind of
-    /// input that would break naive concatenation.
+    /// triples collide. This pair is chosen to actually collide under naive
+    /// `format!("{root}:{env}:{identity}")` concatenation — both render as
+    /// `/p:local:default:x` — so the test exercises the guarantee it claims
+    /// to check, rather than merely asserting two strings that were never
+    /// going to be equal in the first place.
     #[test]
     fn the_cache_key_cannot_be_confused_by_a_separator_in_a_root() {
-        let a = cache_key(Path::new("/p/local"), "default", "x");
+        let a = cache_key(Path::new("/p:local"), "default", "x");
         let b = cache_key(Path::new("/p"), "local:default", "x");
         assert_ne!(a, b);
+    }
+
+    /// `to_string_lossy` is not injective: two different byte sequences of
+    /// equal length, each containing invalid UTF-8, can both render as the
+    /// same `U+FFFD` replacement-character run. Hex-encoding
+    /// `as_encoded_bytes` must keep such roots distinct where a lossy
+    /// stringification would have collapsed them.
+    #[cfg(unix)]
+    #[test]
+    fn roots_differing_only_in_invalid_utf8_bytes_still_produce_distinct_keys() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        // Both are invalid UTF-8 (a lone continuation byte), both the same
+        // length, and both would lossily stringify to "/p/\u{FFFD}".
+        let a = Path::new(OsStr::from_bytes(b"/p/\x80"));
+        let b = Path::new(OsStr::from_bytes(b"/p/\x81"));
+        assert_ne!(a.as_os_str(), b.as_os_str());
+
+        assert_ne!(
+            cache_key(a, "local", "default"),
+            cache_key(b, "local", "default")
+        );
     }
 
     #[test]

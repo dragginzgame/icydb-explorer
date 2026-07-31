@@ -28,13 +28,11 @@ use project::ProjectState;
 /// environments yet — a bug this app has already had once.
 fn recorded_project(config_dir: &std::path::Path) -> Option<Project> {
     let root = read_recorded_root(config_dir)?;
-    Some(
-        discovery::discover(&root).unwrap_or_else(|error| Project {
-            root,
-            environments: Vec::new(),
-            error: Some(error),
-        }),
-    )
+    Some(discovery::discover(&root).unwrap_or_else(|error| Project {
+        root,
+        environments: Vec::new(),
+        error: Some(error),
+    }))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

@@ -282,6 +282,12 @@ still accepted, not rejected — it becomes the open project and the UI
 explains why it's empty, which is what lets you open a project you haven't
 deployed yet.
 
+The home-directory bound only applies where a home directory is
+discoverable: it's determined by reading `HOME`, which is normally unset on
+Windows, so there the walk isn't bounded by a home directory at all. This
+isn't worth special-casing, since the identity store lookup has the same
+`HOME`-only assumption — Windows is unsupported in practice regardless.
+
 Switching to a different project clears this app's cached agents, so the
 first query afterward re-loads the identity and may re-prompt the OS
 keychain. If the picked project can't be written to `project.json`, the

@@ -195,8 +195,14 @@ pub async fn canister_tree(
     let agent = pool.get(&project.root, environment, identity_ref).await?;
     let mut forest = Vec::with_capacity(environment.canisters.len());
     for named in &environment.canisters {
-        let root = parse_principal(&named.id)?;
-        let infos = fetch_children(&agent, root).await?;
+        // Named `canister_root` rather than `root`, unlike elsewhere in this
+        // file: this function already binds `project.root` a few lines up,
+        // and the two are unrelated (a filesystem path vs. this tree walk's
+        // starting canister principal) — the one function whose correctness
+        // turns on telling them apart is not the place for two things named
+        // `root`.
+        let canister_root = parse_principal(&named.id)?;
+        let infos = fetch_children(&agent, canister_root).await?;
         forest.push(build_tree(&named.id, &named.name, infos));
     }
     Ok(forest)
@@ -408,7 +414,7 @@ pub async fn run_sql(
 /// unrelated conditions with one explanation. Keeping `project` a plain
 /// `Project` means the frontend adopts a switched project through the exact
 /// code path it uses at launch.
-#[derive(Serialize, Clone)]
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectSelection {
     pub project: Project,

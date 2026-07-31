@@ -6,12 +6,22 @@ use std::path::{Path, PathBuf};
 /// directory, or `picked` unchanged if none does.
 ///
 /// `picked` is **always** the first candidate, whatever it is. The bound
-/// applies to the *ancestor* walk only: `home` and the filesystem root are
-/// never examined as ancestors, because `~/.icp` and `/.icp` would be
-/// config locations rather than projects — without that rule, one
-/// home-level `.icp` would make every folder under `$HOME` resolve to
-/// `$HOME`. Bounding ancestors only means a project stored directly at
-/// `$HOME` is still found when picked exactly.
+/// applies to the *ancestor* walk only: when a home directory is supplied,
+/// it and the filesystem root are never examined as ancestors, because
+/// `~/.icp` and `/.icp` would be config locations rather than projects —
+/// without that rule, one home-level `.icp` would make every folder under
+/// `$HOME` resolve to `$HOME`. Bounding ancestors only means a project
+/// stored directly at `$HOME` is still found when picked exactly.
+///
+/// The home bound only applies where a home directory is discoverable in the
+/// first place. The caller (`commands::select_project`) currently determines
+/// it by reading `HOME`, which is normally unset on Windows — there, `home`
+/// is `None` and this function walks all the way to the filesystem root, so
+/// a `.icp` at, say, `C:\Users\me` would be adopted for every folder beneath
+/// it. See that caller and `discovery::icp_dir` for why this isn't worth
+/// fixing by reading `%USERPROFILE%` instead: the identity store lookup has
+/// the same `HOME`-only assumption, so Windows is unsupported in practice
+/// regardless.
 ///
 /// `home` is a parameter rather than an environment read so this function
 /// is testable against fixture directories with no global state.
@@ -30,8 +40,10 @@ pub fn resolve_root(picked: &Path, home: Option<&Path>) -> PathBuf {
     while let Some(parent) = current.parent() {
         // The filesystem root is its own parent's end: `parent()` of "/" is
         // None, but "/" itself must never be a candidate, and neither must
-        // `home`.
-        if parent == Path::new("") || parent.parent().is_none() {
+        // `home`. `parent.parent().is_none()` already covers an empty path
+        // (`Path::new("").parent()` is `None` too), so no separate check for
+        // it is needed.
+        if parent.parent().is_none() {
             break;
         }
         if home.is_some_and(|home| parent == home) {
@@ -63,10 +75,7 @@ mod tests {
 
     #[test]
     fn the_picked_directory_is_itself_the_first_candidate() {
-        assert_eq!(
-            resolve_root(&fixture("project"), None),
-            fixture("project")
-        );
+        assert_eq!(resolve_root(&fixture("project"), None), fixture("project"));
     }
 
     #[test]
@@ -87,7 +96,10 @@ mod tests {
 
     #[test]
     fn returns_the_picked_path_unchanged_when_no_icp_exists_anywhere() {
-        assert_eq!(resolve_root(&fixture("bare/sub"), None), fixture("bare/sub"));
+        assert_eq!(
+            resolve_root(&fixture("bare/sub"), None),
+            fixture("bare/sub")
+        );
     }
 
     /// The whole reason `home` is a parameter: a home-level `.icp` must not
