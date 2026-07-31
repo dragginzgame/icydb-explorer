@@ -70,3 +70,45 @@ test("two setters invoked in the same tick both take effect, in state and in sto
   expect(persisted.widths.fleet).toBe(300);
   expect(persisted.schemaCollapsed).toBe(true);
 });
+
+/// Persisting happens in an effect, not inside the state updater, and this is
+/// what pins that. A React state updater must be pure: StrictMode
+/// double-invokes it, and — the reason that matters beyond a duplicate write —
+/// React may discard a render it has already begun, which from inside the
+/// updater would leave storage holding a layout the user never saw applied.
+/// Writing after commit also coalesces a burst of setters into one write.
+///
+/// Note this asserts the coalescing, not the StrictMode behaviour: these tests
+/// render without StrictMode, so a double-invoked updater would not show up
+/// here at all.
+test("a burst of same-tick updates writes once, not once per setter", () => {
+  localStorage.removeItem(PANE_STORAGE_KEY);
+  // Spy on the prototype, not the instance: jsdom's `localStorage` is
+  // Proxy-based, so assigning an own `setItem` does not shadow the prototype
+  // method and the spy silently never fires — which reads exactly like "no
+  // writes happened" and would make this test pass against a broken effect.
+  const spy = vi.spyOn(Storage.prototype, "setItem");
+  const writesOfOurs = () =>
+    spy.mock.calls.filter(([key]) => key === PANE_STORAGE_KEY).map(([, value]) => value as string);
+
+  try {
+    const { result } = renderHook(() => usePaneLayout());
+    const afterMount = writesOfOurs().length;
+
+    act(() => {
+      result.current.setWidth("fleet", 300);
+      result.current.setWidth("tables", 320);
+      result.current.toggleSchema();
+    });
+
+    const writes = writesOfOurs();
+    expect(writes.length - afterMount).toBe(1);
+    const persisted = JSON.parse(writes[writes.length - 1]);
+    // The single write still carries every change, so coalescing loses nothing.
+    expect(persisted.widths.fleet).toBe(300);
+    expect(persisted.widths.tables).toBe(320);
+    expect(persisted.schemaCollapsed).toBe(true);
+  } finally {
+    spy.mockRestore();
+  }
+});

@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 export const PANE_STORAGE_KEY = "icydb-explorer.panes";
 
@@ -82,16 +82,20 @@ export function usePaneLayout() {
   // same tick (e.g. a resize immediately followed by `toggleSchema()`) must
   // each derive from the *other's* result, not from `layout` as captured at
   // render time, or the second call silently discards the first — in React
-  // state and in what gets persisted. `persist` is given the exact object
-  // the reducer produced, from inside the same updater, so the two can never
-  // disagree.
-  const update = useCallback((updater: (prev: PaneLayout) => PaneLayout) => {
-    setLayout((prev) => {
-      const next = updater(prev);
-      persist(next);
-      return next;
-    });
-  }, []);
+  // state and in what gets persisted.
+  const update = useCallback(
+    (updater: (prev: PaneLayout) => PaneLayout) => setLayout(updater),
+    [],
+  );
+
+  // Persisting belongs here, not inside the updater. A state updater must be
+  // pure: StrictMode double-invokes it in development, and — the reason that
+  // matters beyond a duplicate write — React is free to discard a render it
+  // has already begun, which would leave `localStorage` holding a layout the
+  // user never actually saw applied. Writing from an effect means only a
+  // committed layout is ever stored, and it coalesces a burst of same-tick
+  // updates into one write instead of one per setter.
+  useEffect(() => persist(layout), [layout]);
 
   return {
     layout,
