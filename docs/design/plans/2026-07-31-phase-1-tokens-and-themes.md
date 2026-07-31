@@ -20,6 +20,7 @@
 - **Semantic token names must not collide with Tailwind's theme namespace.** Tailwind owns `--font-*`, `--radius-*` and `--color-*` as theme keys, so the semantic tokens are named `--ui-font`, `--mono-font`, `--r-control`, `--r-row` and bridged onto Tailwind's names in `@theme inline`. Naming them `--font-ui`/`--radius-control` directly makes Tailwind emit a circular `--font-ui: var(--font-ui)` that only works by cascade accident, and would silently override Tailwind's own `font-mono` utility. Verified by compiling tailwindcss 4.3.3 both ways.
 - **Tailwind 4 has no `tailwind.config.js`** in this project and must not gain one. Configuration is CSS-first, inside `src/index.css` / `src/theme/tokens.css`.
 - **Existing tests must keep passing** — 39 frontend, 129 backend. They mock `./api/commands` at the module boundary, so a pure presentation change should not disturb them. If one breaks, that is a real signal, not a test to update.
+- **A menu row's hint text becomes part of its accessible name.** So no hint may contain another theme's name, or a `getByRole(…, { name: /console/i })` query matches more than one row. `Follow system`'s hint is `light or dark` for exactly this reason.
 - **Vitest stubs `.css` imports to `""`** by default (`css: { include: [] }`), and does not exempt a `?raw` query — a CSS-reading test needs a scoped `test.css.include` entry or it asserts against an empty string and passes vacuously. Verified against vitest 4.1.10. This does **not** affect `.tsx` raw imports, so the component globs in Tasks 4 and 5 need nothing.
 - **Tests may not import Node builtins.** There is no `@types/node` and `tsconfig.json`'s `types` is `["vitest/globals"]`, so `node:fs`/`node:path`/`process.cwd()` pass under Vitest but fail the `tsc` step of `npm run build`. Read a file with Vite's `?raw` import and list files with `import.meta.glob` — both declared by `vite/client` via `src/vite-env.d.ts`.
 - **Test idiom:** bare top-level `test(...)`, no imports from `vitest`, `fireEvent` from `@testing-library/react`, `jest-dom` matchers via the existing `vitest.setup.ts`. Do not add a testing dependency.
@@ -669,7 +670,10 @@ import { useEffect, useRef, useState } from "react";
 import type { ThemeChoice } from "../theme/useTheme";
 
 const LABELS: Record<ThemeChoice, { name: string; hint: string }> = {
-  system: { name: "Follow system", hint: "Instrument or Console" },
+  // The hint must not name another theme: it becomes part of this row's
+  // accessible name, so "Instrument or Console" here made
+  // getByRole("menuitemradio", { name: /console/i }) match two rows.
+  system: { name: "Follow system", hint: "light or dark" },
   console: { name: "Console", hint: "dark" },
   terminal: { name: "Terminal", hint: "dark · mono" },
   instrument: { name: "Instrument", hint: "light" },
