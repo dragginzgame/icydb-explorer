@@ -313,3 +313,18 @@ test("expanding a cell in a different row shows only that row's sub-row", () => 
   expect(subRows[0].textContent).not.toContain("Alpha");
   expect(subRows[0].textContent).not.toContain("alpha-handle");
 });
+
+/// The sticky header only works when the pane owns the scrolling. While
+/// `RowGrid` had its own `overflow-auto`, that inner box was the `thead`'s
+/// nearest scrollport, its `scrollTop` was permanently 0, and `sticky top-0`
+/// resolved to nothing. jsdom cannot scroll, so this pins the structural
+/// precondition: the header is sticky and `RowGrid` contains no scrollport.
+test("the grid does not own a scroll container, so its sticky header can stick", () => {
+  render(<RowGrid rows={wide} hasMore={false} onLoadMore={() => {}} />);
+
+  expect(document.querySelectorAll(".overflow-auto, .overflow-scroll")).toHaveLength(0);
+  // `sticky top-0` lives on the `<thead>`, not the individual `<th>`s.
+  const header = document.querySelector("thead");
+  expect(header).toHaveClass("sticky");
+  expect(header).toHaveClass("top-0");
+});

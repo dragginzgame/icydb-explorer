@@ -97,7 +97,7 @@ export function RowGrid({
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="overflow-auto">
+      <div>
         <table className="min-w-full border-collapse text-sm">
           <thead className="sticky top-0 bg-surface-inset">
             <tr>
