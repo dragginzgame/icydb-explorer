@@ -39,6 +39,42 @@ export function Pane({
   );
 }
 
-function PaneHandle(_props: { width?: number; onResize: (width: number) => void; label: string }) {
-  return null;
+/** The drag handle on a pane's trailing edge.
+ *
+ *  A `separator` with `aria-orientation="vertical"` because that is what this
+ *  is; the drag is tracked on `window` rather than on the handle so that moving
+ *  the pointer faster than React re-renders does not drop the drag. */
+function PaneHandle({
+  width,
+  onResize,
+  label,
+}: {
+  width?: number;
+  onResize: (width: number) => void;
+  label: string;
+}) {
+  const start = (event: React.PointerEvent) => {
+    const originX = event.clientX;
+    const originWidth = width ?? 0;
+
+    const move = (moveEvent: PointerEvent) =>
+      onResize(originWidth + (moveEvent.clientX - originX));
+    const end = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+    };
+
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+  };
+
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={`Resize ${label}`}
+      onPointerDown={start}
+      className="absolute inset-y-0 right-0 w-1 cursor-col-resize hover:bg-accent"
+    />
+  );
 }
