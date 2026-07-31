@@ -2,16 +2,15 @@ import { useCallback, useEffect, useState } from "react";
 
 export const THEME_STORAGE_KEY = "icydb-explorer.theme";
 
+/** The array is the single source of truth and the union is derived from it, so
+ *  the two cannot drift. Declaring them separately type-checks an unlisted
+ *  string *in* the array but not a union member *missing* from it — which would
+ *  silently omit a newly added theme from the settings menu that iterates this. */
+export const THEME_CHOICES = ["system", "console", "terminal", "instrument"] as const;
+
 /** `system` sets no `data-theme`, letting the media query in tokens.css pick
  *  between the Instrument (light) and Console (dark) values. */
-export type ThemeChoice = "system" | "console" | "terminal" | "instrument";
-
-export const THEME_CHOICES: readonly ThemeChoice[] = [
-  "system",
-  "console",
-  "terminal",
-  "instrument",
-];
+export type ThemeChoice = (typeof THEME_CHOICES)[number];
 
 function isThemeChoice(value: unknown): value is ThemeChoice {
   return typeof value === "string" && (THEME_CHOICES as readonly string[]).includes(value);
