@@ -88,39 +88,22 @@ test.each(sources)("$name uses no bare colour keyword in an arbitrary value", ({
 
 /// Terminal inverts selection — dark text on a moss fill — while the other two
 /// themes use ordinary text on a tint. So a `bg-sel-bg` without `text-sel-text`
-/// is illegible in Terminal only, and no token-parity test can see it.
+/// is illegible in Terminal only, and no token-parity test can see it: every
+/// token is present and well-formed.
 ///
-/// The window is the whole `className={…}` expression, not a quote-delimited
-/// run: two of the three call sites write the class inside a template literal
-/// with a nested double-quoted ternary, and a `[^"`]*` window terminates at the
-/// quote *before* the class it is looking for. That blindness shipped once.
+/// The unit of comparison is a single string fragment, not a whole `className`
+/// expression. Splitting on every string and interpolation boundary means the
+/// two classes must co-occur in ONE literal — so a pair split across the
+/// branches of a ternary (`sel ? "bg-sel-bg" : "text-sel-text"`) is caught,
+/// which an expression-wide check treats as paired. An earlier quote-delimited
+/// window missed two of the three call sites outright; an expression-wide one
+/// missed the split-branch case. This is the third attempt and the first that
+/// catches both.
 test.each(sources)("$name pairs bg-sel-bg with text-sel-text", ({ source }) => {
-  const unpaired: string[] = [];
-  const attribute = /class(?:Name)?=/g;
-  let match: RegExpExecArray | null;
-
-  while ((match = attribute.exec(source)) !== null) {
-    const start = match.index + match[0].length;
-    // Either `className={...}` (balanced braces) or `className="..."`.
-    let expression: string;
-    if (source[start] === "{") {
-      let depth = 0;
-      let index = start;
-      do {
-        if (source[index] === "{") depth += 1;
-        else if (source[index] === "}") depth -= 1;
-        index += 1;
-      } while (depth > 0 && index < source.length);
-      expression = source.slice(start, index);
-    } else {
-      const quote = source[start];
-      const end = source.indexOf(quote, start + 1);
-      expression = source.slice(start, end === -1 ? source.length : end + 1);
-    }
-    if (/\bbg-sel-bg\b/.test(expression) && !/\btext-sel-text\b/.test(expression)) {
-      unpaired.push(expression.replace(/\s+/g, " ").slice(0, 120));
-    }
-  }
+  const unpaired = source
+    .split(/["'`]|\$\{|\}/)
+    .filter((fragment) => fragment.includes("bg-sel-bg") && !fragment.includes("text-sel-text"))
+    .map((fragment) => fragment.trim().slice(0, 80));
 
   expect(unpaired).toEqual([]);
 });
