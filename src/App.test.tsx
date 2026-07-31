@@ -253,6 +253,11 @@ test("a very long error explanation scrolls in its own region instead of squeezi
   expect(region!.className).toMatch(/max-h-/);
   // The panes are still mounted, not squeezed out of existence.
   expect(await screen.findByRole("region", { name: "Rows" })).toBeInTheDocument();
+  // This is the one fixture where the banner region is actually mounted, so it is
+  // where the shrinkability walk (see its own test further down) gets to confirm
+  // that this region's `shrink-0` is still a legal opt-out: it is a scroll region
+  // with a `max-h` bound of its own, not an unbounded ancestor of one.
+  expect(unshrinkableAncestors()).toEqual([]);
 });
 
 test("a stale SQL console run never overwrites a newer canister's result", async () => {
@@ -1309,6 +1314,42 @@ test("the SQL bar starts closed, opens on click, and closes again", async () => 
   expect(screen.getByRole("button", { name: "SQL" })).toBeInTheDocument();
 });
 
+/** Every element in the rendered tree that scrolls its own overflow. */
+function scrollRegions(): HTMLElement[] {
+  return [
+    ...document.querySelectorAll<HTMLElement>(
+      ".overflow-auto, .overflow-y-auto, .overflow-scroll",
+    ),
+  ];
+}
+
+/** Every element on some scroll region's ancestor chain that is a flex item in a
+ *  COLUMN container and cannot shrink — see the test below for what that means
+ *  and why `shrink-0` counts only on a scroll region itself. Returned as class
+ *  lists so a failure names the offender instead of just counting it. */
+function unshrinkableAncestors(): string[] {
+  const offenders: string[] = [];
+  for (const scroller of scrollRegions()) {
+    for (let node: HTMLElement | null = scroller; node && node !== document.body; ) {
+      // Annotated rather than inferred: `node` is reassigned from `parent` at the
+      // bottom of the loop, so leaving this to inference makes the two types
+      // depend on each other and `tsc` reports TS7022 (`vitest` alone does not).
+      const parent: HTMLElement | null = node.parentElement;
+      if (!parent) break;
+      const inColumn = parent.classList.contains("flex-col");
+      const isFlexItem = parent.classList.contains("flex");
+      const exempt =
+        node.classList.contains("min-h-0") ||
+        (node === scroller && node.classList.contains("shrink-0"));
+      if (isFlexItem && inColumn && !exempt) {
+        offenders.push(`${node.tagName.toLowerCase()}.${[...node.classList].join(".")}`);
+      }
+      node = parent;
+    }
+  }
+  return offenders;
+}
+
 /// A flex item's default `min-height: auto` refuses to shrink below its content,
 /// so a scroll region whose column-flex ancestors lack `min-h-0` makes its pane
 /// grow instead of scrolling. Phase 2b measured that in a browser (an 800px page
@@ -1316,8 +1357,20 @@ test("the SQL bar starts closed, opens on click, and closes again", async () => 
 /// has no layout engine.
 ///
 /// It does not need one: the requirement is structural. Walk up from each scroll
-/// region and assert every column-flex ancestor either carries `min-h-0` or opts
-/// out with `shrink-0`. This is the real property, not a proxy for it.
+/// region and assert every column-flex ancestor on its chain carries `min-h-0`.
+/// This is the real property, not a proxy for it.
+///
+/// `shrink-0` is accepted only on a scroll region ITSELF, never on an ancestor of
+/// one. The distinction is the whole point: an element that owns its own bound
+/// (the banner region below is `max-h-[40vh] shrink-0 overflow-auto` — capped by
+/// the `max-h`, scrolling because of the `overflow`, and `shrink-0` so tight
+/// vertical space squeezes the pane shell instead of it) is legitimately
+/// unshrinkable. An intermediate ancestor is not: it has no bound of its own, so
+/// refusing to shrink is exactly how it grows to its content height and stops its
+/// descendant scroller from ever scrolling. Accepting `shrink-0` everywhere made
+/// this walk blind to precisely the bug it describes — swapping the open SQL
+/// bar's `min-h-0` for `shrink-0` left it reporting zero offenders while the bar
+/// grew past its `basis-1/3` on a tall result.
 ///
 /// `Pane`'s own `<section>` is deliberately exempt and must stay that way: it is a
 /// flex item in a ROW container, where per CSS Flexbox §4.5 the automatic minimum
@@ -1357,29 +1410,24 @@ test("every scroll region can actually shrink: its column-flex ancestors carry m
   fireEvent.click(screen.getByRole("button", { name: "SQL" }));
   expect(screen.getByRole("textbox")).toBeInTheDocument();
 
-  const scrollers = document.querySelectorAll(".overflow-auto, .overflow-y-auto, .overflow-scroll");
+  const scrollers = scrollRegions();
+
   // Canisters, Tables, Rows, and Schema each own exactly one scroll region
   // (`Pane`'s own invariant, see `Pane.test.tsx`), plus the SQL bar's own —
   // five in total. A lower count would mean some pane failed to mount and
   // this walk is weaker than it looks.
-  expect(scrollers.length).toBe(5);
+  //
+  // Counted excluding the banner region, which also carries `overflow-auto` but
+  // is not a pane's. It is absent from this fixture (nothing here warns or
+  // errors), so the count would happen to be right today — and would turn into a
+  // baffling `6 !== 5` inside a test about `min-h-0` the moment a future fixture
+  // surfaced a warning here. Excluded by its `data-banner-region` marker so the
+  // number keeps meaning "every pane mounted its scroll region". The walk below
+  // still covers it.
+  const paneScrollers = scrollers.filter((node) => !node.matches("[data-banner-region]"));
+  expect(paneScrollers.length).toBe(5);
 
-  const offenders: string[] = [];
-  for (const scroller of scrollers) {
-    for (let node = scroller as HTMLElement | null; node && node !== document.body; ) {
-      const parent = node.parentElement;
-      if (!parent) break;
-      const inColumn = parent.classList.contains("flex-col");
-      const isFlexItem = parent.classList.contains("flex");
-      const exempt = node.classList.contains("shrink-0") || node.classList.contains("min-h-0");
-      if (isFlexItem && inColumn && !exempt) {
-        offenders.push(`${node.tagName.toLowerCase()}.${[...node.classList].join(".")}`);
-      }
-      node = parent;
-    }
-  }
-
-  expect(offenders).toEqual([]);
+  expect(unshrinkableAncestors()).toEqual([]);
 });
 
 test("the settings gear offers theme choices from the header", async () => {

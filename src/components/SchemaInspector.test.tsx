@@ -1,6 +1,7 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { useState } from "react";
 
+import { SCHEMA_RAIL_WIDTH } from "../layout/usePaneLayout";
 import { SchemaInspector } from "./SchemaInspector";
 
 const SCHEMA = {
@@ -74,6 +75,19 @@ test("the collapsed rail announces a schema error rather than staying silent", (
   expect(rail).toHaveAccessibleName(/failed to load/i);
   // Visible as well as announced.
   expect(rail).toHaveTextContent("!");
+});
+
+/// `usePaneLayout` subtracts this exact number from the window to decide how much
+/// room is left for the other panes — collapsed, `widths.schema` occupies nothing
+/// and the rail occupies this. So the rail's width has to come FROM that constant,
+/// not from a `w-8` that happens to agree with it: a restyle that moved one and
+/// not the other would surface as panes silently refusing to resize, nowhere near
+/// this file.
+test("the collapsed rail is sized from the constant the layout arithmetic uses", () => {
+  render(<SchemaInspector {...props} collapsed onToggle={() => {}} />);
+
+  const rail = screen.getByRole("button", { name: /expand schema/i });
+  expect(rail.style.width).toBe(`${SCHEMA_RAIL_WIDTH}px`);
 });
 
 test("a healthy collapsed rail carries no failure marker", () => {
