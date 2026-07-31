@@ -967,6 +967,9 @@ test("switching to a canister with no tables shows the empty state, not skeleton
   // Nor the departed table's headers sitting above a fake loading state.
   expect(screen.queryByText("w1")).not.toBeInTheDocument();
   expect(screen.getByText("No tables")).toBeInTheDocument();
+  // The explanatory line too, not just the title — it is the part that tells the
+  // reader this is a fact about the canister rather than a failure to read it.
+  expect(screen.getByText(/doesn't expose any icydb entities/i)).toBeInTheDocument();
 });
 
 /// A paging failure must not throw away what the reader is already reading.

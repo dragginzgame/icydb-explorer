@@ -141,6 +141,18 @@ test("an empty result is not mistaken for loading", () => {
   expect(document.querySelectorAll('[data-skeleton="true"]')).toHaveLength(0);
 });
 
+/// The explanatory line, not just the title. Only the title was asserted before,
+/// so the sentence under it was an unverified string — and it named the entity,
+/// which is the one part a reader uses to tell "this table is empty" from "some
+/// other table is empty". It must also not say rows are coming "yet": the app is
+/// read-only and can never add them.
+test("the empty state names the entity and does not promise rows are coming", () => {
+  render(<RowGrid rows={{ ...wide, rows: [], rowCount: 0 }} hasMore={false} onLoadMore={() => {}} />);
+
+  expect(screen.getByText(new RegExp(`${wide.entity} exists but is empty`, "i"))).toBeInTheDocument();
+  expect(screen.queryByText(/yet/i)).not.toBeInTheDocument();
+});
+
 /// Zebra striping must derive from the row's position in the *data*, not its
 /// position in the DOM: the expansion sub-row is itself a `<tr>` in the same
 /// `<tbody>`, so a DOM-order-based stripe (`:nth-child`) reshuffles every row

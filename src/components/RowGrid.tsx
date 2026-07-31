@@ -92,7 +92,12 @@ export function RowGrid({
   if (rows === null) return null;
 
   if (rows.rows.length === 0) {
-    return <PaneEmpty title="No rows">{rows.entity} doesn&apos;t have any rows yet.</PaneEmpty>;
+    // Not "doesn't have any rows *yet*": this app is strictly read-only and
+    // will never add them, so "yet" promises something it cannot deliver. What
+    // is worth saying instead is the distinction a reader actually needs —
+    // the table is there, it just holds nothing, which is a different situation
+    // from a table that could not be read at all.
+    return <PaneEmpty title="No rows">{rows.entity} exists but is empty.</PaneEmpty>;
   }
 
   return (
