@@ -2,8 +2,8 @@ use crate::error::AppError;
 use serde::Serialize;
 use std::path::PathBuf;
 
-/// The discovered project, held in Tauri's managed state and returned
-/// verbatim by `commands::list_environments`.
+/// The discovered project, held inside `project::ProjectState` and returned
+/// as `Option<Project>` by `commands::list_environments`.
 ///
 /// `error` carries a `discover()` failure (e.g. no `.icp/` directory at
 /// all) rather than swallowing it: `lib.rs`'s `discover_project()` used to

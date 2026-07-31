@@ -19,7 +19,7 @@
 // like an `AppErrorDto` (e.g. Tauri's own IPC-level failures) is normalized
 // into one rather than left as an opaque string or `Error`.
 import { invoke } from "@tauri-apps/api/core";
-import type { AppErrorDto, Project, ResultDto, SqlRunDto, TreeNode } from "./types";
+import type { AppErrorDto, Project, ProjectSelection, ResultDto, SqlRunDto, TreeNode } from "./types";
 
 function isAppErrorDto(error: unknown): error is AppErrorDto {
   return (
@@ -38,9 +38,28 @@ function toAppErrorDto(error: unknown): AppErrorDto {
   return { kind: "unknown", explanation };
 }
 
-export async function listEnvironments(): Promise<Project> {
+/** Returns the open project, or `null` if the user hasn't chosen one — a
+ * first launch, or a remembered root that has since vanished. */
+export async function listEnvironments(): Promise<Project | null> {
   try {
-    return await invoke<Project>("list_environments");
+    return await invoke<Project | null>("list_environments");
+  } catch (error) {
+    throw toAppErrorDto(error);
+  }
+}
+
+/** Opens the project at `path`, which becomes the project every other
+ * command sees. Resolves the path up to the nearest `.icp/` and clears the
+ * backend's agent cache — see
+ * `src-tauri/src/commands.rs::select_project`.
+ *
+ * A directory with no `.icp/` anywhere above it still resolves: it comes
+ * back as a `Project` whose `error` explains why it's empty, not as a
+ * rejection. Only an unusable *path* rejects, and in that case the
+ * previously open project stays open. */
+export async function selectProject(path: string): Promise<ProjectSelection> {
+  try {
+    return await invoke<ProjectSelection>("select_project", { path });
   } catch (error) {
     throw toAppErrorDto(error);
   }

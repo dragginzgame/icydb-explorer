@@ -6,7 +6,7 @@
 
 **Architecture:** The project root stops being a startup constant and becomes mutable, optional Tauri managed state (`ProjectState(Mutex<Option<Project>>)`). A new `select_project` command resolves a picked path up to the nearest `.icp/`, re-runs the existing `discovery::discover`, clears the `AgentPool` (whose `(environment, identity)` key is not unique across projects), swaps the state, and persists the root. The frontend opens a native folder dialog via `tauri-plugin-dialog` and adopts the returned project through the same code path launch uses.
 
-**Tech Stack:** Rust 1.96.0, Tauri 2 (`tauri` 2.11.5), `tauri-plugin-dialog` 2.7.2, `tokio::sync::Mutex`, React 19 + TypeScript, `@tauri-apps/plugin-dialog` 2.7.2, Vitest.
+**Tech Stack:** Rust 1.96.0, Tauri 2 (`tauri` 2.11.5), `tauri-plugin-dialog` 2.7.2, `std::sync::Mutex` for project state (`tokio::sync::Mutex` remains in `AgentPool`), React 19 + TypeScript, `@tauri-apps/plugin-dialog` 2.7.2, Vitest.
 
 **Spec:** `docs/superpowers/specs/2026-07-31-project-picker-design.md` — read it before Task 1.
 
@@ -18,8 +18,10 @@
 - **No new user-facing sentinel values.** Absent state is `Option`/`null`, never an empty-string root or a fabricated environment. Precedent: `IdentityRef.pem_path` was made `Option<PathBuf>` for exactly this reason.
 - **Exact dependency versions:** `tauri-plugin-dialog = "2.7.2"` (Rust), `@tauri-apps/plugin-dialog` `^2.7.2` (JS). Capability permission string is `dialog:allow-open` — least privilege; `dialog:default` would also grant `allow-save` and `allow-message`, which this app does not use.
 - **Test fixtures mirror reality.** Filesystem fixtures follow the existing pattern: committed directories under `src-tauri/tests/fixtures/`. A fixture authored to match the code's assumptions caused this project's one Critical finding.
+- **Tauri macro constraint.** An `async` `#[tauri::command]` that takes a lifetime-bearing parameter (`State<'_, T>`) **must** return `Result<_, _>` — `tauri-macros-2.6.3/src/command/wrapper.rs:176`, upstream tauri-apps/tauri#2533. This is why `ProjectState`'s accessors are synchronous and `list_environments` is a plain `fn`: never add a `Result` that cannot be `Err` just to satisfy this macro.
+- **`AgentPool`'s cache key must include the project root**, not just `(environment, identity)`. Commands snapshot the project then await, so a command begun before a project switch can insert an agent for the old project *after* `clear()` has run; only a project-scoped key stops that entry being served to the new project. See Task 4's "load-bearing correctness point".
 - **Rust MSRV 1.96.0.** Do not use APIs newer than that.
-- **`cargo test` from `src-tauri/`, `npm test` from the repo root.** Both suites must be green at every commit. Baseline: 100 backend tests, 25 frontend tests. Final: 120 backend, 36 frontend.
+- **`cargo test` from `src-tauri/`, `npm test` from the repo root.** Both suites must be green at every commit. Baseline: 100 backend tests, 25 frontend tests. Final: 128 backend, 37 frontend.
 
 ## Spec deviation you must know about
 
@@ -167,15 +169,28 @@ mod tests {
         assert_eq!(resolve_root(&home, Some(&home)), home);
     }
 
-    /// With no home to stop at, the walk must still stop at the filesystem
-    /// root rather than considering `/` a candidate.
+    /// With no `home` to stop at, the ancestor walk must still terminate.
+    ///
+    /// Candid about what this does and does not prove: nothing along a
+    /// nonexistent path holds a `.icp`, so this cannot show that `/` is
+    /// *excluded* as an ancestor — demonstrating that would require creating
+    /// `/.icp`, which no test may do. What it does prove is termination: an
+    /// unbounded `while let Some(parent)` walk over an absolute path either
+    /// returns or hangs, and a hang fails this test by timeout rather than
+    /// passing quietly.
     #[test]
-    fn the_walk_stops_at_the_filesystem_root_when_home_is_none() {
-        // An absolute path guaranteed not to exist, so nothing along it can
-        // hold a `.icp`. The assertion that matters is that this returns at
-        // all, unchanged, instead of adopting `/`.
+    fn the_ancestor_walk_terminates_when_home_is_none() {
         let picked = Path::new("/icydb-explorer-nonexistent/a/b");
         assert_eq!(resolve_root(picked, None), picked.to_path_buf());
+    }
+
+    /// The filesystem root as the *picked* directory. Unlike the ancestor
+    /// case above this is fully observable: `/` is its own last candidate,
+    /// there is no `/.icp` on any sane system, so it must come back
+    /// unchanged rather than the function walking off the end of the path.
+    #[test]
+    fn picking_the_filesystem_root_returns_it_unchanged() {
+        assert_eq!(resolve_root(Path::new("/"), None), PathBuf::from("/"));
     }
 }
 ```
@@ -254,10 +269,10 @@ pub use root::resolve_root;
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `cd src-tauri && cargo test discovery::root`
-Expected: PASS, 7 tests.
+Expected: PASS, 8 tests.
 
 Then run the whole suite: `cd src-tauri && cargo test`
-Expected: PASS, 107 tests (100 baseline + 7).
+Expected: PASS, 108 tests (100 baseline + 8).
 
 - [ ] **Step 7: Commit**
 
@@ -470,10 +485,13 @@ In `src-tauri/src/lib.rs`, add `pub mod project;` to the module list at the top,
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `cd src-tauri && cargo test project::config`
-Expected: PASS, 8 tests.
+Expected: PASS, 10 tests (the 8 listed above, plus two added during review:
+`an_unreadable_file_is_none_not_an_error` and `a_non_string_root_is_none`,
+closing the "unreadable file" and "non-string `root`" failure modes the
+Step-1 listing had enumerated in prose but not covered).
 
 Then: `cd src-tauri && cargo test`
-Expected: PASS, 115 tests.
+Expected: PASS, 118 tests.
 
 - [ ] **Step 6: Commit**
 
@@ -496,14 +514,14 @@ git commit -m "feat: remember the chosen project root across launches"
 - Consumes: `project::config::read_recorded_root` (Task 2).
 - Produces:
   - `project::ProjectState::new(project: Option<Project>) -> ProjectState`
-  - `project::ProjectState::snapshot(&self) -> Option<Project>` — async
-  - `project::ProjectState::replace(&self, project: Project)` — async
+  - `project::ProjectState::snapshot(&self) -> Option<Project>` — **synchronous**
+  - `project::ProjectState::replace(&self, project: Project)` — **synchronous**
   - `error::AppError::NoProjectSelected`
   - `commands::list_environments` now returns `Option<Project>`
 
 **Why `Option`:** with the picker, "no project chosen yet" is a real state — first launch, or a remembered path that has since vanished. Representing it as an empty `Project` with a fabricated root would be the same class of lie that `IdentityRef.pem_path: Option<PathBuf>` was introduced to remove. `None` is the honest representation, and it is what drives the frontend's empty state.
 
-**Why `tokio::sync::Mutex`:** `AgentPool` already uses it (`src-tauri/src/agent/mod.rs:23`), and `replace` is called from the async `select_project`. `snapshot` and `replace` are therefore `async fn`.
+**Why `std::sync::Mutex` and not `tokio`'s,** even though `AgentPool` next door uses tokio's: it makes the never-hold-a-lock-across-`.await` rule compiler-enforced (`std::sync::MutexGuard` is `!Send`), and it keeps `snapshot`/`replace` synchronous — which is load-bearing, because **Tauri's macro rejects an `async` command that takes a lifetime-bearing parameter like `State<'_, T>` and does not return `Result`** (`tauri-macros-2.6.3/src/command/wrapper.rs:176`, upstream tauri-apps/tauri#2533). An async `snapshot` would force `list_environments` to return a `Result` that can never be `Err`, purely to satisfy a macro. Nothing here needs to hold the lock across an await.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -523,42 +541,46 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn starts_empty_when_constructed_with_none() {
+    #[test]
+    fn starts_empty_when_constructed_with_none() {
         let state = ProjectState::new(None);
-        assert!(state.snapshot().await.is_none());
+        assert!(state.snapshot().is_none());
     }
 
-    #[tokio::test]
-    async fn snapshot_returns_what_was_managed() {
+    #[test]
+    fn snapshot_returns_what_was_managed() {
         let state = ProjectState::new(Some(project("/a")));
-        assert_eq!(state.snapshot().await.unwrap().root, PathBuf::from("/a"));
+        assert_eq!(state.snapshot().unwrap().root, PathBuf::from("/a"));
     }
 
-    #[tokio::test]
-    async fn replace_swaps_the_project() {
+    #[test]
+    fn replace_swaps_the_project() {
         let state = ProjectState::new(Some(project("/a")));
-        state.replace(project("/b")).await;
-        assert_eq!(state.snapshot().await.unwrap().root, PathBuf::from("/b"));
+        state.replace(project("/b"));
+        assert_eq!(state.snapshot().unwrap().root, PathBuf::from("/b"));
     }
 
-    /// The invariant that matters: `snapshot` clones and releases, so a
-    /// caller holding a snapshot across an `.await` cannot block another
-    /// caller. Holding a pool-wide lock across an await is a bug this
-    /// project already shipped once (`AgentPool::get` across a 20-second
-    /// `icp identity export`), so it is tested rather than merely commented.
+    /// The invariant that matters: a snapshot is an owned value, so it can be
+    /// held across an `.await` — and taking another one meanwhile cannot
+    /// deadlock, because `snapshot` never hands out a guard.
     ///
-    /// Deterministic, no timers: the second snapshot simply has to complete.
-    /// If `snapshot` returned a guard instead of a clone, this deadlocks and
-    /// the test hangs rather than failing — which is itself an unambiguous
-    /// signal.
+    /// Be clear about what this test is. Its real force is at *compile* time:
+    /// if `snapshot` returned a `std::sync::MutexGuard`, this function would
+    /// not compile, because a guard is `!Send` and cannot be held across an
+    /// await in this future. The runtime assertions below are secondary — they
+    /// confirm both snapshots see the same project. A guard-returning
+    /// implementation additionally self-deadlocks at the second call, but the
+    /// compiler stops it before that ever runs.
+    ///
+    /// This is the rule `AgentPool::get` broke once, holding a pool-wide lock
+    /// across a 20-second `icp identity export` subprocess.
     #[tokio::test]
-    async fn a_held_snapshot_does_not_block_another_snapshot() {
+    async fn a_snapshot_is_owned_and_does_not_block_another_snapshot() {
         let state = ProjectState::new(Some(project("/a")));
 
-        let held = state.snapshot().await;
+        let held = state.snapshot();
         tokio::task::yield_now().await;
-        let second = state.snapshot().await;
+        let second = state.snapshot();
 
         assert_eq!(held.unwrap().root, PathBuf::from("/a"));
         assert_eq!(second.unwrap().root, PathBuf::from("/a"));
@@ -576,7 +598,7 @@ Expected: FAIL — `cannot find type 'ProjectState' in this scope`.
 In `src-tauri/src/project/mod.rs`, between the `pub mod config;` line and the test module:
 
 ```rust
-use tokio::sync::Mutex;
+use std::sync::Mutex;
 
 use crate::discovery::Project;
 
@@ -587,6 +609,28 @@ use crate::discovery::Project;
 /// the remembered root has since been moved or deleted, there genuinely is
 /// no project. The frontend renders it as the "choose a project" empty
 /// state.
+///
+/// Deliberately a **`std::sync::Mutex`**, not `tokio`'s, even though
+/// `AgentPool` next door uses tokio's. Two reasons, and the first is the
+/// important one:
+///
+/// 1. It makes the never-hold-a-lock-across-`.await` rule a *compile-time*
+///    guarantee instead of a convention. `std::sync::MutexGuard` is `!Send`,
+///    so holding one across an `.await` in a spawned future does not compile.
+///    The rule this project already broke once — `AgentPool::get` held a
+///    pool-wide lock across a 20-second `icp identity export` subprocess —
+///    can no longer be broken here by accident.
+/// 2. It keeps `snapshot`/`replace` synchronous, which keeps
+///    `list_environments` a synchronous command. Tauri's macro rejects an
+///    `async` command that takes a lifetime-bearing parameter (`State<'_, T>`)
+///    and does not return `Result`
+///    (`tauri-macros-2.6.3/src/command/wrapper.rs:176`, upstream issue #2533),
+///    so an async `snapshot` would force `list_environments` to return a
+///    `Result` that can never be `Err` purely to satisfy a macro.
+///
+/// Nothing needs to hold this lock across an await: every holder either
+/// clones out of it (`snapshot`) or writes into it (`replace`), both of which
+/// complete without suspending.
 pub struct ProjectState(Mutex<Option<Project>>);
 
 impl ProjectState {
@@ -597,18 +641,29 @@ impl ProjectState {
     /// A clone of the current project.
     ///
     /// Clones and releases the lock rather than handing out a guard, so no
-    /// caller can hold this lock across an `.await`. Every command below
-    /// does exactly that — snapshot, then make network calls — and a guard
-    /// would let one slow query stall every other command in the app. That
-    /// is not hypothetical: `AgentPool::get` shipped with a pool-wide lock
-    /// held across a 20-second `icp identity export` subprocess. The clone
-    /// is a handful of small `Vec`s and is not worth optimising away.
-    pub async fn snapshot(&self) -> Option<Project> {
-        self.0.lock().await.clone()
+    /// caller can hold this lock while it makes network calls. Every command
+    /// does exactly that — snapshot, then query a canister — and a guard
+    /// would let one slow query stall every other command in the app. The
+    /// clone is a handful of small `Vec`s and is not worth optimising away.
+    ///
+    /// Lock poisoning is recovered from rather than propagated. Poisoning
+    /// means some other caller panicked while holding this lock, which here
+    /// could only happen mid-clone; the stored `Option<Project>` is still
+    /// structurally intact, and refusing to serve the open project for the
+    /// rest of the session would be a far worse outcome than continuing.
+    pub fn snapshot(&self) -> Option<Project> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
-    pub async fn replace(&self, project: Project) {
-        *self.0.lock().await = Some(project);
+    /// Swaps in a newly-opened project. See `snapshot` on poison recovery.
+    pub fn replace(&self, project: Project) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(project);
     }
 }
 ```
@@ -668,20 +723,20 @@ use crate::project::ProjectState;
 /// so a layout this app can't read stays distinguishable from a project
 /// that simply has no environments yet.
 #[tauri::command]
-pub async fn list_environments(project: State<'_, ProjectState>) -> Option<Project> {
-    project.snapshot().await
+pub fn list_environments(project: State<'_, ProjectState>) -> Option<Project> {
+    project.snapshot()
 }
 ```
 
-Note it becomes `async` (because `snapshot` is), and keeps returning a plain value rather than a `Result`.
+It stays **synchronous** — it must. Tauri's macro rejects an `async` command that takes a lifetime-bearing parameter (`State<'_, ProjectState>` qualifies) and returns something other than `Result` (`tauri-macros-2.6.3/src/command/wrapper.rs:176`, upstream #2533). Because `snapshot` is synchronous there is nothing to await, so this is a plain `fn` returning a plain `Option<Project>` — no `Result` that can never be `Err`.
 
 The other **six** commands take a uniform, mechanical change. Their `project: State<'_, Project>` parameter becomes `project: State<'_, ProjectState>`, and one line goes in above the existing `let environment = find_environment(&project, &env)?;`:
 
 ```rust
-    let project = project.snapshot().await.ok_or(AppError::NoProjectSelected)?;
+    let project = project.snapshot().ok_or(AppError::NoProjectSelected)?;
 ```
 
-`find_environment(&project, &env)?` then borrows the local owned `Project` and needs no further change; the borrow lives in the async fn's frame across the later `.await`s, which is fine — what must not cross an `.await` is the *lock guard*, and `snapshot` has already released it.
+No `.await` — `snapshot` is synchronous. `find_environment(&project, &env)?` then borrows the local owned `Project` and needs no further change; the borrow lives in the async fn's frame across the later `.await`s, which is fine — what must not cross an `.await` is the *lock guard*, and `snapshot` never hands one out. These six commands already return `Result<_, AppError>`, so the macro constraint that shapes `list_environments` does not affect them.
 
 The six sites, by their current line numbers:
 
@@ -732,7 +787,6 @@ fn recorded_project(config_dir: &std::path::Path) -> Option<Project> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
         .manage(AgentPool::new())
         .setup(|app| {
             let project = app
@@ -745,7 +799,6 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_environments,
-            commands::select_project,
             commands::select_identity,
             commands::canister_tree,
             commands::list_tables,
@@ -758,35 +811,19 @@ pub fn run() {
 }
 ```
 
-`commands::select_project` and `tauri_plugin_dialog` do not exist until Task 4 — this step will not compile on its own. Add the dependency and a stub now so the task ends green:
+The handler list is **unchanged from what's already there** — `select_project` and the dialog plugin belong to Task 4, which adds both together with the command itself. Do not add a placeholder command or the dialog dependency in this task; this task compiles and passes on its own without them.
 
-In `src-tauri/Cargo.toml`, under `[dependencies]`:
-
-```toml
-tauri-plugin-dialog = "2.7.2"
-```
-
-And a stub at the end of `src-tauri/src/commands.rs`, replaced wholesale in Task 4:
-
-```rust
-/// Replaced in full by Task 4 — this exists only so `run()`'s handler list
-/// compiles.
-#[tauri::command]
-pub async fn select_project(path: String) -> Result<(), AppError> {
-    let _ = path;
-    Err(AppError::NoProjectSelected)
-}
-```
+`AppError::NoProjectSelected` is added by Step 5 above and used by the six commands in Step 6, so it has real callers within this task.
 
 - [ ] **Step 8: Run the full suite**
 
 Run: `cd src-tauri && cargo test`
-Expected: PASS, 119 tests. There must be **zero** warnings about the removed `discover_project`; if the compiler reports dead code, delete what it names.
+Expected: PASS, 122 tests. There must be **zero** warnings about the removed `discover_project`; if the compiler reports dead code, delete what it names.
 
 - [ ] **Step 9: Commit**
 
 ```bash
-git add src-tauri/src/project src-tauri/src/error.rs src-tauri/src/commands.rs src-tauri/src/lib.rs src-tauri/Cargo.toml src-tauri/Cargo.lock
+git add src-tauri/src/project src-tauri/src/error.rs src-tauri/src/commands.rs src-tauri/src/lib.rs
 git commit -m "feat: make the open project mutable, optional managed state"
 ```
 
@@ -796,28 +833,165 @@ git commit -m "feat: make the open project mutable, optional managed state"
 
 **Files:**
 - Modify: `src-tauri/src/agent/mod.rs` (add `clear`)
-- Modify: `src-tauri/src/commands.rs` (replace the Task 3 stub)
+- Modify: `src-tauri/src/commands.rs` (add `ProjectSelection` and `select_project`)
+- Modify: `src-tauri/src/lib.rs` (register the dialog plugin and the new command)
+- Modify: `src-tauri/Cargo.toml` (add `tauri-plugin-dialog`)
 - Modify: `src-tauri/capabilities/default.json`
 
 **Interfaces:**
-- Consumes: `discovery::resolve_root` (Task 1), `project::config::{read_recorded_root, write_recorded_root}` (Task 2), `project::ProjectState::{snapshot, replace}` (Task 3).
+- Consumes: `discovery::resolve_root` (Task 1), `project::config::{read_recorded_root, write_recorded_root}` (Task 2), `project::ProjectState::{snapshot, replace}` (Task 3 — both **synchronous**, no `.await`).
 - Produces:
   - `agent::AgentPool::clear(&self)` — async
+  - `agent::AgentPool::get(&self, root: &Path, env: &Environment, identity: &IdentityRef)` — **signature change**: gains `root` as its first parameter
   - `commands::ProjectSelection { project: Project, persist_warning: Option<String> }`, serialized camelCase
   - `commands::select_project(path, project, pool, app) -> Result<ProjectSelection, AppError>`
 
-**Why the pool must be cleared** — the load-bearing correctness point of this whole feature. `AgentPool` is keyed `(Environment::name, IdentityRef::name)` (`agent/mod.rs`, `cache_key`). Two projects both having a `local` environment with a `default` identity is the **normal** case. Without invalidation, switching from project A to B and querying `local` reuses A's cached agent — pointed at **A's replica URL** — and renders B's canister ids against A's replica. That is wrong data shown confidently, the failure class this project has hit repeatedly.
+## The load-bearing correctness point of this whole feature
 
-- [ ] **Step 1: Write the failing test for `clear`**
+`AgentPool` is keyed `(Environment::name, IdentityRef::name)` (`agent/mod.rs:142`, `cache_key`). Two projects both having a `local` environment with a `default` identity is the **normal** case. Without invalidation, switching from project A to B and querying `local` reuses A's cached agent — pointed at **A's replica URL** — and renders B's canister ids against A's replica. Wrong data shown confidently: the failure class this project has hit repeatedly.
+
+**Clearing the pool alone does not fix this, and this task must do both things.** Task 3's review found the hole. Because every command takes a `ProjectState::snapshot()` and *then* awaits network calls, a command that started before a project switch outlives the clear:
+
+1. The frontend invokes `fetch_rows(env = "local")`. It snapshots project **A**, then awaits.
+2. The user picks project **B**. `select_project` runs `pool.clear()`, then `replace(B)`.
+3. The in-flight command resumes and calls `pool.get(A_env, …)`. Cache miss — so it **builds an agent for A's replica URL and inserts it** under the key `("local", "default")`.
+4. The next query for **B** in env `local` hits that entry and runs B's canister ids against **A's replica**.
+
+Snapshot isolation is correct and must stay — a command must see one consistent project for its whole life. The fix is to make the cache key carry the project, so a late insert from project A can never be served to project B:
+
+- **`cache_key` gains the project root as a third component**, length-prefixed like the other two. Each command derives it from *its own snapshot*, so the agent and the canister ids it queries always come from the same project view. A stale insert lands under A's key and is simply never looked up again.
+- **`clear()` still runs on every switch.** It is no longer load-bearing for correctness, but it is what stops the pool retaining agents — and the private key material they hold — for projects the user has walked away from.
+
+The design spec recorded root-in-the-key and clearing as *alternatives*, and rejected the key on retention grounds. That was wrong: they are complements, and doing both gets correctness from the key and retention hygiene from the clear.
+
+- [ ] **Step 1a: Write the failing test for the project-scoped cache key**
+
+In `src-tauri/src/agent/mod.rs`, inside the existing `#[cfg(test)] mod tests`, beside the existing `cache_key` tests:
+
+```rust
+    /// Two projects that each declare a `local` environment with a `default`
+    /// identity are the normal case, not an edge case, so the project root
+    /// must be part of the key. Without it, an agent built for one project's
+    /// replica can be served to another project's queries — see this task's
+    /// "load-bearing correctness point" note for the exact interleaving.
+    #[test]
+    fn the_cache_key_distinguishes_projects_with_identical_env_and_identity() {
+        let a = cache_key(Path::new("/projects/alpha"), "local", "default");
+        let b = cache_key(Path::new("/projects/beta"), "local", "default");
+        assert_ne!(a, b);
+    }
+
+    /// The length prefixes exist so no combination of separator characters
+    /// inside a root, environment, or identity name can make two different
+    /// triples collide. A project literally named `local` is the kind of
+    /// input that would break naive concatenation.
+    #[test]
+    fn the_cache_key_cannot_be_confused_by_a_separator_in_a_root() {
+        let a = cache_key(Path::new("/p/local"), "default", "x");
+        let b = cache_key(Path::new("/p"), "local:default", "x");
+        assert_ne!(a, b);
+    }
+```
+
+Add `use std::path::Path;` to the test module's imports if it is not already there.
+
+- [ ] **Step 1b: Make the cache key project-scoped**
+
+`cache_key` currently reads (`src-tauri/src/agent/mod.rs:142`):
+
+```rust
+fn cache_key(env: &str, identity: &str) -> String {
+    format!("{}:{env}:{}:{identity}", env.len(), identity.len())
+}
+```
+
+Replace it with:
+
+```rust
+/// A collision-free key for one `(project, environment, identity)` triple.
+///
+/// Every component is length-prefixed so no arrangement of `:` inside a
+/// path, environment name, or identity name can make two different triples
+/// produce the same key.
+///
+/// The **project root** is part of the key because clearing the pool on a
+/// project switch is not sufficient on its own. Commands snapshot the open
+/// project and *then* await network calls, so a command that began before a
+/// switch can finish after it and insert an agent built for the previous
+/// project — under a key the new project would otherwise look up. Keying by
+/// root means such a late insert lands where only the project it belongs to
+/// can find it.
+fn cache_key(root: &Path, env: &str, identity: &str) -> String {
+    let root = root.to_string_lossy();
+    format!(
+        "{}:{root}:{}:{env}:{}:{identity}",
+        root.len(),
+        env.len(),
+        identity.len()
+    )
+}
+```
+
+Add `use std::path::Path;` to the module's imports.
+
+Then thread `root` through `get`:
+
+```rust
+    pub async fn get(
+        &self,
+        root: &Path,
+        env: &Environment,
+        identity: &IdentityRef,
+    ) -> Result<Arc<Agent>, AppError> {
+        let key = cache_key(root, &env.name, &identity.name);
+```
+
+The rest of `get`'s body is unchanged. Update its doc comment to note that the key is per-project and why.
+
+**The existing test `the_cache_key_distinguishes_identities_within_one_environment` and `the_cache_key_cannot_be_confused_by_a_separator_in_a_name` will stop compiling** — they call `cache_key` with two arguments. Add a project root argument to both; keep what each asserts unchanged. Do not delete them.
+
+- [ ] **Step 1c: Thread the root through every `pool.get` call site**
+
+In `src-tauri/src/commands.rs` there are three direct `pool.get` calls and one helper that wraps a fourth. Each already has the snapshotted `project` in scope, so the root comes from `project.root` — the *same* snapshot whose canister ids the query will use, which is the whole point.
+
+`query_dto` (line ~112) gains a `root` parameter, placed first so it reads as the scope the rest of the arguments live in:
+
+```rust
+async fn query_dto(
+    pool: &AgentPool,
+    root: &std::path::Path,
+    environment: &Environment,
+    identity_ref: &IdentityRef,
+    canister: Principal,
+    sql: &str,
+) -> Result<ResultDto, AppError> {
+    let agent = pool.get(root, environment, identity_ref).await?;
+```
+
+The call sites to update, all in `src-tauri/src/commands.rs`:
+
+| Line (approx) | Current | Becomes |
+|---|---|---|
+| 160 (`select_identity`) | `pool.get(environment, identity_ref)` | `pool.get(&project.root, environment, identity_ref)` |
+| 193 (`canister_tree`) | `pool.get(environment, identity_ref)` | `pool.get(&project.root, environment, identity_ref)` |
+| 216 (`list_tables`) | `query_dto(&pool, environment, …)` | `query_dto(&pool, &project.root, environment, …)` |
+| 234 (`describe_table`) | `query_dto(&pool, environment, …)` | `query_dto(&pool, &project.root, environment, …)` |
+| 299 (`fetch_rows`, DESCRIBE) | `query_dto(&pool, environment, …)` | `query_dto(&pool, &project.root, environment, …)` |
+| 324 (`fetch_rows`, rows) | `query_dto(&pool, environment, …)` | `query_dto(&pool, &project.root, environment, …)` |
+| 351 (`run_sql`) | `query_dto(&pool, environment, …)` | `query_dto(&pool, &project.root, environment, …)` |
+
+Locate them by the `pool.get(` / `query_dto(` calls rather than trusting the line numbers, and verify with `grep -n "pool.get(\|query_dto(" src-tauri/src/commands.rs` that **no** two-argument `pool.get` remains.
+
+- [ ] **Step 1d: Write the failing test for `clear`**
 
 In `src-tauri/src/agent/mod.rs`, inside the existing `#[cfg(test)] mod tests`, add:
 
 ```rust
-    /// Switching projects must invalidate every cached agent: the cache key
-    /// is `(environment name, identity name)`, and two different projects
-    /// both having a `local` environment with a `default` identity is the
-    /// normal case, not an edge case. A stale entry would serve the previous
-    /// project's replica URL under the new project's environment name.
+    /// Switching projects drops every cached agent. Correctness no longer
+    /// rests on this — `cache_key` includes the project root, so a stale
+    /// entry can never be served to a different project — but retention
+    /// hygiene does: without it the pool keeps agents, and the private key
+    /// material they hold, for projects the user has walked away from.
     #[tokio::test]
     async fn clear_empties_the_cache() {
         // `AgentBuilder::build` defaults the identity to anonymous and makes
@@ -850,29 +1024,30 @@ In `src-tauri/src/agent/mod.rs`, inside the existing `#[cfg(test)] mod tests`, a
 
 The key strings are arbitrary — `clear` doesn't parse them, and all this test needs is two distinct entries. Do not weaken the `is_empty()` assertion for any reason.
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 2: Run the tests to verify the state of things**
 
-Run: `cd src-tauri && cargo test agent::tests::clear_empties_the_cache`
-Expected: FAIL — `no method named 'clear' found for struct 'AgentPool'`.
+Run: `cd src-tauri && cargo test agent::`
+Expected: the two new `cache_key` tests and the four amended/existing ones PASS (Steps 1a-1c are already implemented by the time you run this), and `clear_empties_the_cache` FAILS with `no method named 'clear' found for struct 'AgentPool'`.
+
+If any `cache_key` test fails, stop — the key change is wrong and `clear` is not the problem.
 
 - [ ] **Step 3: Implement `clear`**
 
 In `src-tauri/src/agent/mod.rs`, in `impl AgentPool`, after `get`:
 
 ```rust
-    /// Drops every cached agent.
+    /// Drops every cached agent. Called when the open project changes.
     ///
-    /// Called when the open project changes. The cache key is
-    /// `(environment name, identity name)` — which is *not* unique across
-    /// projects, since two projects both having a `local` environment with a
-    /// `default` identity is the normal case. Left uncleared, a switch would
-    /// keep serving the previous project's agent, pointed at the previous
-    /// project's replica URL, under the new project's environment name.
+    /// This is **retention hygiene, not correctness**. Correctness comes from
+    /// `cache_key` including the project root: a command that snapshotted the
+    /// previous project and finishes after the switch inserts under that
+    /// project's key, where the new project will never look it up. Clearing
+    /// alone could not provide that guarantee, because such a late insert
+    /// happens *after* the clear has already run.
     ///
-    /// Clearing rather than folding the project root into the key is
-    /// deliberate: a longer key would be correct too, but would retain
-    /// agents — and the private key material they hold — for projects the
-    /// user has left. The cost is that switching back re-loads identities,
+    /// What clearing does provide is that the pool stops holding agents — and
+    /// the private key material inside them — for projects the user has
+    /// walked away from. The cost is that switching back re-loads identities,
     /// which may re-prompt the OS keychain.
     pub async fn clear(&self) {
         self.agents.lock().await.clear();
@@ -884,9 +1059,9 @@ In `src-tauri/src/agent/mod.rs`, in `impl AgentPool`, after `get`:
 Run: `cd src-tauri && cargo test agent::tests::clear_empties_the_cache`
 Expected: PASS.
 
-- [ ] **Step 5: Replace the `select_project` stub**
+- [ ] **Step 5: Add `select_project`**
 
-In `src-tauri/src/commands.rs`, delete the Task 3 stub and put this in its place. Add `use tauri::{AppHandle, Manager, State};` (the file currently imports only `State`), plus `use crate::discovery::resolve_root;` and `use crate::project::config::write_recorded_root;`.
+Append to `src-tauri/src/commands.rs`. Add `use tauri::{AppHandle, Manager, State};` (the file currently imports only `State`), plus `use crate::discovery::resolve_root;` and `use crate::project::config::write_recorded_root;`.
 
 ```rust
 /// The result of switching projects: the newly-open project, plus a warning
@@ -951,7 +1126,7 @@ pub async fn select_project(
     // the project being left, and its key may collide with the incoming
     // project's (see `AgentPool::clear`).
     pool.clear().await;
-    project.replace(discovered.clone()).await;
+    project.replace(discovered.clone());
 
     let persist_warning = app
         .path()
@@ -971,7 +1146,30 @@ Add `use crate::discovery::{self, Environment, IdentityRef, Project};` — the f
 
 **On testing the not-a-directory pre-flight.** The spec's testing table lists it, and it is deliberately *not* unit-tested here: it is a single `is_dir()` call inside a `#[tauri::command]`, and extracting it into a named function purely to assert `is_dir()` would be ceremony around a standard-library call. Its behaviour — the switch rejects and the previously open project survives — is asserted end-to-end by Task 6's "keeps the current project when a pick is rejected". If you find yourself wanting a unit test here anyway, that is fine, but do not extract a function whose only caller is the test.
 
-- [ ] **Step 6: Grant the dialog permission**
+- [ ] **Step 6: Register the plugin and the command**
+
+Add the dependency in `src-tauri/Cargo.toml`, under `[dependencies]`:
+
+```toml
+tauri-plugin-dialog = "2.7.2"
+```
+
+In `src-tauri/src/lib.rs`, register the plugin as the first builder call and add the command to the handler list:
+
+```rust
+    tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .manage(AgentPool::new())
+```
+
+```rust
+        .invoke_handler(tauri::generate_handler![
+            commands::list_environments,
+            commands::select_project,
+            commands::select_identity,
+```
+
+- [ ] **Step 7: Grant the dialog permission**
 
 Replace the `permissions` array in `src-tauri/capabilities/default.json`:
 
@@ -984,18 +1182,18 @@ Replace the `permissions` array in `src-tauri/capabilities/default.json`:
 
 `dialog:allow-open` only — `dialog:default` would additionally grant `allow-save` and `allow-message`, which this app never uses.
 
-- [ ] **Step 7: Run the full suite**
+- [ ] **Step 8: Run the full suite**
 
 Run: `cd src-tauri && cargo test`
-Expected: PASS, 120 tests.
+Expected: PASS, 125 tests (122 from Task 3, plus two new `cache_key` tests and `clear_empties_the_cache`).
 
 Then confirm the app builds with the plugin registered: `cd src-tauri && cargo build`
 Expected: success, no warnings.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add src-tauri/src/agent/mod.rs src-tauri/src/commands.rs src-tauri/capabilities/default.json
+git add src-tauri/src/agent/mod.rs src-tauri/src/commands.rs src-tauri/src/lib.rs src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/capabilities/default.json
 git commit -m "feat: add select_project, clearing the agent pool on switch"
 ```
 
@@ -1214,7 +1412,7 @@ Run: `npm test -- ProjectSelector`
 Expected: PASS, 5 tests.
 
 Then the whole suite: `npm test`
-Expected: PASS, 30 tests (25 baseline + 5).
+Expected: PASS, 31 tests (25 baseline + 6, including the Windows-path case added during review).
 
 - [ ] **Step 8: Commit**
 
@@ -1543,7 +1741,7 @@ Run: `npm test -- App`
 Expected: PASS, including the 6 new tests.
 
 Then: `npm test`
-Expected: PASS, 36 tests.
+Expected: PASS, 37 tests.
 
 And typecheck: `npm run build`
 Expected: success.
@@ -1588,8 +1786,8 @@ Add a line under it recording why: `The spec originally separated these; impleme
 
 - [ ] **Step 3: Verify both suites are still green**
 
-Run: `cd src-tauri && cargo test` — expected PASS, 120 tests.
-Run: `npm test` — expected PASS, 36 tests.
+Run: `cd src-tauri && cargo test` — expected PASS, 125 tests.
+Run: `npm test` — expected PASS, 37 tests.
 
 - [ ] **Step 4: Commit**
 

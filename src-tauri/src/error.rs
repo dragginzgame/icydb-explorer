@@ -67,6 +67,12 @@ pub enum AppError {
     /// clear message rather than emitting a `LIMIT`/`OFFSET` window icydb is
     /// guaranteed to reject as `UnorderedPagination` anyway.
     NoOrderableColumns { entity: String },
+
+    /// No project is open: the app launched with nothing remembered, or the
+    /// remembered root has since been moved or deleted. Every command that
+    /// needs a project reports this rather than pretending an empty project
+    /// exists.
+    NoProjectSelected,
 }
 
 impl std::fmt::Display for AppError {
@@ -135,6 +141,11 @@ impl AppError {
                  paging cannot construct a valid ORDER BY. Use the SQL console with an explicit \
                  `ORDER BY ... LIMIT ...` clause to browse this table instead."
             ),
+            AppError::NoProjectSelected => {
+                "No project is open. Choose a project directory — one containing an `.icp/` \
+                 layout — to explore."
+                    .to_string()
+            }
         }
     }
 
@@ -153,6 +164,7 @@ impl AppError {
             AppError::Rejected(_) => "rejected",
             AppError::RowPagingRequiresIntrospection { .. } => "rowPagingRequiresIntrospection",
             AppError::NoOrderableColumns { .. } => "noOrderableColumns",
+            AppError::NoProjectSelected => "noProjectSelected",
         }
     }
 }
@@ -326,6 +338,7 @@ mod tests {
             AppError::NoOrderableColumns {
                 entity: "demo_row".into(),
             },
+            AppError::NoProjectSelected,
         ];
         for error in errors {
             assert_eq!(error.to_string(), error.explanation());

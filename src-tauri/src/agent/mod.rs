@@ -3,8 +3,12 @@
 //! Building an agent means loading an identity (pem from disk, or a keyring
 //! export) and — for local replicas only — an extra network round-trip to
 //! fetch the root key. Neither is something callers should repeat on every
-//! query, so `AgentPool` builds one `Agent` per `(environment, identity)`
-//! pair and reuses it.
+//! query, so `AgentPool` builds one `Agent` per `(project root, environment,
+//! identity)` triple and reuses it. The project root is part of the key, not
+//! just the environment and identity names, because two different projects
+//! commonly declare a `local` environment with a `default` identity — an
+//! agent built for one project's replica must never be handed to another
+//! project's queries (see `cache_key`'s doc comment).
 
 mod export;
 mod identity;
@@ -18,6 +22,7 @@ mod identity;
 pub use identity::load_identity;
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 
 use ic_agent::Agent;
@@ -26,8 +31,12 @@ use tokio::sync::Mutex;
 use crate::discovery::{Environment, IdentityRef};
 use crate::error::AppError;
 
-/// Caches one `ic_agent::Agent` per `(Environment::name, IdentityRef::name)`
-/// pair — see `cache_key`.
+/// Caches one `ic_agent::Agent` per `(project root, Environment::name,
+/// IdentityRef::name)` triple — see `cache_key`. The root is part of the key
+/// (not merely a redundant scoping detail) because two different projects
+/// can each declare an environment and identity with the same names; without
+/// the root in the key, a command for one project could be served an agent
+/// built for another project's replica.
 pub struct AgentPool {
     agents: Mutex<HashMap<String, Arc<Agent>>>,
 }
@@ -45,14 +54,19 @@ impl AgentPool {
         }
     }
 
-    /// Returns the cached agent for `(env, identity)`, building and caching
-    /// one on a miss.
+    /// Returns the cached agent for `(root, env, identity)`, building and
+    /// caching one on a miss.
     ///
-    /// Keyed by both `env` and `identity` (see `cache_key`) rather than by
-    /// environment alone: once identity is user-selectable, a cache keyed
-    /// only on the environment name would silently keep returning the first
-    /// identity's agent for every later selection — the UI would show one
-    /// identity while queries ran as another.
+    /// Keyed by `root`, `env`, and `identity` together (see `cache_key`)
+    /// rather than by environment and identity alone: once identity is
+    /// user-selectable, a cache keyed only on the environment name would
+    /// silently keep returning the first identity's agent for every later
+    /// selection — the UI would show one identity while queries ran as
+    /// another. The project root is in the key for a second, independent
+    /// reason: two different projects can each declare a `local` environment
+    /// with a `default` identity, and a command that snapshotted one project
+    /// must never be served an agent built for another's replica — see
+    /// `cache_key`'s doc comment for the exact interleaving this prevents.
     ///
     /// For local replicas (loopback/localhost/private-network hosts — see
     /// `is_local_replica`), this also calls `fetch_root_key`, since a local
@@ -81,10 +95,11 @@ impl AgentPool {
     /// pair) — a world away from a 20-second app-wide freeze.
     pub async fn get(
         &self,
+        root: &Path,
         env: &Environment,
         identity: &IdentityRef,
     ) -> Result<Arc<Agent>, AppError> {
-        let key = cache_key(&env.name, &identity.name);
+        let key = cache_key(root, &env.name, &identity.name);
 
         {
             let agents = self.agents.lock().await;
@@ -132,15 +147,60 @@ impl AgentPool {
         let cached = agents.entry(key).or_insert_with(|| Arc::clone(&agent));
         Ok(Arc::clone(cached))
     }
+
+    /// Drops every cached agent. Called when the open project changes.
+    ///
+    /// This is **retention hygiene, not correctness**. Correctness comes from
+    /// `cache_key` including the project root: a command that snapshotted the
+    /// previous project and finishes after the switch inserts under that
+    /// project's key, where the new project will never look it up. Clearing
+    /// alone could not provide that guarantee, because such a late insert
+    /// happens *after* the clear has already run.
+    ///
+    /// What clearing does provide is that the pool stops holding agents — and
+    /// the private key material inside them — for projects the user has
+    /// walked away from. The cost is that switching back re-loads identities,
+    /// which may re-prompt the OS keychain.
+    pub async fn clear(&self) {
+        self.agents.lock().await.clear();
+    }
 }
 
-/// Builds the pool's cache key.
+/// A collision-free key for one `(project, environment, identity)` triple.
 ///
-/// Length-prefixed rather than joined with a separator, so an environment or
-/// identity name containing the separator cannot collide with a different
-/// pair.
-fn cache_key(env: &str, identity: &str) -> String {
-    format!("{}:{env}:{}:{identity}", env.len(), identity.len())
+/// Every component is length-prefixed so no arrangement of `:` inside a
+/// path, environment name, or identity name can make two different triples
+/// produce the same key.
+///
+/// The **project root** is part of the key because clearing the pool on a
+/// project switch is not sufficient on its own. Commands snapshot the open
+/// project and *then* await network calls, so a command that began before a
+/// switch can finish after it and insert an agent built for the previous
+/// project — under a key the new project would otherwise look up. Keying by
+/// root means such a late insert lands where only the project it belongs to
+/// can find it.
+fn cache_key(root: &Path, env: &str, identity: &str) -> String {
+    // `to_string_lossy` is not injective: two roots differing only in
+    // invalid UTF-8 bytes of equal length both render as the same `U+FFFD`
+    // replacement-character sequence, which would make two different
+    // projects' roots collide in the cache key — precisely the guarantee
+    // this function exists to provide. Hex-encoding `OsStr::as_encoded_bytes`
+    // (stable since Rust 1.74) instead is injective: two `OsStr`s are equal
+    // iff their encoded bytes are equal, and no two distinct byte sequences
+    // produce the same hex string. The length
+    // prefix is still the raw byte count (not the hex string's length),
+    // keeping the same length-prefixed scheme as `env` and `identity` below.
+    let root_bytes = root.as_os_str().as_encoded_bytes();
+    let mut root_hex = String::with_capacity(root_bytes.len() * 2);
+    for byte in root_bytes {
+        root_hex.push_str(&format!("{byte:02x}"));
+    }
+    format!(
+        "{}:{root_hex}:{}:{env}:{}:{identity}",
+        root_bytes.len(),
+        env.len(),
+        identity.len()
+    )
 }
 
 /// Treats a replica as local only if its host is `localhost` or an IP in a
@@ -208,25 +268,79 @@ mod tests {
 
     #[test]
     fn the_cache_key_distinguishes_identities_within_one_environment() {
+        let root = Path::new("/projects/demo");
         assert_ne!(
-            cache_key("local", "alice"),
-            cache_key("local", "bob"),
+            cache_key(root, "local", "alice"),
+            cache_key(root, "local", "bob"),
             "two identities in one environment must not share an agent"
         );
         assert_ne!(
-            cache_key("local", "alice"),
-            cache_key("staging", "alice"),
+            cache_key(root, "local", "alice"),
+            cache_key(root, "staging", "alice"),
             "one identity in two environments must not share an agent"
         );
-        assert_eq!(cache_key("local", "alice"), cache_key("local", "alice"));
+        assert_eq!(
+            cache_key(root, "local", "alice"),
+            cache_key(root, "local", "alice")
+        );
     }
 
     #[test]
     fn the_cache_key_cannot_be_confused_by_a_separator_in_a_name() {
+        let root = Path::new("/projects/demo");
         assert_ne!(
-            cache_key("local:alice", "bob"),
-            cache_key("local", "alice:bob"),
+            cache_key(root, "local:alice", "bob"),
+            cache_key(root, "local", "alice:bob"),
             "a name containing the separator must not collide with another pair"
+        );
+    }
+
+    /// Two projects that each declare a `local` environment with a `default`
+    /// identity are the normal case, not an edge case, so the project root
+    /// must be part of the key. Without it, an agent built for one project's
+    /// replica can be served to another project's queries — see this task's
+    /// "load-bearing correctness point" note for the exact interleaving.
+    #[test]
+    fn the_cache_key_distinguishes_projects_with_identical_env_and_identity() {
+        let a = cache_key(Path::new("/projects/alpha"), "local", "default");
+        let b = cache_key(Path::new("/projects/beta"), "local", "default");
+        assert_ne!(a, b);
+    }
+
+    /// The length prefixes exist so no combination of separator characters
+    /// inside a root, environment, or identity name can make two different
+    /// triples collide. This pair is chosen to actually collide under naive
+    /// `format!("{root}:{env}:{identity}")` concatenation — both render as
+    /// `/p:local:default:x` — so the test exercises the guarantee it claims
+    /// to check, rather than merely asserting two strings that were never
+    /// going to be equal in the first place.
+    #[test]
+    fn the_cache_key_cannot_be_confused_by_a_separator_in_a_root() {
+        let a = cache_key(Path::new("/p:local"), "default", "x");
+        let b = cache_key(Path::new("/p"), "local:default", "x");
+        assert_ne!(a, b);
+    }
+
+    /// `to_string_lossy` is not injective: two different byte sequences of
+    /// equal length, each containing invalid UTF-8, can both render as the
+    /// same `U+FFFD` replacement-character run. Hex-encoding
+    /// `as_encoded_bytes` must keep such roots distinct where a lossy
+    /// stringification would have collapsed them.
+    #[cfg(unix)]
+    #[test]
+    fn roots_differing_only_in_invalid_utf8_bytes_still_produce_distinct_keys() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        // Both are invalid UTF-8 (a lone continuation byte), both the same
+        // length, and both would lossily stringify to "/p/\u{FFFD}".
+        let a = Path::new(OsStr::from_bytes(b"/p/\x80"));
+        let b = Path::new(OsStr::from_bytes(b"/p/\x81"));
+        assert_ne!(a.as_os_str(), b.as_os_str());
+
+        assert_ne!(
+            cache_key(a, "local", "default"),
+            cache_key(b, "local", "default")
         );
     }
 
@@ -288,5 +402,39 @@ mod tests {
         assert!(!is_local_replica(
             "https://some-canister-gateway.example.com"
         ));
+    }
+
+    /// Switching projects drops every cached agent. Correctness no longer
+    /// rests on this — `cache_key` includes the project root, so a stale
+    /// entry can never be served to a different project — but retention
+    /// hygiene does: without it the pool keeps agents, and the private key
+    /// material they hold, for projects the user has walked away from.
+    #[tokio::test]
+    async fn clear_empties_the_cache() {
+        // `AgentBuilder::build` defaults the identity to anonymous and makes
+        // no network call (`ic-agent-0.48`'s `build` is just
+        // `Agent::new(self.config)`), so two throwaway agents cost nothing
+        // and need no replica.
+        fn agent() -> Agent {
+            Agent::builder()
+                .with_url("http://127.0.0.1:4943")
+                .build()
+                .expect("an agent with no identity should build")
+        }
+
+        let pool = AgentPool::new();
+        {
+            let mut agents = pool.agents.lock().await;
+            agents.insert("project-a-local-default".to_string(), Arc::new(agent()));
+            agents.insert("project-b-local-default".to_string(), Arc::new(agent()));
+            assert_eq!(agents.len(), 2, "both entries should be cached");
+        }
+
+        pool.clear().await;
+
+        assert!(
+            pool.agents.lock().await.is_empty(),
+            "clear() must remove every cached agent, not just the current environment's"
+        );
     }
 }

@@ -7,11 +7,13 @@ import {
   listTables,
   runSql,
   selectIdentity,
+  selectProject,
 } from "./api/commands";
 import type {
   AppErrorDto,
   EntityDto,
   Environment,
+  Project,
   ResultDto,
   RowsDto,
   SchemaDto,
@@ -20,6 +22,7 @@ import type {
 import { CanisterTree } from "./components/CanisterTree";
 import { ErrorBanner } from "./components/ErrorBanner";
 import { IdentitySelector } from "./components/IdentitySelector";
+import { ProjectSelector } from "./components/ProjectSelector";
 import { RowGrid } from "./components/RowGrid";
 import { SchemaPanel } from "./components/SchemaPanel";
 import { SqlConsole } from "./components/SqlConsole";
@@ -80,6 +83,16 @@ function App() {
   const [environmentsLoaded, setEnvironmentsLoaded] = useState(false);
   const [env, setEnv] = useState<string | null>(null);
 
+  // The open project's absolute root, or null when none is open — a first
+  // launch, or a remembered root that has since been moved or deleted.
+  const [root, setRoot] = useState<string | null>(null);
+  const [projectBusy, setProjectBusy] = useState(false);
+  // Set when a project was opened but the choice couldn't be remembered.
+  // Deliberately not an `AppErrorDto`: failing to remember a choice is not
+  // the same kind of event as failing to read a project, and rendering it
+  // in `ErrorBanner` would say it was.
+  const [persistWarning, setPersistWarning] = useState<string | null>(null);
+
   // The session's chosen `icp` identity, by name. Initialised once the
   // environments load (see the effect below) and changed only through
   // `handleSelectIdentity`, which calls `selectIdentity` first and only
@@ -109,26 +122,16 @@ function App() {
   const [sqlOrderByMissing, setSqlOrderByMissing] = useState(false);
   const [sqlResult, setSqlResult] = useState<ResultDto | null>(null);
 
-  // Discover the configured environments once on launch. `listEnvironments`
-  // returns the whole `Project`, whose `error` field carries a `discover()`
-  // failure (e.g. no `.icp/` at all) rather than that failure being
-  // indistinguishable from "this project just has no environments yet" —
-  // see `Project`'s doc comment. Both are rendered explicitly below rather
-  // than as a silent blank pane.
-  useEffect(() => {
-    listEnvironments()
-      .then((project) => {
-        setEnvironments(project.environments);
-        setEnvironmentsError(project.error);
-        if (project.environments.length > 0) {
-          const firstEnvironment = project.environments[0];
-          setEnv(firstEnvironment.name);
-          setIdentity(initialIdentityFor(firstEnvironment));
-        }
-      })
-      .catch((error: AppErrorDto) => setEnvironmentsError(error))
-      .finally(() => setEnvironmentsLoaded(true));
-  }, []);
+  // Incremented by every `adoptProject` call. The canister tree effect
+  // depends on it so that adopting a project ALWAYS refetches the tree —
+  // including when the incoming project's environment and identity names
+  // happen to equal the outgoing one's, which is the common case (two
+  // projects each having a `local` environment and a `default` identity).
+  // Without this, `env` and `identity` are set to identical values, React
+  // bails out of the update, the effect's dependencies never change, and the
+  // previous project's canisters stay on screen — where clicking one would
+  // query the OLD project's canister id through the NEW project's agent.
+  const [projectGeneration, setProjectGeneration] = useState(0);
 
   // Tracks the *latest requested* `handleSelectIdentity` call — see that
   // handler's doc comment below for why. Declared here, ahead of both
@@ -142,6 +145,84 @@ function App() {
   // `setIdentity` — for an identity that may not even exist in the
   // environment the user has since switched to.
   const identityRequestRef = useRef<{ env: string; name: string } | null>(null);
+
+  // The single definition of "what opening a project means", shared by
+  // launch and by every later switch. Two call sites deriving this
+  // separately would drift — the same reason `resolve_identity_store` is one
+  // function in `discovery` rather than duplicated per caller.
+  const adoptProject = useCallback((project: Project) => {
+    setRoot(project.root);
+    setEnvironments(project.environments);
+    setEnvironmentsError(project.error);
+    setIdentityError(null);
+    identityRequestRef.current = null;
+    const first = project.environments[0] ?? null;
+    setEnv(first?.name ?? null);
+    setIdentity(first ? initialIdentityFor(first) : null);
+    // Everything below the environment is derived from it, so a new project
+    // invalidates all of it. The effects keyed on env/canister/entity clear
+    // their own state, but `canister` and `entity` are selections, not
+    // derived data, and would otherwise survive into a project where they
+    // mean nothing. The canister tree itself is invalidated below by the
+    // generation bump, not by `env`/`identity` changing — those can come out
+    // identical to the outgoing project's when both happen to share an
+    // environment and identity name, which is common, not an edge case.
+    setCanister(null);
+    setEntity(null);
+    setSqlResult(null);
+    setSqlError(undefined);
+    setSqlLimitAppended(false);
+    setSqlOrderByMissing(false);
+    setProjectGeneration((generation) => generation + 1);
+  }, []);
+
+  // Load whatever project was remembered. `null` means none was — the
+  // "choose a project" state, not a failure.
+  //
+  // `cancelled` guards against the near-zero-but-nonzero case where a user
+  // completes a folder-picker dialog (`handleSelectProject`) before this
+  // mount-time load resolves: without the guard, this call's `.then` would
+  // fire after the picked project was already adopted and clobber it,
+  // leaving the frontend showing the picked project while the backend's
+  // `ProjectState` (and pool) had already moved on to it — the same
+  // frontend/backend split the generation counter above exists to prevent.
+  useEffect(() => {
+    let cancelled = false;
+    listEnvironments()
+      .then((project) => {
+        if (cancelled) return;
+        if (project) adoptProject(project);
+      })
+      .catch((error: AppErrorDto) => {
+        if (cancelled) return;
+        setEnvironmentsError(error);
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setEnvironmentsLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [adoptProject]);
+
+  // A rejected pick changes nothing: `select_project` only rejects on a path
+  // it could not adopt at all, in which case the backend never swapped its
+  // state, so the project on screen is still the one that's open.
+  const handleSelectProject = useCallback(
+    (path: string) => {
+      setProjectBusy(true);
+      setPersistWarning(null);
+      selectProject(path)
+        .then((selection) => {
+          adoptProject(selection.project);
+          setPersistWarning(selection.persistWarning);
+        })
+        .catch((error: AppErrorDto) => setEnvironmentsError(error))
+        .finally(() => setProjectBusy(false));
+    },
+    [adoptProject],
+  );
 
   // The one place `env` changes after the initial load: re-derives
   // `identity` via `initialIdentityFor` in the *same* handler, rather than
@@ -176,6 +257,16 @@ function App() {
   // `env` changes again before this fetch resolves, the cleanup flips
   // `cancelled` to true so the in-flight promise's `.then`/`.catch` becomes
   // a no-op instead of clobbering whatever the newer selection already set.
+  //
+  // Depends on `projectGeneration`, not just `env`/`identity`: two projects
+  // commonly share an environment name (`local`) and a derived identity name
+  // (`default`), in which case `adoptProject` sets `env` and `identity` to
+  // values identical to the outgoing project's. React bails out of a
+  // no-op `setState`, so without the generation counter this effect's
+  // dependencies would never actually change and it would never re-run —
+  // leaving the previous project's canister tree on screen, where clicking
+  // one would query the *old* project's canister id through the *new*
+  // project's agent.
   useEffect(() => {
     setForest(null);
     setTreeError(null);
@@ -194,7 +285,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [env, identity]);
+  }, [env, identity, projectGeneration]);
 
   useEffect(() => {
     setEntities(null);
@@ -401,6 +492,7 @@ function App() {
     <main className="flex h-screen flex-col bg-white text-gray-900">
       <header className="flex items-center gap-3 border-b px-4 py-2">
         <h1 className="text-lg font-semibold">icydb Explorer</h1>
+        <ProjectSelector root={root} busy={projectBusy} onSelect={handleSelectProject} />
         {environments.length > 0 && (
           <select
             value={env ?? ""}
@@ -433,11 +525,34 @@ function App() {
         </div>
       )}
 
+      {persistWarning && (
+        <div className="p-2">
+          <p className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
+            This project is open, but the choice won&apos;t be remembered next launch:{" "}
+            {persistWarning}
+          </p>
+        </div>
+      )}
+
+      {/* No project is open: a first launch, or a remembered root that has
+          since been moved or deleted. Distinct from "this project has no
+          environments" below — that one is about a project that exists. */}
+      {environmentsLoaded && root === null && !environmentsError && (
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8">
+          <p className="text-sm text-gray-600">Choose a project to explore.</p>
+          <p className="text-xs text-gray-500">
+            Pick a directory containing an <code>.icp/</code> layout — or any directory inside
+            one.
+          </p>
+          <ProjectSelector root={null} busy={projectBusy} onSelect={handleSelectProject} />
+        </div>
+      )}
+
       {/* An explicit empty state, not a silently blank window: a `discover()`
           failure of Critical 1's own class (a project layout this app
           doesn't understand) must be visible, not indistinguishable from a
           project that simply hasn't been deployed yet. */}
-      {environmentsLoaded && environments.length === 0 && !environmentsError && (
+      {environmentsLoaded && root !== null && environments.length === 0 && !environmentsError && (
         <div className="p-2">
           <p className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
             No environments were found in this project&apos;s <code>.icp/</code> layout. Deploy
@@ -463,56 +578,60 @@ function App() {
         </div>
       )}
 
-      <div className="flex flex-1 overflow-hidden">
-        <aside className="w-64 shrink-0 overflow-auto border-r p-2">
-          <h2 className="mb-2 text-xs font-semibold uppercase text-gray-500">Canisters</h2>
-          {treeError && <ErrorBanner error={treeError} />}
-          {forest && <CanisterTree trees={forest} selectedPid={canister} onSelect={setCanister} />}
-        </aside>
-
-        <aside className="w-72 shrink-0 overflow-auto border-r p-2">
-          <h2 className="mb-2 text-xs font-semibold uppercase text-gray-500">Tables</h2>
-          {entitiesError && <ErrorBanner error={entitiesError} />}
-          {entities && <TableList entities={entities} selected={entity} onSelect={setEntity} />}
-
-          {schemaError && (
-            <div className="mt-4">
-              <ErrorBanner error={schemaError} />
-            </div>
-          )}
-          {schema && (
-            <div className="mt-4">
-              <h2 className="mb-2 text-xs font-semibold uppercase text-gray-500">Schema</h2>
-              <SchemaPanel schema={schema} />
-            </div>
-          )}
-        </aside>
-
-        <section className="flex flex-1 flex-col overflow-hidden p-2">
-          <div className="flex-1 overflow-auto">
-            {rowsError && <ErrorBanner error={rowsError} />}
-            {rows && <RowGrid rows={rows} hasMore={hasMore} onLoadMore={loadMore} />}
-            {!rows && !rowsError && entity && (
-              <p className="p-2 text-sm text-gray-500">Loading rows…</p>
+      {root !== null && (
+        <div className="flex flex-1 overflow-hidden">
+          <aside className="w-64 shrink-0 overflow-auto border-r p-2">
+            <h2 className="mb-2 text-xs font-semibold uppercase text-gray-500">Canisters</h2>
+            {treeError && <ErrorBanner error={treeError} />}
+            {forest && (
+              <CanisterTree trees={forest} selectedPid={canister} onSelect={setCanister} />
             )}
-          </div>
+          </aside>
 
-          <div className="mt-4 shrink-0 border-t pt-2">
-            <h2 className="mb-2 text-xs font-semibold uppercase text-gray-500">SQL console</h2>
-            <SqlConsole
-              onRun={handleRunSql}
-              error={sqlError}
-              limitAppended={sqlLimitAppended}
-              orderByMissing={sqlOrderByMissing}
-            />
-            {sqlResult && (
-              <div className="mt-2 max-h-64 overflow-auto">
-                <SqlResultView result={sqlResult} />
+          <aside className="w-72 shrink-0 overflow-auto border-r p-2">
+            <h2 className="mb-2 text-xs font-semibold uppercase text-gray-500">Tables</h2>
+            {entitiesError && <ErrorBanner error={entitiesError} />}
+            {entities && <TableList entities={entities} selected={entity} onSelect={setEntity} />}
+
+            {schemaError && (
+              <div className="mt-4">
+                <ErrorBanner error={schemaError} />
               </div>
             )}
-          </div>
-        </section>
-      </div>
+            {schema && (
+              <div className="mt-4">
+                <h2 className="mb-2 text-xs font-semibold uppercase text-gray-500">Schema</h2>
+                <SchemaPanel schema={schema} />
+              </div>
+            )}
+          </aside>
+
+          <section className="flex flex-1 flex-col overflow-hidden p-2">
+            <div className="flex-1 overflow-auto">
+              {rowsError && <ErrorBanner error={rowsError} />}
+              {rows && <RowGrid rows={rows} hasMore={hasMore} onLoadMore={loadMore} />}
+              {!rows && !rowsError && entity && (
+                <p className="p-2 text-sm text-gray-500">Loading rows…</p>
+              )}
+            </div>
+
+            <div className="mt-4 shrink-0 border-t pt-2">
+              <h2 className="mb-2 text-xs font-semibold uppercase text-gray-500">SQL console</h2>
+              <SqlConsole
+                onRun={handleRunSql}
+                error={sqlError}
+                limitAppended={sqlLimitAppended}
+                orderByMissing={sqlOrderByMissing}
+              />
+              {sqlResult && (
+                <div className="mt-2 max-h-64 overflow-auto">
+                  <SqlResultView result={sqlResult} />
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
     </main>
   );
 }
