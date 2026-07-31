@@ -18,6 +18,7 @@ use tauri::State;
 use crate::agent::AgentPool;
 use crate::discovery::{Environment, IdentityRef, Project};
 use crate::error::AppError;
+use crate::project::ProjectState;
 use crate::sql::{apply_default_limit, classify, rows_sql, run_query};
 use crate::topology::{build_tree, fetch_children, TreeNode};
 use crate::view::{result_to_dto, ResultDto};
@@ -120,15 +121,17 @@ async fn query_dto(
     result_to_dto(result)
 }
 
-/// Returns the discovered project: its environments, and — critically —
-/// any error `discover()` hit while reading `.icp/` (see `Project`'s doc
-/// comment). Cannot fail as a command: it only ever reads already-computed,
-/// in-memory state, but the state itself may record a discovery failure,
-/// which is exactly what the frontend needs to render an explicit failed
-/// state instead of a silently empty one.
+/// Returns the open project, or `None` if the user hasn't chosen one yet.
+///
+/// `None` and `Some(project)` are both ordinary outcomes: the frontend
+/// renders the first as the "choose a project" empty state and the second
+/// through its normal path. As before, a `Some` project may still carry a
+/// `discover()` failure on its `error` field — see `Project`'s doc comment —
+/// so a layout this app can't read stays distinguishable from a project
+/// that simply has no environments yet.
 #[tauri::command]
-pub fn list_environments(project: State<'_, Project>) -> Project {
-    project.inner().clone()
+pub fn list_environments(project: State<'_, ProjectState>) -> Option<Project> {
+    project.snapshot()
 }
 
 /// Loads the named identity now, so a failure surfaces when the user selects
@@ -148,9 +151,10 @@ pub fn list_environments(project: State<'_, Project>) -> Project {
 pub async fn select_identity(
     env: String,
     identity: String,
-    project: State<'_, Project>,
+    project: State<'_, ProjectState>,
     pool: State<'_, AgentPool>,
 ) -> Result<(), AppError> {
+    let project = project.snapshot().ok_or(AppError::NoProjectSelected)?;
     let environment = find_environment(&project, &env)?;
     let identity_ref = find_identity(environment, &identity)?;
     pool.get(environment, identity_ref).await?;
@@ -173,9 +177,10 @@ pub async fn select_identity(
 pub async fn canister_tree(
     env: String,
     identity: String,
-    project: State<'_, Project>,
+    project: State<'_, ProjectState>,
     pool: State<'_, AgentPool>,
 ) -> Result<Vec<TreeNode>, AppError> {
+    let project = project.snapshot().ok_or(AppError::NoProjectSelected)?;
     let environment = find_environment(&project, &env)?;
     if environment.canisters.is_empty() {
         return Err(AppError::Io(format!(
@@ -201,9 +206,10 @@ pub async fn list_tables(
     env: String,
     canister: String,
     identity: String,
-    project: State<'_, Project>,
+    project: State<'_, ProjectState>,
     pool: State<'_, AgentPool>,
 ) -> Result<ResultDto, AppError> {
+    let project = project.snapshot().ok_or(AppError::NoProjectSelected)?;
     let environment = find_environment(&project, &env)?;
     let identity_ref = find_identity(environment, &identity)?;
     let canister_id = parse_principal(&canister)?;
@@ -217,9 +223,10 @@ pub async fn describe_table(
     canister: String,
     entity: String,
     identity: String,
-    project: State<'_, Project>,
+    project: State<'_, ProjectState>,
     pool: State<'_, AgentPool>,
 ) -> Result<ResultDto, AppError> {
+    let project = project.snapshot().ok_or(AppError::NoProjectSelected)?;
     let environment = find_environment(&project, &env)?;
     let identity_ref = find_identity(environment, &identity)?;
     let canister_id = parse_principal(&canister)?;
@@ -280,9 +287,10 @@ pub async fn fetch_rows(
     entity: String,
     offset: u32,
     identity: String,
-    project: State<'_, Project>,
+    project: State<'_, ProjectState>,
     pool: State<'_, AgentPool>,
 ) -> Result<ResultDto, AppError> {
+    let project = project.snapshot().ok_or(AppError::NoProjectSelected)?;
     let environment = find_environment(&project, &env)?;
     let identity_ref = find_identity(environment, &identity)?;
     let canister_id = parse_principal(&canister)?;
@@ -327,9 +335,10 @@ pub async fn run_sql(
     canister: String,
     sql: String,
     identity: String,
-    project: State<'_, Project>,
+    project: State<'_, ProjectState>,
     pool: State<'_, AgentPool>,
 ) -> Result<SqlRunDto, AppError> {
+    let project = project.snapshot().ok_or(AppError::NoProjectSelected)?;
     let environment = find_environment(&project, &env)?;
     let identity_ref = find_identity(environment, &identity)?;
     let canister_id = parse_principal(&canister)?;
