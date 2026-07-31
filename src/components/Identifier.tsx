@@ -12,7 +12,22 @@ import { elide } from "../lib/elide";
  *
  *  The confirmation only appears when the copy actually succeeded — `copyText`
  *  reports failure rather than throwing, and claiming success falsely would be
- *  worse than showing nothing. */
+ *  worse than showing nothing.
+ *
+ *  Two layout rules, both learned the hard way:
+ *
+ *  `max-w-88` and `truncate` match `ValueCell`'s other branches. Before them the
+ *  only bound on this cell's width was however many characters `elide` happened
+ *  to return — which for a group-based elision is unbounded in the length of the
+ *  groups kept, so a long-grouped identifier blew the column out anyway.
+ *
+ *  The confirmation is absolutely positioned, so it contributes nothing to
+ *  layout. Rendered in flow it widened the column for its 1200ms lifetime, and
+ *  in a `table-auto` grid that shifts every column to its right and then snaps
+ *  them back — clicking one ULID made the whole table jump. The live region is
+ *  mounted empty from the start rather than appearing with the text, because a
+ *  screen reader announces a change *within* an existing live region far more
+ *  reliably than the insertion of a new one. */
 export function Identifier({ value, className }: { value: string; className?: string }) {
   const [copied, setCopied] = useState(false);
   // The pending hide, so a second click cannot have its confirmation cut short
@@ -32,14 +47,22 @@ export function Identifier({ value, className }: { value: string; className?: st
   };
 
   return (
-    <button
-      type="button"
-      onClick={copy}
-      title={value}
-      className={`font-mono text-xs text-pk ${className ?? ""}`}
-    >
-      {elide(value)}
-      {copied && <span className="ml-1 not-italic text-text-3">copied</span>}
-    </button>
+    <span className="relative inline-flex max-w-88 align-baseline">
+      <button
+        type="button"
+        onClick={copy}
+        title={value}
+        className={`min-w-0 truncate font-mono text-xs text-pk ${className ?? ""}`}
+      >
+        {elide(value)}
+      </button>
+      <span
+        role="status"
+        data-copy-confirmation="true"
+        className="pointer-events-none absolute left-full top-0 ml-1 whitespace-nowrap font-mono text-xs not-italic text-text-3"
+      >
+        {copied ? "copied" : ""}
+      </span>
+    </span>
   );
 }
