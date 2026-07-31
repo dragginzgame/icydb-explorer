@@ -52,3 +52,28 @@ test("Escape closes the menu without choosing", () => {
   expect(screen.queryByRole("menu")).toBeNull();
   expect(onChoose).not.toHaveBeenCalled();
 });
+
+/// The component listens for `mousedown`, not `click`. Dispatching the wrong
+/// event here would make this test pass while covering nothing — which is
+/// exactly why the existing "closes the menu" test does not cover this path.
+test("a mousedown outside the menu closes it", () => {
+  render(<SettingsMenu choice="system" onChoose={vi.fn()} />);
+  fireEvent.click(screen.getByRole("button", { name: /settings/i }));
+  expect(screen.getByRole("menu")).toBeInTheDocument();
+
+  fireEvent.mouseDown(document.body);
+
+  expect(screen.queryByRole("menu")).toBeNull();
+});
+
+/// The other half of the same guard: an inverted `contains` check would close
+/// the menu the instant you pressed on one of its own rows, which the test
+/// above cannot detect on its own.
+test("a mousedown inside the menu leaves it open", () => {
+  render(<SettingsMenu choice="system" onChoose={vi.fn()} />);
+  fireEvent.click(screen.getByRole("button", { name: /settings/i }));
+
+  fireEvent.mouseDown(screen.getByRole("menuitemradio", { name: /terminal/i }));
+
+  expect(screen.getByRole("menu")).toBeInTheDocument();
+});
