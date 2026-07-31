@@ -13,11 +13,12 @@
 
 use candid::Principal;
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 use crate::agent::AgentPool;
-use crate::discovery::{Environment, IdentityRef, Project};
+use crate::discovery::{self, resolve_root, Environment, IdentityRef, Project};
 use crate::error::AppError;
+use crate::project::config::write_recorded_root;
 use crate::project::ProjectState;
 use crate::sql::{apply_default_limit, classify, rows_sql, run_query};
 use crate::topology::{build_tree, fetch_children, TreeNode};
@@ -111,12 +112,13 @@ fn parse_principal(text: &str) -> Result<Principal, AppError> {
 /// with two different chances to drift out of sync.
 async fn query_dto(
     pool: &AgentPool,
+    root: &std::path::Path,
     environment: &Environment,
     identity_ref: &IdentityRef,
     canister: Principal,
     sql: &str,
 ) -> Result<ResultDto, AppError> {
-    let agent = pool.get(environment, identity_ref).await?;
+    let agent = pool.get(root, environment, identity_ref).await?;
     let result = run_query(&agent, canister, sql, identity_ref.name.as_str()).await?;
     result_to_dto(result)
 }
@@ -157,7 +159,7 @@ pub async fn select_identity(
     let project = project.snapshot().ok_or(AppError::NoProjectSelected)?;
     let environment = find_environment(&project, &env)?;
     let identity_ref = find_identity(environment, &identity)?;
-    pool.get(environment, identity_ref).await?;
+    pool.get(&project.root, environment, identity_ref).await?;
     Ok(())
 }
 
@@ -190,7 +192,7 @@ pub async fn canister_tree(
     }
 
     let identity_ref = find_identity(environment, &identity)?;
-    let agent = pool.get(environment, identity_ref).await?;
+    let agent = pool.get(&project.root, environment, identity_ref).await?;
     let mut forest = Vec::with_capacity(environment.canisters.len());
     for named in &environment.canisters {
         let root = parse_principal(&named.id)?;
@@ -213,7 +215,15 @@ pub async fn list_tables(
     let environment = find_environment(&project, &env)?;
     let identity_ref = find_identity(environment, &identity)?;
     let canister_id = parse_principal(&canister)?;
-    query_dto(&pool, environment, identity_ref, canister_id, "SHOW ENTITIES").await
+    query_dto(
+        &pool,
+        &project.root,
+        environment,
+        identity_ref,
+        canister_id,
+        "SHOW ENTITIES",
+    )
+    .await
 }
 
 /// `DESCRIBE <entity>` against `canister`.
@@ -231,7 +241,15 @@ pub async fn describe_table(
     let identity_ref = find_identity(environment, &identity)?;
     let canister_id = parse_principal(&canister)?;
     let sql = format!("DESCRIBE {entity}");
-    query_dto(&pool, environment, identity_ref, canister_id, &sql).await
+    query_dto(
+        &pool,
+        &project.root,
+        environment,
+        identity_ref,
+        canister_id,
+        &sql,
+    )
+    .await
 }
 
 /// Pages `entity`'s rows, `DEFAULT_ROW_LIMIT` at a time, starting at
@@ -296,7 +314,16 @@ pub async fn fetch_rows(
     let canister_id = parse_principal(&canister)?;
 
     let describe_sql = format!("DESCRIBE {entity}");
-    let sql = match query_dto(&pool, environment, identity_ref, canister_id, &describe_sql).await {
+    let sql = match query_dto(
+        &pool,
+        &project.root,
+        environment,
+        identity_ref,
+        canister_id,
+        &describe_sql,
+    )
+    .await
+    {
         Ok(ResultDto::Schema(schema)) => {
             let pk_columns: Vec<String> = schema
                 .columns
@@ -321,7 +348,15 @@ pub async fn fetch_rows(
         Err(other) => return Err(other),
     };
 
-    query_dto(&pool, environment, identity_ref, canister_id, &sql).await
+    query_dto(
+        &pool,
+        &project.root,
+        environment,
+        identity_ref,
+        canister_id,
+        &sql,
+    )
+    .await
 }
 
 /// Runs a user-typed SQL statement, classifying it before any network
@@ -348,11 +383,96 @@ pub async fn run_sql(
     let statement = classify(&sql)?;
     let limited = apply_default_limit(&sql, statement, DEFAULT_ROW_LIMIT);
 
-    let result = query_dto(&pool, environment, identity_ref, canister_id, &limited.sql).await?;
+    let result = query_dto(
+        &pool,
+        &project.root,
+        environment,
+        identity_ref,
+        canister_id,
+        &limited.sql,
+    )
+    .await?;
     Ok(SqlRunDto {
         result,
         limit_appended: limited.limit_appended,
         order_by_missing: limited.order_by_missing,
+    })
+}
+
+/// The result of switching projects: the newly-open project, plus a warning
+/// if the choice could not be remembered.
+///
+/// The wrapper exists for one reason. A config-write failure has nowhere to
+/// go in a bare `Project`, and reusing `Project::error` for it would render
+/// a *storage* problem in the same banner as a *discovery* problem — two
+/// unrelated conditions with one explanation. Keeping `project` a plain
+/// `Project` means the frontend adopts a switched project through the exact
+/// code path it uses at launch.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSelection {
+    pub project: Project,
+    /// `Some` when the project was adopted but will not be remembered next
+    /// launch. Never a reason to fail the switch.
+    pub persist_warning: Option<String>,
+}
+
+/// Opens the project at `path`, making it the one every other command sees.
+///
+/// In order: check the path is a directory, resolve it up to the nearest
+/// `.icp/`, discover, clear the agent pool, swap the state, remember the
+/// choice.
+///
+/// Two deliberate choices about failure. First, an unusable *path* is an
+/// `Err` and changes nothing — the previously open project stays open and
+/// the pool is untouched — because nothing was adopted. Second, a `discover()`
+/// failure is **not** an `Err`: it becomes a `Project` carrying the error,
+/// exactly as at launch, so a directory with no `.icp/` is adopted and the
+/// UI explains why it's empty. Refusing it would make an undeployed project
+/// impossible to open, which this app deliberately supports.
+///
+/// The root is remembered even when it holds no `.icp/`. The user asked for
+/// that folder; silently reverting to a different project on next launch
+/// would be the more surprising behaviour.
+#[tauri::command]
+pub async fn select_project(
+    path: String,
+    project: State<'_, ProjectState>,
+    pool: State<'_, AgentPool>,
+    app: AppHandle,
+) -> Result<ProjectSelection, AppError> {
+    let picked = std::path::PathBuf::from(&path);
+    if !picked.is_dir() {
+        return Err(AppError::Io(format!(
+            "{path} is not a directory, so it cannot be opened as a project"
+        )));
+    }
+
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let root = resolve_root(&picked, home.as_deref());
+
+    let discovered = discovery::discover(&root).unwrap_or_else(|error| Project {
+        root: root.clone(),
+        environments: Vec::new(),
+        error: Some(error),
+    });
+
+    // Order matters: clear before swapping. Every cached agent belongs to
+    // the project being left, and its key may collide with the incoming
+    // project's (see `AgentPool::clear`).
+    pool.clear().await;
+    project.replace(discovered.clone());
+
+    let persist_warning = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("Could not locate the app config directory: {error}"))
+        .and_then(|dir| write_recorded_root(&dir, &root))
+        .err();
+
+    Ok(ProjectSelection {
+        project: discovered,
+        persist_warning,
     })
 }
 

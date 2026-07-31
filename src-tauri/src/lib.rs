@@ -40,6 +40,7 @@ fn recorded_project(config_dir: &std::path::Path) -> Option<Project> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(AgentPool::new())
         .setup(|app| {
             let project = app
@@ -52,6 +53,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_environments,
+            commands::select_project,
             commands::select_identity,
             commands::canister_tree,
             commands::list_tables,
