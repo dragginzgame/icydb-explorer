@@ -22,12 +22,15 @@ import type {
 import { CanisterTree } from "./components/CanisterTree";
 import { ErrorBanner } from "./components/ErrorBanner";
 import { IdentitySelector } from "./components/IdentitySelector";
+import { Pane } from "./components/Pane";
 import { ProjectSelector } from "./components/ProjectSelector";
 import { RowGrid } from "./components/RowGrid";
+import { SchemaInspector } from "./components/SchemaInspector";
 import { SchemaPanel } from "./components/SchemaPanel";
 import { SettingsMenu } from "./components/SettingsMenu";
 import { SqlConsole } from "./components/SqlConsole";
 import { TableList } from "./components/TableList";
+import { usePaneLayout } from "./layout/usePaneLayout";
 import { useTheme } from "./theme/useTheme";
 
 // Matches `DEFAULT_ROW_LIMIT` in `src-tauri/src/commands.rs`: `fetch_rows`
@@ -81,6 +84,7 @@ function noUsableIdentitySummary(environment: Environment): string {
 
 function App() {
   const { choice: themeChoice, setChoice: setThemeChoice } = useTheme();
+  const { layout, setWidth, toggleSchema, setSqlExpanded } = usePaneLayout();
 
   const [environments, setEnvironments] = useState<Environment[]>([]);
   const [environmentsError, setEnvironmentsError] = useState<AppErrorDto | null>(null);
@@ -450,6 +454,26 @@ function App() {
   // claims a total.
   const hasMore = lastPageRowCount === DEFAULT_ROW_LIMIT;
 
+  // The last shape we saw, so a pending fetch can render skeletons at the real
+  // column count instead of guessing. Holding the previous *shape* (not its
+  // rows) is what keeps the grid from reflowing when the data lands.
+  //
+  // This exists because the rows effect sets `rows` to null before each fetch,
+  // which is what makes "loading" observable at all — but `RowGrid` needs a
+  // `RowsDto` to size anything. Feeding it the previous shape with an empty
+  // `rows` array keeps the grid mounted across the fetch (so `loading` finally
+  // has a call site) at the real column count.
+  //
+  // On the very first fetch of a session `lastShape.current` is still null, so
+  // nothing renders and the pane is briefly empty. That is deliberate: there
+  // is no column count to honour yet, and inventing one would produce exactly
+  // the reflow the skeleton exists to prevent.
+  const lastShape = useRef<RowsDto | null>(null);
+  if (rows !== null) lastShape.current = rows;
+
+  const gridRows: RowsDto | null =
+    rows ?? (lastShape.current && { ...lastShape.current, rows: [], rowCount: 0, nextCursor: null });
+
   const currentEnvironment = environments.find((candidate) => candidate.name === env) ?? null;
 
   // `selectIdentity` performs an eager export (see its doc comment in
@@ -585,61 +609,159 @@ function App() {
         </div>
       )}
 
+      {/* Four panes left to right, then the SQL bar across the bottom.
+          `min-h-0` on both of these is load-bearing and invisible to jsdom: a
+          flex item's `min-height` defaults to `auto`, which in a COLUMN flex
+          container resolves to a content-based minimum, so without it each of
+          these grows to fit its content instead of shrinking — and every pane's
+          scroll region, which sizes itself from its parent, stops scrolling and
+          the whole window overflows. `<main>`'s `h-screen` is what makes the
+          chain definite at the top. */}
       {root !== null && (
-        <div className="flex flex-1 overflow-hidden">
-          <aside className="w-64 shrink-0 overflow-auto border-r border-rule bg-surface-1 p-2">
-            <h2 className="mb-2 text-xs font-semibold uppercase text-text-2">Canisters</h2>
-            {treeError && <ErrorBanner error={treeError} />}
-            {forest && (
-              <CanisterTree trees={forest} selectedPid={canister} onSelect={setCanister} />
-            )}
-          </aside>
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="flex min-h-0 flex-1">
+            <Pane
+              title="Canisters"
+              width={layout.widths.fleet}
+              onResize={(width) => setWidth("fleet", width)}
+              className="border-r border-rule bg-surface-1"
+            >
+              {treeError && <ErrorBanner error={treeError} />}
+              {forest && (
+                <CanisterTree trees={forest} selectedPid={canister} onSelect={setCanister} />
+              )}
+            </Pane>
 
-          <aside className="w-72 shrink-0 overflow-auto border-r border-rule bg-surface-1 p-2">
-            <h2 className="mb-2 text-xs font-semibold uppercase text-text-2">Tables</h2>
-            {entitiesError && <ErrorBanner error={entitiesError} />}
-            {entities && <TableList entities={entities} selected={entity} onSelect={setEntity} />}
+            <Pane
+              title="Tables"
+              width={layout.widths.tables}
+              onResize={(width) => setWidth("tables", width)}
+              className="border-r border-rule bg-surface-1"
+            >
+              {entitiesError && <ErrorBanner error={entitiesError} />}
+              {entities && <TableList entities={entities} selected={entity} onSelect={setEntity} />}
+            </Pane>
 
-            {schemaError && (
-              <div className="mt-4">
-                <ErrorBanner error={schemaError} />
-              </div>
-            )}
-            {schema && (
-              <div className="mt-4">
-                <h2 className="mb-2 text-xs font-semibold uppercase text-text-2">Schema</h2>
-                <SchemaPanel schema={schema} />
-              </div>
-            )}
-          </aside>
-
-          <section className="flex flex-1 flex-col overflow-hidden p-2">
-            <div className="flex-1 overflow-auto">
+            <Pane title="Rows">
               {rowsError && <ErrorBanner error={rowsError} />}
-              {rows && <RowGrid rows={rows} hasMore={hasMore} onLoadMore={loadMore} />}
-              {!rows && !rowsError && entity && (
-                <p className="p-2 text-sm text-text-2">Loading rows…</p>
+              {!rowsError && gridRows && (
+                <RowGrid
+                  rows={gridRows}
+                  hasMore={hasMore}
+                  onLoadMore={loadMore}
+                  loading={rows === null}
+                />
               )}
-            </div>
+              {!rowsError && !gridRows && !entity && (
+                <p className="p-3 text-sm text-text-3">Select a table to see its rows.</p>
+              )}
+            </Pane>
 
-            <div className="mt-4 shrink-0 border-t border-rule pt-2">
-              <h2 className="mb-2 text-xs font-semibold uppercase text-text-2">SQL console</h2>
-              <SqlConsole
-                onRun={handleRunSql}
-                error={sqlError}
-                limitAppended={sqlLimitAppended}
-                orderByMissing={sqlOrderByMissing}
-              />
-              {sqlResult && (
-                <div className="mt-2 max-h-64 overflow-auto">
-                  <SqlResultView result={sqlResult} />
-                </div>
-              )}
-            </div>
-          </section>
+            <SchemaInspector
+              schema={schema}
+              error={schemaError}
+              entity={entity}
+              collapsed={layout.schemaCollapsed}
+              onToggle={toggleSchema}
+              width={layout.widths.schema}
+              onResize={(width) => setWidth("schema", width)}
+            />
+          </div>
+
+          <SqlBar
+            expanded={layout.sqlExpanded}
+            onExpandedChange={setSqlExpanded}
+            onRun={handleRunSql}
+            error={sqlError}
+            limitAppended={sqlLimitAppended}
+            orderByMissing={sqlOrderByMissing}
+            result={sqlResult}
+          />
         </div>
       )}
     </main>
+  );
+}
+
+/** The SQL console as a bar across the bottom of the shell, rather than a
+ *  permanent third of the rows pane.
+ *
+ *  A wrapper in this file, not a component of its own: it is composition — a
+ *  disclosure around `SqlConsole` and `SqlResultView`, both of which already
+ *  exist — and phase 3 replaces its contents with the CodeMirror editor. A
+ *  separate file would have to be unpicked again then.
+ *
+ *  Opens on click and closes on the close button. No keyboard shortcut: the
+ *  keyboard map is phase 3, and half a map is worse than none.
+ *
+ *  Two layout details that jsdom cannot see. `basis-1/3` gives the open bar a
+ *  third of the shell's height, and `min-h-0` is what makes that a ceiling
+ *  rather than a floor: `min-height: auto` on a column flex item resolves to a
+ *  content-based minimum, so a tall result would otherwise push the bar past a
+ *  third and squeeze the panes above it. And the console and its result share
+ *  ONE scroll region — the same rule `Pane` follows, and for the same reason:
+ *  the result's own sticky header only works if the nearest scrollport is the
+ *  one that actually scrolls. */
+function SqlBar({
+  expanded,
+  onExpandedChange,
+  onRun,
+  error,
+  limitAppended,
+  orderByMissing,
+  result,
+}: {
+  expanded: boolean;
+  onExpandedChange: (expanded: boolean) => void;
+  onRun: (sql: string) => void;
+  error?: AppErrorDto;
+  limitAppended: boolean;
+  orderByMissing: boolean;
+  result: ResultDto | null;
+}) {
+  if (!expanded) {
+    return (
+      <div className="flex shrink-0 items-center border-t border-rule bg-surface-1 px-2 py-1">
+        <button
+          type="button"
+          onClick={() => onExpandedChange(true)}
+          aria-expanded={false}
+          className="rounded-control border border-rule px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-text-2 hover:bg-surface-2"
+        >
+          SQL
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex min-h-0 basis-1/3 flex-col border-t border-rule bg-surface-1">
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-rule px-2 py-1">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-text-2">SQL</h2>
+        <button
+          type="button"
+          onClick={() => onExpandedChange(false)}
+          aria-label="Close SQL"
+          aria-expanded
+          className="rounded-control px-1 text-xs text-text-3 hover:bg-surface-2"
+        >
+          ×
+        </button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto p-2">
+        <SqlConsole
+          onRun={onRun}
+          error={error}
+          limitAppended={limitAppended}
+          orderByMissing={orderByMissing}
+        />
+        {result && (
+          <div className="mt-2">
+            <SqlResultView result={result} />
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 

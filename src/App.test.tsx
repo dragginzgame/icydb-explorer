@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import App from "./App";
 import * as commands from "./api/commands";
 import type { EntityDto, Environment, IdentityRef, ResultDto, TreeNode } from "./api/types";
@@ -7,6 +7,15 @@ vi.mock("./api/commands");
 
 const dialogOpen = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: dialogOpen }));
+
+// The pane layout (widths, the schema collapse, and whether the SQL bar is
+// open) persists to `localStorage`, and vitest gives one jsdom to the whole
+// file rather than one per test. So a test that opens the SQL bar would leave
+// it open for every test after it — and those tests click the "SQL" button
+// that only exists while it is *closed*, which would make the suite depend on
+// its own declaration order. Cleared per test so each starts from the default
+// layout.
+beforeEach(() => localStorage.clear());
 
 // A single usable identity, reused by every fixture `Environment` below so
 // the app's initial-selection fallback (first usable entry in
@@ -232,6 +241,10 @@ test("a stale SQL console run never overwrites a newer canister's result", async
 
   await screen.findByText("canister-a");
   fireEvent.click(screen.getByText("canister-a"));
+  // The console lives in the SQL bar, which starts collapsed — open it before
+  // driving it. (It stays open across the canister switch below: the bar's
+  // expanded state is layout, not selection.)
+  fireEvent.click(screen.getByRole("button", { name: "SQL" }));
   fireEvent.change(screen.getByRole("textbox"), { target: { value: "SELECT 1" } });
   fireEvent.click(screen.getByRole("button", { name: /run/i }));
 
@@ -408,6 +421,8 @@ test("renders SHOW CONSTRAINTS results from the console", async () => {
 
   await screen.findByText("canister-a");
   fireEvent.click(screen.getByText("canister-a"));
+  // The console lives in the SQL bar, which starts collapsed.
+  fireEvent.click(screen.getByRole("button", { name: "SQL" }));
   fireEvent.change(screen.getByRole("textbox"), {
     target: { value: "SHOW CONSTRAINTS FROM demo_row" },
   });
@@ -505,6 +520,11 @@ test("offers the picker and no panes when no project is open", async () => {
 
   expect(await screen.findByText(/choose a project to explore/i)).toBeInTheDocument();
   expect(screen.queryByText(/no environments were found/i)).not.toBeInTheDocument();
+  // "No panes" is now something this test can actually assert: each pane is a
+  // named region, so their absence is checkable rather than implied.
+  for (const name of ["Canisters", "Tables", "Rows", "Schema"]) {
+    expect(screen.queryByRole("region", { name })).not.toBeInTheDocument();
+  }
 });
 
 test("adopts the project returned by a pick", async () => {
@@ -690,6 +710,10 @@ test("switching projects clears the stale 'default LIMIT was added' note", async
 
   render(<App />);
   fireEvent.click(await screen.findByText("canister-a"));
+  // The console lives in the SQL bar, which starts collapsed. It stays open
+  // across the project switch below, so the stale note is still on screen to
+  // be absent from.
+  fireEvent.click(await screen.findByRole("button", { name: "SQL" }));
   fireEvent.click(await screen.findByRole("button", { name: "Run" }));
 
   expect(await screen.findByText(/A default LIMIT was added/)).toBeInTheDocument();
@@ -699,6 +723,229 @@ test("switching projects clears the stale 'default LIMIT was added' note", async
   await waitFor(() =>
     expect(screen.queryByText(/A default LIMIT was added/)).not.toBeInTheDocument(),
   );
+});
+
+/// The four panes, each with its own accessible name, so a failure in one is
+/// anchored in one. Before this the schema lived inside the Tables aside and
+/// errors were inserted above the panes, shifting everything below them.
+test("the shell presents four named panes", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/toko",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    { pid: "aaaaa-aa", role: "canister-a", children: [] },
+  ]);
+
+  render(<App />);
+
+  for (const name of ["Canisters", "Tables", "Rows", "Schema"]) {
+    expect(await screen.findByRole("region", { name })).toBeInTheDocument();
+  }
+});
+
+/// Each pane owns its own failure. The rows fetch failing used to insert a
+/// banner above the whole pane row, pushing every pane down; now the banner
+/// lives inside the pane that failed, and the panes beside it do not move.
+/// Scoped with `within` on purpose — an unscoped `getByRole("alert")` would
+/// pass just as well for a banner rendered above the panes.
+test("a failed rows fetch is anchored inside the Rows pane", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/toko",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    { pid: "aaaaa-aa", role: "canister-a", children: [] },
+  ]);
+  vi.mocked(commands.listTables).mockResolvedValue({
+    type: "entities",
+    entities: [entity("DemoRow")],
+  });
+  vi.mocked(commands.describeTable).mockResolvedValue({
+    type: "schema",
+    entity: "DemoRow",
+    columns: [{ name: "id", typeName: "Ulid", primaryKey: true, optional: false }],
+    indexes: [],
+  });
+  vi.mocked(commands.fetchRows).mockRejectedValue({
+    kind: "backend",
+    explanation: "E14: the SQL surface is disabled on this canister",
+  });
+
+  render(<App />);
+  fireEvent.click(await screen.findByText("canister-a"));
+  fireEvent.click(await screen.findByText("DemoRow"));
+
+  const rowsPane = await screen.findByRole("region", { name: "Rows" });
+  const banner = await within(rowsPane).findByRole("alert");
+  // Verbatim, whole: `explanation` is the most useful thing the backend
+  // produces for a failure and is never truncated or paraphrased.
+  expect(banner).toHaveTextContent("E14: the SQL surface is disabled on this canister");
+  // The schema pane loaded fine and keeps showing its own content — a failure
+  // in one pane is not a failure of the shell.
+  expect(within(await screen.findByRole("region", { name: "Schema" })).getByText("id"))
+    .toBeInTheDocument();
+});
+
+/// The skeleton state was shipped in phase 2a with no call site: `App` set rows
+/// to null before each fetch and only rendered the grid when rows existed, so
+/// "mounted, loading, no rows" was unreachable and the words "Loading rows…"
+/// stayed on screen. This is the test that would have caught that.
+///
+/// Two table selections, not one: the skeletons are sized from the *previous*
+/// shape (see `lastShape` in `App.tsx`), so on the very first fetch of a
+/// session there is no column count to honour and none render. Holding the
+/// second `fetchRows` open with `deferred` is what lets this observe the app
+/// while a fetch is genuinely still pending.
+test("a pending row fetch shows skeletons, not the words Loading rows", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/toko",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    { pid: "aaaaa-aa", role: "canister-a", children: [] },
+  ]);
+  vi.mocked(commands.listTables).mockResolvedValue({
+    type: "entities",
+    entities: [entity("DemoRow"), entity("OtherRow")],
+  });
+  vi.mocked(commands.describeTable).mockResolvedValue({
+    type: "schema",
+    entity: "DemoRow",
+    columns: [],
+    indexes: [],
+  });
+
+  const second = deferred<ResultDto>();
+  vi.mocked(commands.fetchRows).mockImplementation((_env, _canister, entityName) =>
+    entityName === "DemoRow"
+      ? Promise.resolve({
+          type: "rows",
+          entity: "DemoRow",
+          columns: ["id", "handle"],
+          rows: [[{ kind: "ulid", display: "u-1" }, { kind: "text", display: "alice" }]],
+          rowCount: 1,
+          nextCursor: null,
+        })
+      : second.promise,
+  );
+
+  render(<App />);
+  fireEvent.click(await screen.findByText("canister-a"));
+  fireEvent.click(await screen.findByText("DemoRow"));
+  // The first fetch lands, giving the grid a two-column shape to size the next
+  // fetch's skeletons against.
+  expect(await screen.findByText("alice")).toBeInTheDocument();
+
+  // The second selection's fetch never settles, so the app stays in the state
+  // that used to be unreachable: grid mounted, loading, no rows.
+  fireEvent.click(screen.getByText("OtherRow"));
+
+  // 8 skeleton rows × the 2 columns carried over from the previous shape. The
+  // count is the assertion: a skeleton that guessed its column count would
+  // reflow the moment the real data landed, which is the whole reason the
+  // skeleton exists.
+  await waitFor(() =>
+    expect(document.querySelectorAll('[data-skeleton="true"]')).toHaveLength(16),
+  );
+  expect(screen.queryByText(/loading rows/i)).not.toBeInTheDocument();
+});
+
+/// Keeping the grid mounted across a fetch — which is what gives `loading` a
+/// call site — means its expansion state now survives one. Phase 2a added
+/// identity-based invalidation in `RowGrid` for exactly this moment; this is
+/// the test that it actually fires when driven through the real app, rather
+/// than only through `RowGrid`'s own props.
+///
+/// Both entities have two columns on purpose. A stale `{row: 0, column: 1}`
+/// would still be *in range* for the new entity, so it would render a sub-row
+/// against the wrong data rather than being silently swallowed by
+/// `ExpandableRow`'s defensive out-of-range guard — which is what makes this
+/// discriminate the entity half of the identity and not just the arity.
+test("switching tables with a cell expanded clears the expansion", async () => {
+  const longA = `A${"x".repeat(60)}`;
+  const longB = `B${"y".repeat(60)}`;
+
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/toko",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    { pid: "aaaaa-aa", role: "canister-a", children: [] },
+  ]);
+  vi.mocked(commands.listTables).mockResolvedValue({
+    type: "entities",
+    entities: [entity("DemoRow"), entity("OtherRow")],
+  });
+  vi.mocked(commands.describeTable).mockResolvedValue({
+    type: "schema",
+    entity: "DemoRow",
+    columns: [],
+    indexes: [],
+  });
+  vi.mocked(commands.fetchRows).mockImplementation((_env, _canister, entityName) =>
+    Promise.resolve({
+      type: "rows",
+      entity: entityName,
+      columns: ["id", "payload"],
+      rows: [
+        [
+          { kind: "ulid", display: entityName === "DemoRow" ? "u-1" : "u-2" },
+          { kind: "text", display: entityName === "DemoRow" ? longA : longB },
+        ],
+      ],
+      rowCount: 1,
+      nextCursor: null,
+    }),
+  );
+
+  render(<App />);
+  fireEvent.click(await screen.findByText("canister-a"));
+  fireEvent.click(await screen.findByText("DemoRow"));
+
+  fireEvent.click(await screen.findByRole("button", { name: "Expand payload" }));
+  expect(screen.getByRole("button", { name: "Collapse payload" })).toBeInTheDocument();
+
+  fireEvent.click(screen.getByText("OtherRow"));
+  await screen.findByText(longB);
+
+  // Invalidated, not carried over: the new table's cell is collapsed, and no
+  // sub-row is showing the new entity's value under an old table's expansion.
+  expect(await screen.findByRole("button", { name: "Expand payload" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Collapse payload" })).not.toBeInTheDocument();
+  expect(screen.getAllByText(longB)).toHaveLength(1);
+});
+
+/// The SQL bar is a bar, not a fifth pane: closed it is one row with a button,
+/// open it holds the console and its result. Click to open, close button to
+/// close — no keyboard shortcut, that is phase 3.
+test("the SQL bar starts closed, opens on click, and closes again", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/toko",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([]);
+
+  render(<App />);
+
+  const open = await screen.findByRole("button", { name: "SQL" });
+  expect(open).toHaveAttribute("aria-expanded", "false");
+  expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+
+  fireEvent.click(open);
+  expect(screen.getByRole("textbox")).toBeInTheDocument();
+
+  const close = screen.getByRole("button", { name: /close sql/i });
+  expect(close).toHaveAttribute("aria-expanded", "true");
+  fireEvent.click(close);
+
+  expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "SQL" })).toBeInTheDocument();
 });
 
 test("the settings gear offers theme choices from the header", async () => {
