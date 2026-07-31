@@ -20,6 +20,7 @@
 - **Semantic token names must not collide with Tailwind's theme namespace.** Tailwind owns `--font-*`, `--radius-*` and `--color-*` as theme keys, so the semantic tokens are named `--ui-font`, `--mono-font`, `--r-control`, `--r-row` and bridged onto Tailwind's names in `@theme inline`. Naming them `--font-ui`/`--radius-control` directly makes Tailwind emit a circular `--font-ui: var(--font-ui)` that only works by cascade accident, and would silently override Tailwind's own `font-mono` utility. Verified by compiling tailwindcss 4.3.3 both ways.
 - **Tailwind 4 has no `tailwind.config.js`** in this project and must not gain one. Configuration is CSS-first, inside `src/index.css` / `src/theme/tokens.css`.
 - **Existing tests must keep passing** — 39 frontend, 129 backend. They mock `./api/commands` at the module boundary, so a pure presentation change should not disturb them. If one breaks, that is a real signal, not a test to update.
+- **Tests may not import Node builtins.** There is no `@types/node` and `tsconfig.json`'s `types` is `["vitest/globals"]`, so `node:fs`/`node:path`/`process.cwd()` pass under Vitest but fail the `tsc` step of `npm run build`. Read a file with Vite's `?raw` import and list files with `import.meta.glob` — both declared by `vite/client` via `src/vite-env.d.ts`.
 - **Test idiom:** bare top-level `test(...)`, no imports from `vitest`, `fireEvent` from `@testing-library/react`, `jest-dom` matchers via the existing `vitest.setup.ts`. Do not add a testing dependency.
 - **No user-facing copy may claim the app enforces read-only access as a security boundary.**
 
@@ -85,10 +86,12 @@
 Create `src/theme/tokens.test.ts`:
 
 ```ts
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-
-const css = readFileSync(join(process.cwd(), "src/theme/tokens.css"), "utf8");
+// Read through Vite's `?raw` rather than `node:fs`. This project has no
+// `@types/node` and `tsconfig.json`'s `types` is `["vitest/globals"]`, so a Node
+// builtin passes under Vitest but fails the `tsc` step of `npm run build`.
+// `?raw` is declared by `vite/client` (referenced from `src/vite-env.d.ts`),
+// needs no dependency, and resolves relative to this file rather than the cwd.
+import css from "./tokens.css?raw";
 
 /** Every `--token: value;` declared inside the given selector's block. */
 function tokensIn(selector: string): string[] {
@@ -781,16 +784,23 @@ Two additional changes, both from the spec:
 Create `src/components/tokens-only.test.ts`:
 
 ```ts
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-
-const DIR = join(process.cwd(), "src/components");
+// `import.meta.glob` rather than `node:fs`: no `@types/node` exists here and
+// `tsconfig.json`'s `types` is `["vitest/globals"]`, so a Node builtin fails the
+// `tsc` step of `npm run build`. Vite's glob is declared by `vite/client` via
+// `src/vite-env.d.ts`, needs no dependency, and picks up a newly added
+// component automatically.
+const modules = import.meta.glob("./*.tsx", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+}) as Record<string, string>;
 
 /** Every component source, excluding tests — a test may legitimately assert on
  *  a literal, and `.test.tsx` files ship to nobody. */
-const sources = readdirSync(DIR)
-  .filter((name) => name.endsWith(".tsx") && !name.endsWith(".test.tsx"))
-  .sort();
+const sources: { name: string; source: string }[] = Object.entries(modules)
+  .filter(([path]) => !path.endsWith(".test.tsx"))
+  .map(([path, source]) => ({ name: path.replace("./", ""), source }))
+  .sort((a, b) => a.name.localeCompare(b.name));
 
 test("there are components to check", () => {
   expect(sources.length).toBeGreaterThan(5);
@@ -800,8 +810,7 @@ test("there are components to check", () => {
 /// invisible in one theme and wrong in another, and the failure is silent — the
 /// component simply looks off in a theme nobody was testing when they wrote it.
 /// src/theme/tokens.css is the one place literals belong.
-test.each(sources)("%s contains no literal colour", (name) => {
-  const source = readFileSync(join(DIR, name), "utf8");
+test.each(sources)("$name contains no literal colour", ({ source }) => {
   const literals = [
     ...source.matchAll(/#[0-9a-f]{3,8}\b/gi),
     ...source.matchAll(/\b(?:rgb|rgba|hsl|hsla)\(/gi),
@@ -811,8 +820,7 @@ test.each(sources)("%s contains no literal colour", (name) => {
 
 /// Tailwind's built-in palette is just as theme-hostile as a hex literal:
 /// `text-gray-500` is a fixed value that ignores `data-theme` entirely.
-test.each(sources)("%s uses no built-in Tailwind palette colour", (name) => {
-  const source = readFileSync(join(DIR, name), "utf8");
+test.each(sources)("$name uses no built-in Tailwind palette colour", ({ source }) => {
   const palette = [
     ...source.matchAll(
       /\b(?:bg|text|border|ring|from|to|via)-(?:gray|slate|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d{2,3}\b/g,
@@ -821,8 +829,7 @@ test.each(sources)("%s uses no built-in Tailwind palette colour", (name) => {
   expect(palette).toEqual([]);
 });
 
-test.each(sources)("%s uses no bare bg-white or bg-black", (name) => {
-  const source = readFileSync(join(DIR, name), "utf8");
+test.each(sources)("$name uses no bare bg-white or bg-black", ({ source }) => {
   expect(source).not.toMatch(/\b(?:bg|text|border)-(?:white|black)\b/);
 });
 ```
@@ -885,37 +892,31 @@ git commit -m "refactor: style every component through theme tokens"
 
 - [ ] **Step 1: Extend the test to cover App.tsx**
 
-In `src/components/tokens-only.test.ts`, add `src/App.tsx` to the checked set. Replace the `sources` construction with:
+`import.meta.glob` takes a literal pattern, so add a second glob for the shell rather than parameterising the first. In `src/components/tokens-only.test.ts`, after the existing `modules` declaration:
 
 ```ts
-const ROOT = process.cwd();
-const DIR = join(ROOT, "src/components");
-
-/** Component sources plus the app shell. Tests are excluded — a test may
- *  legitimately assert on a literal, and it ships to nobody. */
-const sources: { name: string; path: string }[] = [
-  ...readdirSync(DIR)
-    .filter((name) => name.endsWith(".tsx") && !name.endsWith(".test.tsx"))
-    .sort()
-    .map((name) => ({ name, path: join(DIR, name) })),
-  { name: "App.tsx", path: join(ROOT, "src/App.tsx") },
-];
+const shell = import.meta.glob("../App.tsx", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+}) as Record<string, string>;
 ```
 
-and change each `test.each` to iterate `sources` reading `path`, reporting `name`. For example:
+and extend `sources` to include it:
 
 ```ts
-test.each(sources)("$name contains no literal colour", ({ path }) => {
-  const source = readFileSync(path, "utf8");
-  const literals = [
-    ...source.matchAll(/#[0-9a-f]{3,8}\b/gi),
-    ...source.matchAll(/\b(?:rgb|rgba|hsl|hsla)\(/gi),
-  ].map((match) => match[0]);
-  expect(literals).toEqual([]);
-});
+const sources: { name: string; source: string }[] = [
+  ...Object.entries(modules)
+    .filter(([path]) => !path.endsWith(".test.tsx"))
+    .map(([path, source]) => ({ name: path.replace("./", ""), source })),
+  ...Object.entries(shell).map(([path, source]) => ({
+    name: path.replace("../", ""),
+    source,
+  })),
+].sort((a, b) => a.name.localeCompare(b.name));
 ```
 
-Note the `$name` interpolation — `test.each` over objects uses `$property`, not `%s`.
+The three `test.each(sources)` bodies need no change — they already destructure `{ source }` and report `$name`.
 
 - [ ] **Step 2: Run it to verify it fails**
 
