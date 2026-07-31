@@ -86,12 +86,41 @@ test.each(sources)("$name uses no bare colour keyword in an arbitrary value", ({
   expect(keywords).toEqual([]);
 });
 
-/// Terminal inverts selection (dark text on a moss fill) while the other themes
-/// use ordinary text on a tint, so a `bg-sel-bg` without `text-sel-text` is
-/// light-on-light in Terminal only. No token-parity test can see this.
+/// Terminal inverts selection — dark text on a moss fill — while the other two
+/// themes use ordinary text on a tint. So a `bg-sel-bg` without `text-sel-text`
+/// is illegible in Terminal only, and no token-parity test can see it.
+///
+/// The window is the whole `className={…}` expression, not a quote-delimited
+/// run: two of the three call sites write the class inside a template literal
+/// with a nested double-quoted ternary, and a `[^"`]*` window terminates at the
+/// quote *before* the class it is looking for. That blindness shipped once.
 test.each(sources)("$name pairs bg-sel-bg with text-sel-text", ({ source }) => {
-  const unpaired = [...source.matchAll(/class(?:Name)?=\{?["`][^"`]*\bbg-sel-bg\b[^"`]*["`]/g)]
-    .map((match) => match[0])
-    .filter((snippet) => !/\btext-sel-text\b/.test(snippet));
+  const unpaired: string[] = [];
+  const attribute = /class(?:Name)?=/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = attribute.exec(source)) !== null) {
+    const start = match.index + match[0].length;
+    // Either `className={...}` (balanced braces) or `className="..."`.
+    let expression: string;
+    if (source[start] === "{") {
+      let depth = 0;
+      let index = start;
+      do {
+        if (source[index] === "{") depth += 1;
+        else if (source[index] === "}") depth -= 1;
+        index += 1;
+      } while (depth > 0 && index < source.length);
+      expression = source.slice(start, index);
+    } else {
+      const quote = source[start];
+      const end = source.indexOf(quote, start + 1);
+      expression = source.slice(start, end === -1 ? source.length : end + 1);
+    }
+    if (/\bbg-sel-bg\b/.test(expression) && !/\btext-sel-text\b/.test(expression)) {
+      unpaired.push(expression.replace(/\s+/g, " ").slice(0, 120));
+    }
+  }
+
   expect(unpaired).toEqual([]);
 });
