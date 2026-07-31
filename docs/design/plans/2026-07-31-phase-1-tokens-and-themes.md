@@ -20,6 +20,7 @@
 - **Semantic token names must not collide with Tailwind's theme namespace.** Tailwind owns `--font-*`, `--radius-*` and `--color-*` as theme keys, so the semantic tokens are named `--ui-font`, `--mono-font`, `--r-control`, `--r-row` and bridged onto Tailwind's names in `@theme inline`. Naming them `--font-ui`/`--radius-control` directly makes Tailwind emit a circular `--font-ui: var(--font-ui)` that only works by cascade accident, and would silently override Tailwind's own `font-mono` utility. Verified by compiling tailwindcss 4.3.3 both ways.
 - **Tailwind 4 has no `tailwind.config.js`** in this project and must not gain one. Configuration is CSS-first, inside `src/index.css` / `src/theme/tokens.css`.
 - **Existing tests must keep passing** — 39 frontend, 129 backend. They mock `./api/commands` at the module boundary, so a pure presentation change should not disturb them. If one breaks, that is a real signal, not a test to update.
+- **Vitest stubs `.css` imports to `""`** by default (`css: { include: [] }`), and does not exempt a `?raw` query — a CSS-reading test needs a scoped `test.css.include` entry or it asserts against an empty string and passes vacuously. Verified against vitest 4.1.10. This does **not** affect `.tsx` raw imports, so the component globs in Tasks 4 and 5 need nothing.
 - **Tests may not import Node builtins.** There is no `@types/node` and `tsconfig.json`'s `types` is `["vitest/globals"]`, so `node:fs`/`node:path`/`process.cwd()` pass under Vitest but fail the `tsc` step of `npm run build`. Read a file with Vite's `?raw` import and list files with `import.meta.glob` — both declared by `vite/client` via `src/vite-env.d.ts`.
 - **Test idiom:** bare top-level `test(...)`, no imports from `vitest`, `fireEvent` from `@testing-library/react`, `jest-dom` matchers via the existing `vitest.setup.ts`. Do not add a testing dependency.
 - **No user-facing copy may claim the app enforces read-only access as a security boundary.**
@@ -49,6 +50,7 @@
 - Create: `src/theme/tokens.css`
 - Create: `src/theme/tokens.test.ts`
 - Modify: `src/index.css`
+- Modify: `vitest.config.ts`
 
 **Interfaces:**
 - Consumes: nothing.
@@ -359,7 +361,29 @@ Create `src/theme/tokens.css`. The `:root` block holds Console's values (the def
 
 Order matters: Tailwind first, tokens second, so `@theme inline` is processed with Tailwind's machinery already loaded.
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [ ] **Step 5: Let Vitest actually load the CSS**
+
+Vitest stubs **every** `.css` import to an empty string by default — its
+config default is `css: { include: [] }` — and its matcher does not exempt a
+`?raw` query. So `import css from "./tokens.css?raw"` yields `""` under Vitest
+even though it works in the real build, and the parity tests silently pass
+against nothing.
+
+Add a scoped exemption in `vitest.config.ts`, inside `test`:
+
+```ts
+    // Vitest stubs `.css` imports to "" by default (`css: { include: [] }`),
+    // and its matcher does not exempt a `?raw` query — so tokens.test.ts would
+    // assert against an empty string and pass vacuously. Scoped to this one
+    // file rather than `css: true` so no other test's CSS handling changes.
+    css: { include: [/tokens\.css/] },
+```
+
+Verified against vitest 4.1.10: with the default config a `?raw` CSS import
+returns `""`; with this include it returns the file. Keep it scoped — `css: true`
+would work too but changes CSS handling for every test in the project.
+
+- [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `npm test -- tokens`
 Expected: PASS, 7 tests (1 base + 3 theme parity + 2 follow-system checks + 1 literal check).
@@ -367,10 +391,10 @@ Expected: PASS, 7 tests (1 base + 3 theme parity + 2 follow-system checks + 1 li
 Then: `npm run build`
 Expected: success. This is the real proof the CSS compiles — a malformed token file fails here, not in the unit test.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/theme/tokens.css src/theme/tokens.test.ts src/index.css
+git add src/theme/tokens.css src/theme/tokens.test.ts src/index.css vitest.config.ts
 git commit -m "feat: add a semantic token layer with three themes"
 ```
 
