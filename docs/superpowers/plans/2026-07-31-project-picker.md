@@ -19,8 +19,9 @@
 - **Exact dependency versions:** `tauri-plugin-dialog = "2.7.2"` (Rust), `@tauri-apps/plugin-dialog` `^2.7.2` (JS). Capability permission string is `dialog:allow-open` — least privilege; `dialog:default` would also grant `allow-save` and `allow-message`, which this app does not use.
 - **Test fixtures mirror reality.** Filesystem fixtures follow the existing pattern: committed directories under `src-tauri/tests/fixtures/`. A fixture authored to match the code's assumptions caused this project's one Critical finding.
 - **Tauri macro constraint.** An `async` `#[tauri::command]` that takes a lifetime-bearing parameter (`State<'_, T>`) **must** return `Result<_, _>` — `tauri-macros-2.6.3/src/command/wrapper.rs:176`, upstream tauri-apps/tauri#2533. This is why `ProjectState`'s accessors are synchronous and `list_environments` is a plain `fn`: never add a `Result` that cannot be `Err` just to satisfy this macro.
+- **`AgentPool`'s cache key must include the project root**, not just `(environment, identity)`. Commands snapshot the project then await, so a command begun before a project switch can insert an agent for the old project *after* `clear()` has run; only a project-scoped key stops that entry being served to the new project. See Task 4's "load-bearing correctness point".
 - **Rust MSRV 1.96.0.** Do not use APIs newer than that.
-- **`cargo test` from `src-tauri/`, `npm test` from the repo root.** Both suites must be green at every commit. Baseline: 100 backend tests, 25 frontend tests. Final: 123 backend, 36 frontend.
+- **`cargo test` from `src-tauri/`, `npm test` from the repo root.** Both suites must be green at every commit. Baseline: 100 backend tests, 25 frontend tests. Final: 125 backend, 36 frontend.
 
 ## Spec deviation you must know about
 
@@ -841,21 +842,156 @@ git commit -m "feat: make the open project mutable, optional managed state"
 - Consumes: `discovery::resolve_root` (Task 1), `project::config::{read_recorded_root, write_recorded_root}` (Task 2), `project::ProjectState::{snapshot, replace}` (Task 3 — both **synchronous**, no `.await`).
 - Produces:
   - `agent::AgentPool::clear(&self)` — async
+  - `agent::AgentPool::get(&self, root: &Path, env: &Environment, identity: &IdentityRef)` — **signature change**: gains `root` as its first parameter
   - `commands::ProjectSelection { project: Project, persist_warning: Option<String> }`, serialized camelCase
   - `commands::select_project(path, project, pool, app) -> Result<ProjectSelection, AppError>`
 
-**Why the pool must be cleared** — the load-bearing correctness point of this whole feature. `AgentPool` is keyed `(Environment::name, IdentityRef::name)` (`agent/mod.rs`, `cache_key`). Two projects both having a `local` environment with a `default` identity is the **normal** case. Without invalidation, switching from project A to B and querying `local` reuses A's cached agent — pointed at **A's replica URL** — and renders B's canister ids against A's replica. That is wrong data shown confidently, the failure class this project has hit repeatedly.
+## The load-bearing correctness point of this whole feature
 
-- [ ] **Step 1: Write the failing test for `clear`**
+`AgentPool` is keyed `(Environment::name, IdentityRef::name)` (`agent/mod.rs:142`, `cache_key`). Two projects both having a `local` environment with a `default` identity is the **normal** case. Without invalidation, switching from project A to B and querying `local` reuses A's cached agent — pointed at **A's replica URL** — and renders B's canister ids against A's replica. Wrong data shown confidently: the failure class this project has hit repeatedly.
+
+**Clearing the pool alone does not fix this, and this task must do both things.** Task 3's review found the hole. Because every command takes a `ProjectState::snapshot()` and *then* awaits network calls, a command that started before a project switch outlives the clear:
+
+1. The frontend invokes `fetch_rows(env = "local")`. It snapshots project **A**, then awaits.
+2. The user picks project **B**. `select_project` runs `pool.clear()`, then `replace(B)`.
+3. The in-flight command resumes and calls `pool.get(A_env, …)`. Cache miss — so it **builds an agent for A's replica URL and inserts it** under the key `("local", "default")`.
+4. The next query for **B** in env `local` hits that entry and runs B's canister ids against **A's replica**.
+
+Snapshot isolation is correct and must stay — a command must see one consistent project for its whole life. The fix is to make the cache key carry the project, so a late insert from project A can never be served to project B:
+
+- **`cache_key` gains the project root as a third component**, length-prefixed like the other two. Each command derives it from *its own snapshot*, so the agent and the canister ids it queries always come from the same project view. A stale insert lands under A's key and is simply never looked up again.
+- **`clear()` still runs on every switch.** It is no longer load-bearing for correctness, but it is what stops the pool retaining agents — and the private key material they hold — for projects the user has walked away from.
+
+The design spec recorded root-in-the-key and clearing as *alternatives*, and rejected the key on retention grounds. That was wrong: they are complements, and doing both gets correctness from the key and retention hygiene from the clear.
+
+- [ ] **Step 1a: Write the failing test for the project-scoped cache key**
+
+In `src-tauri/src/agent/mod.rs`, inside the existing `#[cfg(test)] mod tests`, beside the existing `cache_key` tests:
+
+```rust
+    /// Two projects that each declare a `local` environment with a `default`
+    /// identity are the normal case, not an edge case, so the project root
+    /// must be part of the key. Without it, an agent built for one project's
+    /// replica can be served to another project's queries — see this task's
+    /// "load-bearing correctness point" note for the exact interleaving.
+    #[test]
+    fn the_cache_key_distinguishes_projects_with_identical_env_and_identity() {
+        let a = cache_key(Path::new("/projects/alpha"), "local", "default");
+        let b = cache_key(Path::new("/projects/beta"), "local", "default");
+        assert_ne!(a, b);
+    }
+
+    /// The length prefixes exist so no combination of separator characters
+    /// inside a root, environment, or identity name can make two different
+    /// triples collide. A project literally named `local` is the kind of
+    /// input that would break naive concatenation.
+    #[test]
+    fn the_cache_key_cannot_be_confused_by_a_separator_in_a_root() {
+        let a = cache_key(Path::new("/p/local"), "default", "x");
+        let b = cache_key(Path::new("/p"), "local:default", "x");
+        assert_ne!(a, b);
+    }
+```
+
+Add `use std::path::Path;` to the test module's imports if it is not already there.
+
+- [ ] **Step 1b: Make the cache key project-scoped**
+
+`cache_key` currently reads (`src-tauri/src/agent/mod.rs:142`):
+
+```rust
+fn cache_key(env: &str, identity: &str) -> String {
+    format!("{}:{env}:{}:{identity}", env.len(), identity.len())
+}
+```
+
+Replace it with:
+
+```rust
+/// A collision-free key for one `(project, environment, identity)` triple.
+///
+/// Every component is length-prefixed so no arrangement of `:` inside a
+/// path, environment name, or identity name can make two different triples
+/// produce the same key.
+///
+/// The **project root** is part of the key because clearing the pool on a
+/// project switch is not sufficient on its own. Commands snapshot the open
+/// project and *then* await network calls, so a command that began before a
+/// switch can finish after it and insert an agent built for the previous
+/// project — under a key the new project would otherwise look up. Keying by
+/// root means such a late insert lands where only the project it belongs to
+/// can find it.
+fn cache_key(root: &Path, env: &str, identity: &str) -> String {
+    let root = root.to_string_lossy();
+    format!(
+        "{}:{root}:{}:{env}:{}:{identity}",
+        root.len(),
+        env.len(),
+        identity.len()
+    )
+}
+```
+
+Add `use std::path::Path;` to the module's imports.
+
+Then thread `root` through `get`:
+
+```rust
+    pub async fn get(
+        &self,
+        root: &Path,
+        env: &Environment,
+        identity: &IdentityRef,
+    ) -> Result<Arc<Agent>, AppError> {
+        let key = cache_key(root, &env.name, &identity.name);
+```
+
+The rest of `get`'s body is unchanged. Update its doc comment to note that the key is per-project and why.
+
+**The existing test `the_cache_key_distinguishes_identities_within_one_environment` and `the_cache_key_cannot_be_confused_by_a_separator_in_a_name` will stop compiling** — they call `cache_key` with two arguments. Add a project root argument to both; keep what each asserts unchanged. Do not delete them.
+
+- [ ] **Step 1c: Thread the root through every `pool.get` call site**
+
+In `src-tauri/src/commands.rs` there are three direct `pool.get` calls and one helper that wraps a fourth. Each already has the snapshotted `project` in scope, so the root comes from `project.root` — the *same* snapshot whose canister ids the query will use, which is the whole point.
+
+`query_dto` (line ~112) gains a `root` parameter, placed first so it reads as the scope the rest of the arguments live in:
+
+```rust
+async fn query_dto(
+    pool: &AgentPool,
+    root: &std::path::Path,
+    environment: &Environment,
+    identity_ref: &IdentityRef,
+    canister: Principal,
+    sql: &str,
+) -> Result<ResultDto, AppError> {
+    let agent = pool.get(root, environment, identity_ref).await?;
+```
+
+The call sites to update, all in `src-tauri/src/commands.rs`:
+
+| Line (approx) | Current | Becomes |
+|---|---|---|
+| 160 (`select_identity`) | `pool.get(environment, identity_ref)` | `pool.get(&project.root, environment, identity_ref)` |
+| 193 (`canister_tree`) | `pool.get(environment, identity_ref)` | `pool.get(&project.root, environment, identity_ref)` |
+| 216 (`list_tables`) | `query_dto(&pool, environment, …)` | `query_dto(&pool, &project.root, environment, …)` |
+| 234 (`describe_table`) | `query_dto(&pool, environment, …)` | `query_dto(&pool, &project.root, environment, …)` |
+| 299 (`fetch_rows`, DESCRIBE) | `query_dto(&pool, environment, …)` | `query_dto(&pool, &project.root, environment, …)` |
+| 324 (`fetch_rows`, rows) | `query_dto(&pool, environment, …)` | `query_dto(&pool, &project.root, environment, …)` |
+| 351 (`run_sql`) | `query_dto(&pool, environment, …)` | `query_dto(&pool, &project.root, environment, …)` |
+
+Locate them by the `pool.get(` / `query_dto(` calls rather than trusting the line numbers, and verify with `grep -n "pool.get(\|query_dto(" src-tauri/src/commands.rs` that **no** two-argument `pool.get` remains.
+
+- [ ] **Step 1d: Write the failing test for `clear`**
 
 In `src-tauri/src/agent/mod.rs`, inside the existing `#[cfg(test)] mod tests`, add:
 
 ```rust
-    /// Switching projects must invalidate every cached agent: the cache key
-    /// is `(environment name, identity name)`, and two different projects
-    /// both having a `local` environment with a `default` identity is the
-    /// normal case, not an edge case. A stale entry would serve the previous
-    /// project's replica URL under the new project's environment name.
+    /// Switching projects drops every cached agent. Correctness no longer
+    /// rests on this — `cache_key` includes the project root, so a stale
+    /// entry can never be served to a different project — but retention
+    /// hygiene does: without it the pool keeps agents, and the private key
+    /// material they hold, for projects the user has walked away from.
     #[tokio::test]
     async fn clear_empties_the_cache() {
         // `AgentBuilder::build` defaults the identity to anonymous and makes
@@ -888,29 +1024,30 @@ In `src-tauri/src/agent/mod.rs`, inside the existing `#[cfg(test)] mod tests`, a
 
 The key strings are arbitrary — `clear` doesn't parse them, and all this test needs is two distinct entries. Do not weaken the `is_empty()` assertion for any reason.
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 2: Run the tests to verify the state of things**
 
-Run: `cd src-tauri && cargo test agent::tests::clear_empties_the_cache`
-Expected: FAIL — `no method named 'clear' found for struct 'AgentPool'`.
+Run: `cd src-tauri && cargo test agent::`
+Expected: the two new `cache_key` tests and the four amended/existing ones PASS (Steps 1a-1c are already implemented by the time you run this), and `clear_empties_the_cache` FAILS with `no method named 'clear' found for struct 'AgentPool'`.
+
+If any `cache_key` test fails, stop — the key change is wrong and `clear` is not the problem.
 
 - [ ] **Step 3: Implement `clear`**
 
 In `src-tauri/src/agent/mod.rs`, in `impl AgentPool`, after `get`:
 
 ```rust
-    /// Drops every cached agent.
+    /// Drops every cached agent. Called when the open project changes.
     ///
-    /// Called when the open project changes. The cache key is
-    /// `(environment name, identity name)` — which is *not* unique across
-    /// projects, since two projects both having a `local` environment with a
-    /// `default` identity is the normal case. Left uncleared, a switch would
-    /// keep serving the previous project's agent, pointed at the previous
-    /// project's replica URL, under the new project's environment name.
+    /// This is **retention hygiene, not correctness**. Correctness comes from
+    /// `cache_key` including the project root: a command that snapshotted the
+    /// previous project and finishes after the switch inserts under that
+    /// project's key, where the new project will never look it up. Clearing
+    /// alone could not provide that guarantee, because such a late insert
+    /// happens *after* the clear has already run.
     ///
-    /// Clearing rather than folding the project root into the key is
-    /// deliberate: a longer key would be correct too, but would retain
-    /// agents — and the private key material they hold — for projects the
-    /// user has left. The cost is that switching back re-loads identities,
+    /// What clearing does provide is that the pool stops holding agents — and
+    /// the private key material inside them — for projects the user has
+    /// walked away from. The cost is that switching back re-loads identities,
     /// which may re-prompt the OS keychain.
     pub async fn clear(&self) {
         self.agents.lock().await.clear();
@@ -1048,7 +1185,7 @@ Replace the `permissions` array in `src-tauri/capabilities/default.json`:
 - [ ] **Step 8: Run the full suite**
 
 Run: `cd src-tauri && cargo test`
-Expected: PASS, 123 tests.
+Expected: PASS, 125 tests (122 from Task 3, plus two new `cache_key` tests and `clear_empties_the_cache`).
 
 Then confirm the app builds with the plugin registered: `cd src-tauri && cargo build`
 Expected: success, no warnings.
@@ -1649,7 +1786,7 @@ Add a line under it recording why: `The spec originally separated these; impleme
 
 - [ ] **Step 3: Verify both suites are still green**
 
-Run: `cd src-tauri && cargo test` — expected PASS, 123 tests.
+Run: `cd src-tauri && cargo test` — expected PASS, 125 tests.
 Run: `npm test` — expected PASS, 36 tests.
 
 - [ ] **Step 4: Commit**
