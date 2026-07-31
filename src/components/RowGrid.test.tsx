@@ -110,3 +110,75 @@ test("an empty result is not mistaken for loading", () => {
   expect(screen.getByText(/no rows/i)).toBeInTheDocument();
   expect(document.querySelectorAll('[data-skeleton="true"]')).toHaveLength(0);
 });
+
+/// Zebra striping must derive from the row's position in the *data*, not its
+/// position in the DOM: the expansion sub-row is itself a `<tr>` in the same
+/// `<tbody>`, so a DOM-order-based stripe (`:nth-child`) reshuffles every row
+/// below the one that gets expanded. Four rows, expand the second (not the
+/// last) and check every row *below* it kept its pre-expansion stripe.
+test("expanding a cell does not reshuffle the zebra striping of rows below it", () => {
+  const striped = {
+    entity: "demo_row",
+    columns: ["id", "profile"],
+    rows: [0, 1, 2, 3].map((index) => [
+      { kind: "ulid", display: `01H-row-${index}` },
+      { kind: "map", display: `${STRUCTURED} ${index}` },
+    ]),
+    rowCount: 4,
+    nextCursor: null,
+  };
+
+  render(<RowGrid rows={striped} hasMore={false} onLoadMore={() => {}} />);
+
+  // Only the data rows: excludes any sub-row, which is identifiable by its
+  // `colspan` cell regardless of where it currently sits in the tbody.
+  const dataRows = () =>
+    [...document.querySelectorAll("tbody tr")].filter((tr) => !tr.querySelector("td[colspan]"));
+  const stripeOf = (tr: Element) => tr.classList.contains("bg-surface-1");
+
+  const before = dataRows().map(stripeOf);
+  expect(before).toEqual([true, false, true, false]);
+
+  const buttons = screen.getAllByRole("button", { name: /expand/i });
+  fireEvent.click(buttons[1]); // expand row index 1 (not the last row)
+
+  const after = dataRows();
+  expect(after).toHaveLength(4);
+  // Rows below the expanded one must keep the exact class they had before.
+  expect(stripeOf(after[2])).toBe(before[2]);
+  expect(stripeOf(after[3])).toBe(before[3]);
+});
+
+/// The whole reason `expanded` is a single `{row, column}` object rather than
+/// per-cell state: opening a cell in one row must not leak into another row.
+/// The existing suite only ever expands within a single-row fixture, so the
+/// `expanded.row !== rowIndex` branch has never actually been exercised.
+test("expanding a cell in a different row shows only that row's sub-row", () => {
+  const rowA =
+    '{name: "Alpha", socials: {github: "alpha-handle", bluesky: null}, tags: ["red", "primary"]}';
+  const rowB =
+    '{name: "Bravo", socials: {github: "bravo-handle", bluesky: null}, tags: ["blue", "secondary"]}';
+  const twoRows = {
+    entity: "User",
+    columns: ["id", "profile"],
+    rows: [
+      [{ kind: "ulid", display: "01A" }, { kind: "map", display: rowA }],
+      [{ kind: "ulid", display: "01B" }, { kind: "map", display: rowB }],
+    ],
+    rowCount: 2,
+    nextCursor: null,
+  };
+
+  render(<RowGrid rows={twoRows} hasMore={false} onLoadMore={() => {}} />);
+
+  const buttons = screen.getAllByRole("button", { name: /expand/i });
+  fireEvent.click(buttons[0]); // open row 0's cell
+  fireEvent.click(buttons[1]); // open row 1's cell — must close row 0's, not add to it
+
+  const subRows = document.querySelectorAll("td[colspan]");
+  expect(subRows).toHaveLength(1);
+  expect(subRows[0].textContent).toContain("Bravo");
+  expect(subRows[0].textContent).toContain("bravo-handle");
+  expect(subRows[0].textContent).not.toContain("Alpha");
+  expect(subRows[0].textContent).not.toContain("alpha-handle");
+});

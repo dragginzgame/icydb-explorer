@@ -136,12 +136,22 @@ function ExpandableRow({
   openColumn: number | null;
   onToggle: (row: number, column: number) => void;
 }) {
+  // Stripe by the row's position in the *data*, not in the DOM. The sub-row
+  // rendered below (when this row's cell is open) is itself a sibling `<tr>`
+  // in the same `<tbody>`, so an `nth-child`-based selector (Tailwind's
+  // `odd:`) would count it too — inserting or removing that one extra `<tr>`
+  // shifts the DOM parity of every row beneath it, and the banding would
+  // visibly reshuffle on every expand/collapse. Keying off `rowIndex` instead
+  // ties the stripe to the data, so a sub-row appearing or disappearing next
+  // to it cannot move it.
+  const striped = rowIndex % 2 === 0;
+
   return (
     <>
       {/* Zebra on `surface-1`, not `surface-inset`: the sticky header uses
           `surface-inset`, so zebra there would make every other data row the
           same colour as the header and defeat both cues at once. */}
-      <tr className="border-b border-rule odd:bg-surface-1">
+      <tr className={["border-b border-rule", striped && "bg-surface-1"].filter(Boolean).join(" ")}>
         {row.map((cell, columnIndex) => (
           // eslint-disable-next-line react/no-array-index-key
           <td key={columnIndex} className="px-2 py-1 align-top">
