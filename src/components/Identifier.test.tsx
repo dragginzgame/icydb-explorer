@@ -42,20 +42,58 @@ test("confirms after a successful copy", async () => {
   expect(await screen.findByText(/copied/i)).toBeInTheDocument();
 });
 
-/// Confirming a copy that did not happen is worse than saying nothing.
+/// Waits for the failure path to actually COMPLETE before asserting absence.
+/// `execCommand` being called is the observable proof that `copyText` fell
+/// through and reported failure; without that wait, the assertion below runs
+/// before the rejected promise's continuation is even queued and would pass
+/// with the click handler removed entirely.
 test("does not claim success when the copy failed", async () => {
+  const attempts: string[] = [];
   Object.defineProperty(navigator, "clipboard", {
-    value: {
-      writeText: () => Promise.reject(new Error("denied")),
-    },
+    value: { writeText: () => Promise.reject(new Error("denied")) },
     configurable: true,
   });
-  document.execCommand = (() => false) as typeof document.execCommand;
+  const original = document.execCommand;
+  document.execCommand = ((command: string) => {
+    attempts.push(command);
+    return false;
+  }) as typeof document.execCommand;
 
-  render(<Identifier value={PRINCIPAL} />);
-  fireEvent.click(screen.getByRole("button"));
+  try {
+    render(<Identifier value={PRINCIPAL} />);
+    fireEvent.click(screen.getByRole("button"));
 
-  await waitFor(() => expect(screen.queryByText(/copied/i)).toBeNull());
+    await waitFor(() => expect(attempts).toEqual(["copy"]));
+    expect(screen.queryByText(/copied/i)).toBeNull();
+  } finally {
+    document.execCommand = original;
+  }
+});
+
+/// Regression test for the confirmation timer: without a ref tracking the
+/// pending hide, the first click's timeout fires and hides the confirmation
+/// that the second click just retriggered.
+test("a second click restarts the confirmation rather than inheriting the first timer", async () => {
+  Object.defineProperty(navigator, "clipboard", {
+    value: { writeText: async () => {} },
+    configurable: true,
+  });
+  vi.useFakeTimers();
+  try {
+    render(<Identifier value={PRINCIPAL} />);
+    const button = screen.getByRole("button");
+
+    fireEvent.click(button);
+    await vi.advanceTimersByTimeAsync(800);
+    fireEvent.click(button);
+    // 1300ms after the FIRST click: the first click's timer has fired. Without
+    // the ref the confirmation would already be gone.
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(screen.queryByText(/copied/i)).not.toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("leaves a short value unelided", () => {

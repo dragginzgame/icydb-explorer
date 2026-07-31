@@ -6,11 +6,12 @@
  * identically. Groups are never split — a partial group reads as a different
  * identifier rather than a shortened one.
  *
- * Dash-separated values (principals, canister ids) keep their first and last
- * two groups. Values with no separators (ULIDs, hex digests) fall back to a
- * character split. The full value is always available to the caller, which is
- * why `Identifier` puts it in `title` and copies it on click — this function is
- * for display only and is deliberately lossy.
+ * Dash-separated values with four or more groups (principals, canister ids)
+ * keep their first and last two groups. Anything else — no separators at all
+ * (ULIDs, hex digests), or too few groups to keep two from each end — falls
+ * back to a character split. The full value is always available to the
+ * caller, which is why `Identifier` puts it in `title` and copies it on click
+ * — this function is for display only and is deliberately lossy.
  */
 export function elide(value: string, max = 24): string {
   if (value.length <= max) return value;

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { copyText } from "../lib/copyText";
 import { elide } from "../lib/elide";
@@ -15,12 +15,19 @@ import { elide } from "../lib/elide";
  *  worse than showing nothing. */
 export function Identifier({ value, className }: { value: string; className?: string }) {
   const [copied, setCopied] = useState(false);
+  // The pending hide, so a second click cannot have its confirmation cut short
+  // by the first click's timer — and so nothing is left scheduled after this
+  // row unmounts, which happens routinely as the grid pages.
+  const hideTimer = useRef<number | undefined>(undefined);
+
+  useEffect(() => () => window.clearTimeout(hideTimer.current), []);
 
   const copy = () => {
     void copyText(value).then((ok) => {
       if (!ok) return;
+      window.clearTimeout(hideTimer.current);
       setCopied(true);
-      window.setTimeout(() => setCopied(false), 1200);
+      hideTimer.current = window.setTimeout(() => setCopied(false), 1200);
     });
   };
 
