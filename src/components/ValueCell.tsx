@@ -94,10 +94,17 @@ export function formatExpanded(display: string): string {
  *  expansion is, rather than a tooltip or a modal. */
 export function ValueCell({
   value,
+  column,
   expanded = false,
   onToggle,
 }: {
   value: ValueDto;
+  /** The column this cell sits in, used to name the expand control. A row with
+   *  three structured columns otherwise yields three buttons all called "Expand
+   *  value", which tells a screen-reader user nothing about which is which —
+   *  and is why the tests had to resort to positional indexing. Optional so a
+   *  `ValueCell` rendered outside a grid still names its control sensibly. */
+  column?: string;
   expanded?: boolean;
   onToggle?: () => void;
 }) {
@@ -142,7 +149,7 @@ export function ValueCell({
       <button
         type="button"
         onClick={onToggle}
-        aria-label={expanded ? "Collapse value" : "Expand value"}
+        aria-label={`${expanded ? "Collapse" : "Expand"} ${column ?? "value"}`}
         aria-expanded={expanded}
         className="shrink-0 rounded-row px-1 text-xs leading-5 text-text-3 hover:bg-surface-2"
       >

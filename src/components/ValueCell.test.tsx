@@ -45,6 +45,34 @@ test("the affordance reflects the expanded state", () => {
   expect(screen.getByRole("button", { name: /collapse/i })).toBeInTheDocument();
 });
 
+/// The column name is what makes one expand control distinguishable from the
+/// next. Without it a row with three structured columns has three buttons all
+/// named "Expand value".
+test("the affordance names its column", () => {
+  const { unmount } = render(
+    <ValueCell value={{ kind: "map", display: STRUCTURED }} column="profile" onToggle={vi.fn()} />,
+  );
+  expect(screen.getByRole("button", { name: "Expand profile" })).toBeInTheDocument();
+  unmount();
+
+  render(
+    <ValueCell
+      value={{ kind: "map", display: STRUCTURED }}
+      column="profile"
+      expanded
+      onToggle={vi.fn()}
+    />,
+  );
+  expect(screen.getByRole("button", { name: "Collapse profile" })).toBeInTheDocument();
+});
+
+/// A `ValueCell` used outside the grid has no column to name, and an aria-label
+/// of "Expand undefined" would be worse than the generic one.
+test("the affordance falls back to a generic name with no column", () => {
+  render(<ValueCell value={{ kind: "map", display: STRUCTURED }} onToggle={vi.fn()} />);
+  expect(screen.getByRole("button", { name: "Expand value" })).toBeInTheDocument();
+});
+
 /// Clipped text still has to be reachable without expanding.
 test("a clipped value exposes its full text in title", () => {
   render(<ValueCell value={{ kind: "map", display: STRUCTURED }} onToggle={vi.fn()} />);

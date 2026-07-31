@@ -99,6 +99,7 @@ export function RowGrid({
                   key={rowIndex}
                   row={row}
                   rowIndex={rowIndex}
+                  columns={rows.columns}
                   openColumn={openColumn}
                   onToggle={toggle}
                 />
@@ -128,11 +129,13 @@ export function RowGrid({
 function ExpandableRow({
   row,
   rowIndex,
+  columns,
   openColumn,
   onToggle,
 }: {
   row: RowsDto["rows"][number];
   rowIndex: number;
+  columns: string[];
   openColumn: number | null;
   onToggle: (row: number, column: number) => void;
 }) {
@@ -157,6 +160,7 @@ function ExpandableRow({
           <td key={columnIndex} className="px-2 py-1 align-top">
             <ValueCell
               value={cell}
+              column={columns[columnIndex]}
               expanded={openColumn === columnIndex}
               onToggle={
                 isExpandable(cell) ? () => onToggle(rowIndex, columnIndex) : undefined

@@ -66,6 +66,36 @@ test("collapsing removes the sub-row", () => {
   expect(document.querySelector("td[colspan]")).toBeNull();
 });
 
+/// Every expand control used to be named "Expand value", so a row with several
+/// structured columns gave a screen-reader user a list of identical buttons —
+/// and forced these tests onto positional indexing. The grid knows the column
+/// names, so it threads them through.
+test("each expand control is named for its column", () => {
+  const twoStructured = {
+    entity: "User",
+    columns: ["profile", "settings"],
+    rows: [
+      [
+        { kind: "map", display: STRUCTURED },
+        { kind: "map", display: `${STRUCTURED} ` },
+      ],
+    ],
+    rowCount: 1,
+    nextCursor: null,
+  };
+  render(<RowGrid rows={twoStructured} hasMore={false} onLoadMore={() => {}} />);
+
+  const names = screen
+    .getAllByRole("button", { name: /expand/i })
+    .map((button) => button.getAttribute("aria-label"));
+  expect(names).toEqual(["Expand profile", "Expand settings"]);
+  // Distinguishable is the actual requirement, not merely non-empty.
+  expect(new Set(names).size).toBe(names.length);
+
+  fireEvent.click(screen.getByRole("button", { name: "Expand settings" }));
+  expect(screen.getByRole("button", { name: "Collapse settings" })).toBeInTheDocument();
+});
+
 /// One cell at a time: two open sub-rows in a wide table push the row you were
 /// reading off-screen.
 test("expanding a second cell closes the first", () => {
