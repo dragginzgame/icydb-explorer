@@ -9,12 +9,25 @@ const modules = import.meta.glob("./*.tsx", {
   eager: true,
 }) as Record<string, string>;
 
-/** Every component source, excluding tests — a test may legitimately assert on
- *  a literal, and `.test.tsx` files ship to nobody. */
-const sources: { name: string; source: string }[] = Object.entries(modules)
-  .filter(([path]) => !path.endsWith(".test.tsx"))
-  .map(([path, source]) => ({ name: path.replace("./", ""), source }))
-  .sort((a, b) => a.name.localeCompare(b.name));
+// `import.meta.glob` takes a literal pattern, so the app shell is covered by a
+// second glob rather than by parameterising the one above.
+const shell = import.meta.glob("../App.tsx", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+}) as Record<string, string>;
+
+/** Every component source, excluding tests, plus the app shell — a test may
+ *  legitimately assert on a literal, and `.test.tsx` files ship to nobody. */
+const sources: { name: string; source: string }[] = [
+  ...Object.entries(modules)
+    .filter(([path]) => !path.endsWith(".test.tsx"))
+    .map(([path, source]) => ({ name: path.replace("./", ""), source })),
+  ...Object.entries(shell).map(([path, source]) => ({
+    name: path.replace("../", ""),
+    source,
+  })),
+].sort((a, b) => a.name.localeCompare(b.name));
 
 test("there are components to check", () => {
   expect(sources.length).toBeGreaterThan(5);
