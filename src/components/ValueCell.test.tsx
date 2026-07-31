@@ -57,6 +57,37 @@ test("isExpandable is true only for values that would clip", () => {
   expect(isExpandable({ kind: "null", display: "" })).toBe(false);
 });
 
+test("isExpandable is false at the threshold and true one character over", () => {
+  expect(isExpandable({ kind: "text", display: "x".repeat(48) })).toBe(false);
+  expect(isExpandable({ kind: "text", display: "x".repeat(49) })).toBe(true);
+});
+
+/// The central fix of this phase. jsdom cannot execute CSS layout, so this
+/// asserts the mechanism is present rather than that clipping occurs — without a
+/// bounded box `truncate` does nothing at all, and one structured value pushes
+/// every later column off-screen. That was the bug; this is the only thing
+/// standing between a future edit and its return.
+test("a non-expandable value renders in a width-bounded, clipping box", () => {
+  const { container } = render(<ValueCell value={{ kind: "text", display: "short" }} />);
+  expect(container.firstChild).toHaveClass("max-w-88");
+  expect(container.firstChild).toHaveClass("truncate");
+});
+
+/// The expandable branch needs the cap and the clip on *different* elements: the
+/// cap bounds the flex row, and the text child needs `min-w-0` because a flex
+/// item defaults to `min-width: auto` and will refuse to shrink below its
+/// content — so without it the cap is inert and the column blows out anyway.
+test("an expandable value bounds the row and lets its text shrink to clip", () => {
+  const { container } = render(
+    <ValueCell value={{ kind: "map", display: STRUCTURED }} onToggle={vi.fn()} />,
+  );
+  expect(container.firstChild).toHaveClass("max-w-88");
+
+  const text = screen.getByTitle(STRUCTURED);
+  expect(text).toHaveClass("truncate");
+  expect(text).toHaveClass("min-w-0");
+});
+
 /// Arrays read one item per line — a truncated bracket soup tells the reader
 /// nothing, which is the complaint that started this phase.
 test("formatExpanded puts each array item on its own line", () => {
