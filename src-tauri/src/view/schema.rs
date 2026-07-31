@@ -7,11 +7,11 @@
 //! below goes through those accessors rather than field access.
 
 use icydb::db::{
-    EntityCatalogDescription, EntityFieldDescription, EntitySchemaDescription,
-    MemoryCatalogDescription, StoreCatalogDescription,
+    EntityCatalogDescription, EntityConstraintDescription, EntityFieldDescription,
+    EntitySchemaDescription, MemoryCatalogDescription, StoreCatalogDescription,
 };
 
-use super::dto::{ColumnDto, EntityDto, MemoryDto, SchemaDto, StoreDto};
+use super::dto::{ColumnDto, ConstraintDto, EntityDto, MemoryDto, SchemaDto, StoreDto};
 
 /// Shared by `ShowColumns` and `Describe` — both produce column data, from
 /// different icydb types, but the field→`ColumnDto` shape is identical.
@@ -64,5 +64,86 @@ pub(super) fn memory_catalog_to_dto(memory: &MemoryCatalogDescription) -> Memory
         tag: memory.tag().to_string(),
         memory_id: memory.memory_id(),
         store_path: memory.store_path().to_string(),
+    }
+}
+
+/// Reads an `EntityConstraintDescription` through its accessors — its fields
+/// are private, like every other icydb description type.
+pub(super) fn constraint_to_dto(constraint: &EntityConstraintDescription) -> ConstraintDto {
+    ConstraintDto {
+        name: constraint.name().to_string(),
+        kind: constraint.kind().to_string(),
+        origin: constraint.origin().to_string(),
+        validation_state: constraint.validation_state().to_string(),
+        fields: constraint.fields().to_vec(),
+        semantics: constraint.semantics().to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use candid::{CandidType, Decode, Encode};
+    use serde::Deserialize;
+
+    /// Mirrors `EntityConstraintDescription`'s candid shape so a real one can
+    /// be constructed for tests — its fields are `pub(crate)` and it has no
+    /// public constructor, but it derives `CandidType`/`Deserialize`, and
+    /// candid is structural. Field names and types must match icydb's
+    /// exactly or the decode fails loudly, which is the desired behaviour if
+    /// icydb changes the shape. Verified against
+    /// `icydb-core-0.215.5/src/db/schema/describe.rs:269-285`.
+    #[derive(CandidType, Deserialize)]
+    struct ConstraintWire {
+        id: u32,
+        name: String,
+        kind: String,
+        origin: String,
+        validation_state: String,
+        validation_progress: Option<candid::Reserved>,
+        field_id: Option<u32>,
+        index_id: Option<u32>,
+        relation_id: Option<u32>,
+        fields: Vec<String>,
+        index: Option<String>,
+        relation: Option<String>,
+        target_entity: Option<String>,
+        action: Option<String>,
+        semantics: String,
+        check_sql: Option<String>,
+    }
+
+    fn sample_constraint() -> EntityConstraintDescription {
+        let wire = ConstraintWire {
+            id: 1,
+            name: "demo_row_pk".into(),
+            kind: "primary_key".into(),
+            origin: "declared".into(),
+            validation_state: "valid".into(),
+            validation_progress: None,
+            field_id: Some(0),
+            index_id: None,
+            relation_id: None,
+            fields: vec!["id".into()],
+            index: None,
+            relation: None,
+            target_entity: None,
+            action: None,
+            semantics: "immediate".into(),
+            check_sql: None,
+        };
+        let bytes = Encode!(&wire).expect("wire encode");
+        Decode!(&bytes, EntityConstraintDescription).expect("decode as icydb's type")
+    }
+
+    #[test]
+    fn a_constraint_maps_each_field_from_its_own_accessor() {
+        let dto = constraint_to_dto(&sample_constraint());
+        assert_eq!(dto.name, "demo_row_pk");
+        assert_eq!(dto.kind, "primary_key");
+        assert_eq!(dto.origin, "declared");
+        assert_eq!(dto.validation_state, "valid");
+        assert_eq!(dto.fields, vec!["id".to_string()]);
+        assert_eq!(dto.semantics, "immediate");
     }
 }

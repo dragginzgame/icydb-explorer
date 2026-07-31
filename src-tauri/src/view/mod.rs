@@ -10,13 +10,16 @@ mod dto;
 mod schema;
 mod value;
 
-pub use dto::{ColumnDto, EntityDto, MemoryDto, ResultDto, RowsDto, SchemaDto, StoreDto, ValueDto};
+pub use dto::{
+    ColumnDto, ConstraintDto, EntityDto, MemoryDto, ResultDto, RowsDto, SchemaDto, StoreDto,
+    ValueDto,
+};
 pub use value::value_to_dto;
 
 use icydb::db::sql::SqlQueryResult;
 use schema::{
-    entity_catalog_to_dto, field_to_column, memory_catalog_to_dto, schema_description_to_dto,
-    store_catalog_to_dto,
+    constraint_to_dto, entity_catalog_to_dto, field_to_column, memory_catalog_to_dto,
+    schema_description_to_dto, store_catalog_to_dto,
 };
 use value::rendered_text_to_dto;
 
@@ -89,6 +92,10 @@ pub fn result_to_dto(result: SqlQueryResult) -> Result<ResultDto, AppError> {
         },
         SqlQueryResult::ShowMemory { memory } => ResultDto::Memory {
             memory: memory.iter().map(memory_catalog_to_dto).collect(),
+        },
+        SqlQueryResult::ShowConstraints { entity, constraints } => ResultDto::Constraints {
+            entity,
+            constraints: constraints.iter().map(constraint_to_dto).collect(),
         },
         // This explorer never issues DDL: Task 5's statement classifier
         // rejects DDL before it reaches a canister, and the canister side
@@ -253,8 +260,44 @@ mod tests {
             status: "ok".into(),
             rows_scanned: 0,
             index_keys_written: 0,
+            // 0.215.5 added this field to `Ddl` (not present in 0.202.1); this
+            // explorer never issues DDL and surfaces the whole variant as an
+            // error regardless, so `None` is all a test needs.
+            constraint_validation: None,
         };
         let err = result_to_dto(result).unwrap_err();
         assert!(err.explanation().contains("Ddl"));
+    }
+
+    #[test]
+    fn the_constraints_variant_serialises_with_a_type_tag_and_camel_case_fields() {
+        let dto = ResultDto::Constraints {
+            entity: "demo_row".into(),
+            constraints: vec![ConstraintDto {
+                name: "demo_row_pk".into(),
+                kind: "primary_key".into(),
+                origin: "declared".into(),
+                validation_state: "valid".into(),
+                fields: vec!["id".into()],
+                semantics: "immediate".into(),
+            }],
+        };
+        let json = serde_json::to_value(dto).unwrap();
+        assert_eq!(json["type"], "constraints");
+        assert_eq!(json["entity"], "demo_row");
+        assert_eq!(json["constraints"][0]["name"], "demo_row_pk");
+        // camelCase, not validation_state — Task 2's TypeScript depends on this
+        assert_eq!(json["constraints"][0]["validationState"], "valid");
+    }
+
+    #[test]
+    fn an_empty_constraint_list_still_carries_its_entity() {
+        let json = serde_json::to_value(ResultDto::Constraints {
+            entity: "demo_child".into(),
+            constraints: Vec::new(),
+        })
+        .unwrap();
+        assert_eq!(json["entity"], "demo_child");
+        assert!(json["constraints"].as_array().unwrap().is_empty());
     }
 }
