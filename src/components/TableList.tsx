@@ -1,4 +1,5 @@
 import type { EntityDto } from "../api/types";
+import { PaneEmpty } from "./PaneStates";
 
 export function TableList({
   entities,
@@ -10,7 +11,7 @@ export function TableList({
   onSelect: (name: string) => void;
 }) {
   if (entities.length === 0) {
-    return <p className="p-2 text-sm text-text-2">No tables</p>;
+    return <PaneEmpty title="No tables">This canister doesn&apos;t expose any icydb entities.</PaneEmpty>;
   }
 
   return (

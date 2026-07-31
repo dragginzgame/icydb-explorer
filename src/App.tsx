@@ -23,6 +23,7 @@ import { CanisterTree } from "./components/CanisterTree";
 import { ErrorBanner } from "./components/ErrorBanner";
 import { IdentitySelector } from "./components/IdentitySelector";
 import { Pane } from "./components/Pane";
+import { PaneEmpty } from "./components/PaneStates";
 import { ProjectSelector } from "./components/ProjectSelector";
 import { RowGrid } from "./components/RowGrid";
 import { SchemaInspector } from "./components/SchemaInspector";
@@ -678,7 +679,7 @@ function App() {
             <Pane title="Rows">
               {rowsError && <ErrorBanner error={rowsError} />}
               {entity === null ? (
-                <p className="p-3 text-sm text-text-3">Select a table to see its rows.</p>
+                <PaneEmpty title="No table selected">Select a table to see its rows.</PaneEmpty>
               ) : (
                 <RowGrid
                   rows={rows}

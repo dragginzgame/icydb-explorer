@@ -1,6 +1,7 @@
 import type { AppErrorDto, SchemaDto } from "../api/types";
 import { ErrorBanner } from "./ErrorBanner";
 import { Pane } from "./Pane";
+import { PaneEmpty } from "./PaneStates";
 import { SchemaPanel } from "./SchemaPanel";
 
 /** The schema, as the right-hand inspector.
@@ -93,10 +94,14 @@ export function SchemaInspector({
     >
       {error && <ErrorBanner error={error} />}
       {!error && schema && <SchemaPanel schema={schema} />}
-      {!error && !schema && (
-        <p className="p-3 text-sm text-text-3">
-          {entity ? "Loading schema…" : "Select a table to see its schema."}
-        </p>
+      {/* No table picked yet: the designed empty state. Distinct from the
+          branch below — "loading" is real work in flight and must never be
+          dressed up to look like "nothing to look at yet". */}
+      {!error && !schema && !entity && (
+        <PaneEmpty title="No table selected">Select a table to see its schema.</PaneEmpty>
+      )}
+      {!error && !schema && entity && (
+        <p className="p-3 text-sm text-text-3">Loading schema…</p>
       )}
     </Pane>
   );

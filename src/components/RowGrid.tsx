@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import type { RowsDto } from "../api/types";
 
+import { PaneEmpty } from "./PaneStates";
 import { ValueCell, formatExpanded, isExpandable } from "./ValueCell";
 
 // Enough rows to fill the pane without implying a page size we do not know.
@@ -91,7 +92,7 @@ export function RowGrid({
   if (rows === null) return null;
 
   if (rows.rows.length === 0) {
-    return <p className="p-4 text-sm text-text-3">No rows</p>;
+    return <PaneEmpty title="No rows">{rows.entity} doesn&apos;t have any rows yet.</PaneEmpty>;
   }
 
   return (
