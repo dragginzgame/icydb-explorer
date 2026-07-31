@@ -121,9 +121,20 @@ export type Environment = {
 
 /** The discovered project. `error` carries a `discover()` failure (e.g. no
  * `.icp/` directory at all) — `null` both on success and on a merely
- * undeployed project (zero environments, no error is not a failure). */
+ * undeployed project (zero environments, no error is not a failure).
+ * `listEnvironments` returns `null` for the project itself when the user
+ * has not chosen one yet: a first launch, or a remembered root that has
+ * since been moved or deleted. */
 export type Project = {
   root: string;
   environments: Environment[];
   error: AppErrorDto | null;
 };
+
+/** The result of `selectProject` (see
+ * `src-tauri/src/commands.rs::ProjectSelection`). `project` is a plain
+ * `Project`, identical to what `listEnvironments` returns, so both paths
+ * adopt a project through the same code. `persistWarning` is set when the
+ * project was opened but the choice could not be remembered for next
+ * launch — a note, never a failure. */
+export type ProjectSelection = { project: Project; persistWarning: string | null };
