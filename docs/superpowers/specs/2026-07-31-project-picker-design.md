@@ -4,6 +4,23 @@
 **Status:** Approved
 **Follows:** `2026-07-30-icp-identity-design.md`
 
+## Corrections found during implementation
+
+This is a historical design record; the corrections below are recorded in place rather
+than silently rewritten. Three corrections of substance, beyond the error-table merge
+noted further down:
+
+- **The `AgentPool` cache key does include the project root, and the pool is still
+  cleared on switch.** The original "Decisions" table listed these as alternatives and
+  rejected the key. Implementation found them to be complements, not alternatives — see
+  the corrected row below and "The load-bearing correctness point".
+- **`ProjectState` wraps `std::sync::Mutex<Option<Project>>`, not `Mutex<Project>`.**
+  The `Option` represents "no project open" as a real state; `std::sync::Mutex` (not
+  tokio's) makes the never-hold-a-lock-across-`.await` rule compiler-enforced. See
+  "Architecture" below.
+- **The lock invariant is pinned by a compile-time `Send` assertion in the test, not by
+  the test's own `.await`.** See "Architecture" below.
+
 ## Purpose
 
 Let the user choose which icp project to explore from inside the app, instead of
@@ -38,25 +55,56 @@ from a project directory.
 | Folder with no `.icp/` | Walk up to find one; if none, adopt the picked folder anyway and render the existing explicit empty state | Forgiving of picking `src/`; never silently rejects; preserves today's deliberate support for a project not yet deployed |
 | Upward walk bound | The **ancestor** walk stops before `$HOME` and before `/`; the picked directory itself is always a candidate | `~/.icp` and `/.icp` would be config locations, not projects. Without the bound, one home-level `.icp` makes every folder in `$HOME` look like a project. Bounding only ancestors means explicitly picking `$HOME` still works. |
 | Where the dialog lives | Frontend (`@tauri-apps/plugin-dialog`), passing a path to a Rust command | Keeps `select_project` a pure "adopt this path" function with no dialog in its test path |
-| Pool on switch | Cleared | See "The load-bearing correctness point" |
-| Rejected: project root in the `AgentPool` cache key | — | Fixes correctness but keeps agents, and exported private key material, cached for projects the user has left |
+| Pool on switch | Cleared, but not the whole fix — see "The load-bearing correctness point" | Retention hygiene: stops holding agents, and the private key material inside them, for projects the user has left |
+| Project root in the `AgentPool` cache key | Included, alongside clearing the pool on every switch | Correctness — see "The load-bearing correctness point" below |
 | Rejected: cwd as a fallback when nothing is persisted | — | Two sources of truth for "which project", with a precedence rule to explain and test, to preserve a behaviour the empty state already covers |
+
+**Corrected — the "project root in the cache key" row above previously read "Rejected,"
+on the reasoning that clearing the pool on switch already handled invalidation and
+adding the root to the key only cost retention hygiene by keeping it out. Implementation
+found clearing insufficient on its own (see below), so the shipped code does both: the
+root is in the key, and the pool is still cleared. They are complements, not
+alternatives — a reader who removed the root from the key on the strength of the
+original row would reintroduce the exact bug it exists to prevent.**
 
 ## The load-bearing correctness point
 
-`AgentPool` is keyed `(environment name, identity name)`. Two projects both having a
-`local` environment with a `default` identity is the **normal** case, not an edge
-case.
+**Corrected — this section originally said `AgentPool` gains `clear()` and that this is
+what prevents stale agents from a previous project being served. Implementation found
+clearing alone insufficient; the actual mechanism is below.**
 
-Without invalidation, switching from project A to project B and querying `local`
-reuses A's cached agent — pointed at **A's replica URL** — and renders B's canister
-ids against A's replica. Wrong data, shown confidently: the failure class this
+`AgentPool` is keyed `(environment name, identity name, project root)`
+(`src-tauri/src/agent/mod.rs`, `cache_key`). Two projects both having a `local`
+environment with a `default` identity is the **normal** case, not an edge case.
+
+Without a project-scoped key, switching from project A to project B and querying
+`local` could reuse A's cached agent — pointed at **A's replica URL** — and render B's
+canister ids against A's replica. Wrong data, shown confidently: the failure class this
 project has hit repeatedly (see the `.icp/` layout Critical in
 `2026-07-29-icydb-explorer-design.md`'s history, and the `AgentPool` keying note in
 `2026-07-30-icp-identity-design.md`).
 
-So `AgentPool` gains `clear()`, called on every successful project switch, and a test
-asserts the map is empty afterwards.
+**Clearing the pool alone does not fix this.** Every command takes a
+`ProjectState::snapshot()` and *then* awaits network calls, so a command that began
+before a project switch can finish after it:
+
+1. The frontend invokes a command against env `local`; it snapshots project **A**, then
+   awaits.
+2. The user picks project **B**. `select_project` clears the pool, then replaces the
+   state.
+3. The in-flight command resumes, misses the now-empty cache, and builds an agent for
+   **A's replica URL** — inserting it under `("local", "default")` *after* the clear
+   already ran.
+4. The next query for **B** in env `local` hits that entry and runs B's canister ids
+   against A's replica.
+
+The fix is the project root as a third component of the cache key, derived from each
+command's own snapshot, so the agent and the canister ids it queries always come from
+one consistent project view — a late insert from project A lands under A's key, which
+project B never looks up. `clear()` still runs on every successful switch (a test
+asserts the map is empty afterwards), but it is retention hygiene, not correctness: it
+stops the pool holding agents — and the private key material inside them — for projects
+the user has walked away from.
 
 ## What does not change
 
@@ -68,25 +116,55 @@ selection. This makes one already-parameterised thing re-settable at runtime.
 
 ### `ProjectState` — mutable project state
 
+**Corrected — this block originally showed `pub struct ProjectState(Mutex<Project>)`
+with `snapshot`/`replace` returning/taking a bare `Project`, and said "all eight
+commands change." Shipped: `Mutex<Option<Project>>` using `std::sync::Mutex`
+specifically (not `tokio::sync::Mutex`), and seven commands change, not eight —
+`select_project` is a new command, not one of the ones rewired.**
+
 A new wrapper replacing `Project` as the managed state:
 
 ```rust
-pub struct ProjectState(Mutex<Project>);
+pub struct ProjectState(std::sync::Mutex<Option<Project>>);
 
 impl ProjectState {
-    pub fn snapshot(&self) -> Project;   // clones under the lock, releases it
+    pub fn snapshot(&self) -> Option<Project>;   // clones under the lock, releases it
     pub fn replace(&self, project: Project);
 }
 ```
 
-All eight commands change `project: State<'_, Project>` to
-`project: State<'_, ProjectState>` plus one `let project = project.snapshot();` line.
-`find_environment(&project, ..)` and everything downstream are untouched.
+The `Option` is load-bearing: it is how "no project open" is represented — first
+launch, or a remembered root that has since been moved or deleted — rather than a
+fabricated empty `Project`.
+
+`std::sync::Mutex`, not `tokio`'s, for two reasons. First, and most important: a
+`std::sync::MutexGuard` is `!Send`, which makes the never-hold-a-lock-across-`.await`
+rule *compiler-enforced* rather than a convention a reader has to honour. Second, it
+keeps `snapshot`/`replace` synchronous, which keeps `list_environments` a plain `fn`:
+Tauri's macro rejects an `async` command that takes a lifetime-bearing parameter such as
+`State<'_, T>` and does not return `Result`
+(`tauri-macros-2.6.3/src/command/wrapper.rs:176`, upstream issue #2533), so an async
+`snapshot` would force `list_environments` to return a `Result` that can never actually
+be `Err` purely to satisfy the macro.
+
+Seven commands change `project: State<'_, Project>` to
+`project: State<'_, ProjectState>` plus one `let project = project.snapshot();` line —
+`list_environments`, `select_identity`, `canister_tree`, `list_tables`,
+`describe_table`, `fetch_rows`, `run_sql`. `select_project` is new in this feature
+rather than one of these seven. `find_environment(&project, ..)` and everything
+downstream are untouched.
 
 **The lock is never held across an `.await`.** That is the entire reason `snapshot`
 clones instead of returning a guard. This project already shipped that bug once, in
-`AgentPool::get` holding a pool-wide lock across a 20-second subprocess; the invariant
-is stated in a comment and covered by a test rather than left to a reader's goodwill.
+`AgentPool::get` holding a pool-wide lock across a 20-second subprocess. The invariant
+is pinned at *compile time*, not merely stated in a comment: the test contains an
+explicit `fn requires_send<T: Send>(_: &T) {}` assertion, which a
+`std::sync::MutexGuard` cannot satisfy — a guard-returning `snapshot` would fail to
+compile, regardless of what the test's own runtime assertions check. (Holding a value across the
+test's own `.await` does not by itself prove anything: `#[tokio::test]` runs on
+`block_on`, which imposes no `Send` bound on its future, so that `.await` alone would
+let a `!Send` guard ride along unnoticed. The `requires_send` assertion is what actually
+pins it.)
 
 ### `discovery::resolve_root` — a pure function
 
