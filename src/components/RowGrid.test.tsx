@@ -170,10 +170,16 @@ test("the loading grid announces itself as busy", () => {
   expect(screen.getByRole("table")).toHaveAttribute("aria-busy", "true");
 });
 
-test("a loaded grid is not busy", () => {
+/// Asserted positively as "false", not as `not.toHaveAttribute(..., "true")`.
+/// The negative form cannot tell `aria-busy="false"` from the attribute being
+/// absent entirely, so it stays green when `aria-busy` is dropped from the real
+/// grid altogether — which is exactly what it exists to catch. React renders
+/// `aria-busy={false}` as the string "false", so the attribute really is present
+/// and the stronger assertion is available.
+test("a loaded grid reports itself as not busy", () => {
   render(<RowGrid rows={wide} hasMore={false} onLoadMore={() => {}} />);
 
-  expect(screen.getByRole("table")).not.toHaveAttribute("aria-busy", "true");
+  expect(screen.getByRole("table")).toHaveAttribute("aria-busy", "false");
 });
 
 /// "No rows" and "still loading" are different states and must not be confused.
