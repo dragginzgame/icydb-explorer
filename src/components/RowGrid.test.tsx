@@ -66,6 +66,32 @@ test("collapsing removes the sub-row", () => {
   expect(document.querySelector("td[colspan]")).toBeNull();
 });
 
+/// `aria-expanded` says a control discloses something; `aria-controls` says
+/// what. Without the pair, a screen-reader user is told a button is expanded
+/// and given no way to reach what it expanded.
+test("an expanded cell's control points at the sub-row it opened", () => {
+  render(<RowGrid rows={wide} hasMore={false} onLoadMore={() => {}} />);
+
+  const control = screen.getAllByRole("button", { name: /expand/i })[0];
+  fireEvent.click(control);
+
+  const target = control.getAttribute("aria-controls");
+  expect(target).toBeTruthy();
+  const subRow = document.getElementById(target!);
+  expect(subRow).not.toBeNull();
+  expect(subRow!.tagName.toLowerCase()).toBe("tr");
+});
+
+/// A collapsed control has nothing open to point at. `aria-controls` naming an
+/// id that is not in the document is worse than omitting it, because
+/// assistive tech will still try to follow it.
+test("a collapsed control carries no aria-controls", () => {
+  render(<RowGrid rows={wide} hasMore={false} onLoadMore={() => {}} />);
+
+  const control = screen.getByRole("button", { name: /expand/i });
+  expect(control).not.toHaveAttribute("aria-controls");
+});
+
 /// Every expand control used to be named "Expand value", so a row with several
 /// structured columns gave a screen-reader user a list of identical buttons —
 /// and forced these tests onto positional indexing. The grid knows the column
@@ -132,6 +158,22 @@ test("loading renders skeleton rows at the known column count", () => {
     expect(row.querySelectorAll('[data-skeleton="true"]')).toHaveLength(wide.columns.length);
   }
   expect(screen.queryByText(/no rows/i)).toBeNull();
+});
+
+/// A skeleton conveys "loading" visually and nothing at all to a screen
+/// reader: the bars are aria-hidden, so without `aria-busy` the grid reads as
+/// an empty table for the whole fetch — indistinguishable from a table with
+/// no rows.
+test("the loading grid announces itself as busy", () => {
+  render(<RowGrid rows={null} skeletonColumns={3} loading hasMore={false} onLoadMore={() => {}} />);
+
+  expect(screen.getByRole("table")).toHaveAttribute("aria-busy", "true");
+});
+
+test("a loaded grid is not busy", () => {
+  render(<RowGrid rows={wide} hasMore={false} onLoadMore={() => {}} />);
+
+  expect(screen.getByRole("table")).not.toHaveAttribute("aria-busy", "true");
 });
 
 /// "No rows" and "still loading" are different states and must not be confused.
