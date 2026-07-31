@@ -228,6 +228,33 @@ test("shows the discovery error rather than a silent blank pane", async () => {
   expect(screen.queryByText(/no environments were found/i)).toBeNull();
 });
 
+/// A long explanation must scroll inside its own region rather than pushing the
+/// panes out of the window. Bounding the container is fine; truncating the text
+/// is not — the backend's explanation is the most useful thing it produces on a
+/// failure and is rendered verbatim in full (see `ErrorBanner`'s own comment).
+///
+/// jsdom has no layout engine, so this cannot observe panes actually being
+/// squeezed — it pins the mechanism instead: a bounded, scrollable container
+/// that still carries the whole string, plus a pane still mounted alongside it.
+test("a very long error explanation scrolls in its own region instead of squeezing the panes", async () => {
+  const explanation = "SQL surface disabled. ".repeat(400);
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/project",
+    error: { kind: "unknown", explanation },
+    environments: [],
+  });
+
+  render(<App />);
+
+  expect(await screen.findByText(new RegExp(explanation.slice(0, 40)))).toBeInTheDocument();
+  const region = document.querySelector("[data-banner-region]");
+  expect(region).not.toBeNull();
+  expect(region!.className).toMatch(/overflow-(?:auto|y-auto)/);
+  expect(region!.className).toMatch(/max-h-/);
+  // The panes are still mounted, not squeezed out of existence.
+  expect(await screen.findByRole("region", { name: "Rows" })).toBeInTheDocument();
+});
+
 test("a stale SQL console run never overwrites a newer canister's result", async () => {
   vi.mocked(commands.listEnvironments).mockResolvedValue({
     root: "/project",

@@ -484,6 +484,20 @@ function App() {
 
   const currentEnvironment = environments.find((candidate) => candidate.name === env) ?? null;
 
+  // The five top-level banner conditions, gathered so the region wrapping
+  // them below can be rendered only when at least one is actually showing —
+  // an always-present empty box would be one more thing to explain away.
+  // Each condition here is copy-pasted from its own block's `&&` guard
+  // rather than refactored into shared booleans: keeping them textually
+  // identical to the JSX below is what makes it obvious this flag can never
+  // disagree with what actually renders.
+  const hasTopLevelBanner =
+    environmentsError !== null ||
+    identityError !== null ||
+    persistWarning !== null ||
+    (environmentsLoaded && root !== null && environments.length === 0 && !environmentsError) ||
+    (environmentsLoaded && currentEnvironment !== null && identity === null);
+
   // `selectIdentity` performs an eager export (see its doc comment in
   // `src-tauri/src/commands.rs`), so it's called *before* any local state
   // changes: a bad identity fails right here, and the previous selection is
@@ -552,30 +566,86 @@ function App() {
         </div>
       </header>
 
-      {environmentsError && (
-        <div className="p-2">
-          <ErrorBanner error={environmentsError} />
-        </div>
-      )}
+      {/* A bounded, independently-scrolling home for every top-level banner —
+          errors and warnings alike — so a very long `AppErrorDto.explanation`
+          (or a `noUsableIdentitySummary` joining many unusable identities)
+          scrolls inside this box instead of growing to content height and
+          squeezing the pane shell below toward zero. `<main>` is a COLUMN
+          flex container and this region is a plain (non-`flex-1`) sibling of
+          that shell, so without a cap its automatic height is exactly its
+          content height — this box existed and was `p-2`-only before this
+          fix, which is what let an 8042px explanation collapse the panes.
 
-      {identityError && (
-        <div className="p-2">
-          <ErrorBanner error={identityError} />
-        </div>
-      )}
+          `shrink-0` + a `max-h` + `overflow-auto` together are what cap it:
+          `max-h` bounds the box, `overflow-auto` is what makes the excess
+          scroll in place rather than clip or overflow, and `shrink-0` keeps
+          the flex algorithm from squeezing it *smaller* than that capped
+          size under tight vertical space — that squeeze is reserved for the
+          pane shell below (`min-h-0 flex-1`), which is the flexible one.
+          `overflow-auto` alone already forces this box's own automatic
+          minimum height to 0 (CSS Flexbox §4.5: a non-`visible` overflow
+          zeroes the content-based automatic minimum, the same effect
+          `min-h-0` spells out explicitly) — `shrink-0` on top of that is
+          what stops it from being shrunk past its capped size at all.
 
-      {persistWarning && (
-        <div className="p-2">
-          <p className="rounded-control border border-warn-border bg-warn-bg p-3 text-sm text-warn-text">
-            This project is open, but the choice won&apos;t be remembered next launch:{" "}
-            {persistWarning}
-          </p>
+          This is a second scroll container outside the four-pane shell, not
+          a violation of "one scroll container per pane, owned by that pane"
+          (see the pane row's own comment below): a banner region is not a
+          pane, and none of the four panes' own scroll regions changed.
+
+          `AppErrorDto.explanation` still renders verbatim inside `ErrorBanner`
+          (its own `<pre className="whitespace-pre-wrap">`) — bounding this
+          container caps how much is visible at once without touching the
+          string a single character. */}
+      {hasTopLevelBanner && (
+        <div data-banner-region className="max-h-[40vh] shrink-0 space-y-2 overflow-auto p-2">
+          {environmentsError && <ErrorBanner error={environmentsError} />}
+
+          {identityError && <ErrorBanner error={identityError} />}
+
+          {persistWarning && (
+            <p className="rounded-control border border-warn-border bg-warn-bg p-3 text-sm text-warn-text">
+              This project is open, but the choice won&apos;t be remembered next launch:{" "}
+              {persistWarning}
+            </p>
+          )}
+
+          {/* An explicit empty state, not a silently blank window: a
+              `discover()` failure of Critical 1's own class (a project
+              layout this app doesn't understand) must be visible, not
+              indistinguishable from a project that simply hasn't been
+              deployed yet. */}
+          {environmentsLoaded && root !== null && environments.length === 0 && !environmentsError && (
+            <p className="rounded-control border border-warn-border bg-warn-bg p-3 text-sm text-warn-text">
+              No environments were found in this project&apos;s <code>.icp/</code> layout. Deploy
+              it (e.g. <code>icp network start</code>, <code>icp canister create</code>,{" "}
+              <code>icp canister install</code>) and relaunch this app.
+            </p>
+          )}
+
+          {/* Another explicit empty state, of the same class as the one
+              above: `identity === null` means `initialIdentityFor` found
+              nothing selectable for `currentEnvironment` (a store holding
+              only `anonymous`, only unrecognised kinds, or nothing at all).
+              Every effect below early-returns on a null identity, so without
+              this the user would see empty panes with no explanation at all
+              — `identityError` is only ever set by a *failed* `selectIdentity`
+              call, never by there being nothing to select in the first
+              place. */}
+          {environmentsLoaded && currentEnvironment && identity === null && (
+            <p className="rounded-control border border-warn-border bg-warn-bg p-3 text-sm text-warn-text">
+              {noUsableIdentitySummary(currentEnvironment)}
+            </p>
+          )}
         </div>
       )}
 
       {/* No project is open: a first launch, or a remembered root that has
           since been moved or deleted. Distinct from "this project has no
-          environments" below — that one is about a project that exists. */}
+          environments" below — that one is about a project that exists.
+          `flex-1` and deliberately NOT inside the bounded banner region
+          above: this is the app's main empty state for a first-time user,
+          not a banner, and it must keep filling the available space. */}
       {environmentsLoaded && root === null && !environmentsError && (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8">
           <p className="text-sm text-text-2">Choose a project to explore.</p>
@@ -584,36 +654,6 @@ function App() {
             one.
           </p>
           <ProjectSelector root={null} busy={projectBusy} onSelect={handleSelectProject} />
-        </div>
-      )}
-
-      {/* An explicit empty state, not a silently blank window: a `discover()`
-          failure of Critical 1's own class (a project layout this app
-          doesn't understand) must be visible, not indistinguishable from a
-          project that simply hasn't been deployed yet. */}
-      {environmentsLoaded && root !== null && environments.length === 0 && !environmentsError && (
-        <div className="p-2">
-          <p className="rounded-control border border-warn-border bg-warn-bg p-3 text-sm text-warn-text">
-            No environments were found in this project&apos;s <code>.icp/</code> layout. Deploy
-            it (e.g. <code>icp network start</code>, <code>icp canister create</code>,{" "}
-            <code>icp canister install</code>) and relaunch this app.
-          </p>
-        </div>
-      )}
-
-      {/* Another explicit empty state, of the same class as the one above:
-          `identity === null` means `initialIdentityFor` found nothing
-          selectable for `currentEnvironment` (a store holding only
-          `anonymous`, only unrecognised kinds, or nothing at all). Every
-          effect below early-returns on a null identity, so without this the
-          user would see empty panes with no explanation at all —
-          `identityError` is only ever set by a *failed* `selectIdentity`
-          call, never by there being nothing to select in the first place. */}
-      {environmentsLoaded && currentEnvironment && identity === null && (
-        <div className="p-2">
-          <p className="rounded-control border border-warn-border bg-warn-bg p-3 text-sm text-warn-text">
-            {noUsableIdentitySummary(currentEnvironment)}
-          </p>
         </div>
       )}
 
