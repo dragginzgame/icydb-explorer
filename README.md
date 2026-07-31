@@ -249,15 +249,44 @@ npm run tauri dev
 ```
 
 `icp canister list` / the `.icp/cache/mappings/*.ids.json` file under this
-project's own `.icp/` directory will show you the deployed canister id. The
-app discovers its own `.icp/` project layout on launch (environments,
-replica URL, default identity) — run it from a directory that has one.
+project's own `.icp/` directory will show you the deployed canister id. On
+launch, pick this repository's root (or any directory inside it, e.g.
+`fixture/`) in the folder picker described under [Running the
+app](#running-the-app) below — the app discovers its `.icp/` project layout
+(environments, replica URL, default identity) from there.
 
 ## Running the app
 
 ```bash
 npm run tauri dev
 ```
+
+On launch, the app reopens whichever project you picked last — the choice
+is remembered in `<app config dir>/project.json` (on macOS, exactly
+`~/Library/Application Support/dev.rem.icydb-explorer/project.json`; the
+identifier is `dev.rem.icydb-explorer`, `src-tauri/tauri.conf.json:5`, and
+Tauri's `app_config_dir()` resolves to `config_dir()/<identifier>`). The
+first time you run it, or if that remembered path has been moved or
+deleted, it shows a "Choose a project to explore" screen with a folder
+picker instead of blank panes. You no longer need to `cd` into a project
+directory before launching — pick the folder from the dialog instead, and a
+packaged `.app` works the same way.
+
+You can point the picker at any directory inside a project: the app walks
+upward looking for the nearest ancestor containing `.icp/`, stopping short
+of your home directory and the filesystem root (so a stray `~/.icp` or
+`/.icp` can't make unrelated folders look like projects — picking your home
+directory itself still works, since the picked directory is always the
+first candidate). Picking a folder with no `.icp/` anywhere above it is
+still accepted, not rejected — it becomes the open project and the UI
+explains why it's empty, which is what lets you open a project you haven't
+deployed yet.
+
+Switching to a different project clears this app's cached agents, so the
+first query afterward re-loads the identity and may re-prompt the OS
+keychain. If the picked project can't be written to `project.json`, the
+switch still succeeds for that session — you'll just see a note that it
+won't be remembered next launch.
 
 Watch its output for anything resembling "command not found" — that's what
 a mis-cased `invoke` argument or a stale/removed command name on the Rust

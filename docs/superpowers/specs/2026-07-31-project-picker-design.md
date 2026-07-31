@@ -192,9 +192,10 @@ list, not a directory path.
 |---|---|
 | Dialog cancelled | Nothing happens |
 | Path missing, or not a directory | `Err(AppError::Io)` naming the path. **The previous project stays loaded** — nothing was adopted, the pool is untouched. |
-| No `.icp/` anywhere up the tree | `Ok(Project)` with no environments — adopted, existing explicit empty state renders |
-| `discover()` failed reading `.icp/` | `Ok(Project { error: Some(..) })` — the shape `list_environments` already returns, rendered through the identical path |
+| No `.icp/` anywhere up the tree, or `discover()` failed reading one | `Ok(Project { error: Some(..) })` — adopted, with the failure rendered explicitly. These are one path: `discover()` returns `Err` when `<root>/.icp` is not a directory, and both cases use the same fallback `lib.rs` already uses at launch. |
 | Config file unwritable | Switch succeeds for this session; `persistWarning` is set and shown as a dismissible note, distinct from the error banner |
+
+The spec originally separated these; implementation found them to be the same code path, and one path rendering one explanation is the better behaviour.
 
 All errors follow the established pattern: `AppError` variants with purpose-written
 `explanation()` text, surfaced through `ErrorBanner`. No new user-facing copy may claim
