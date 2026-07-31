@@ -28,6 +28,28 @@ export function RowGrid({
 }) {
   const [expanded, setExpanded] = useState<Expanded>(null);
 
+  // `expanded` holds indices into `rows`, so it is only meaningful for the data
+  // it was captured against. Today nothing stale is reachable, but only by
+  // accident: `App.tsx` nulls `rows` before each fetch and renders the grid
+  // conditionally, so this component unmounts and its state resets. Keeping the
+  // grid mounted across a fetch — which wiring `loading` requires — arms a real
+  // crash: with a cell open in column 4 of a 6-column entity, switching to a
+  // 2-column entity leaves `row[openColumn]` undefined.
+  //
+  // The identity is the entity plus the column count, NOT the row count:
+  // `loadMore` appends rows, and an open sub-row surviving that is the desired
+  // behaviour. Adjusting state during render (rather than in an effect) is
+  // React's documented pattern for exactly this — it discards the stale render
+  // before anything is committed, so no sub-row ever paints against the wrong
+  // data.
+  const identity = `${rows.entity}/${rows.columns.length}`;
+  const [seenIdentity, setSeenIdentity] = useState(identity);
+  if (seenIdentity !== identity) {
+    setSeenIdentity(identity);
+    setExpanded(null);
+  }
+  const live: Expanded = seenIdentity === identity ? expanded : null;
+
   const toggle = (row: number, column: number) =>
     setExpanded((current) =>
       current && current.row === row && current.column === column ? null : { row, column },
@@ -91,8 +113,7 @@ export function RowGrid({
           </thead>
           <tbody>
             {rows.rows.map((row, rowIndex) => {
-              const openColumn =
-                expanded && expanded.row === rowIndex ? expanded.column : null;
+              const openColumn = live && live.row === rowIndex ? live.column : null;
               return (
                 // eslint-disable-next-line react/no-array-index-key
                 <ExpandableRow
@@ -149,6 +170,13 @@ function ExpandableRow({
   // to it cannot move it.
   const striped = rowIndex % 2 === 0;
 
+  // Belt as well as braces. The parent invalidates `expanded` when the data's
+  // identity changes, but this row is the place the stale index would actually
+  // throw, and a TypeError here has no error boundary above it — it blanks the
+  // window. Resolving the cell once, defensively, makes an out-of-range index
+  // render nothing instead.
+  const openCell = openColumn === null ? undefined : row[openColumn];
+
   return (
     <>
       {/* Zebra on `surface-1`, not `surface-inset`: the sticky header uses
@@ -169,11 +197,11 @@ function ExpandableRow({
           </td>
         ))}
       </tr>
-      {openColumn !== null && (
+      {openCell && (
         <tr className="border-b border-rule">
           <td colSpan={row.length} className="bg-surface-2 px-2 py-2 pl-8">
             <pre className="whitespace-pre-wrap break-words font-mono text-xs text-text-2">
-              {formatExpanded(row[openColumn].display)}
+              {formatExpanded(openCell.display)}
             </pre>
           </td>
         </tr>

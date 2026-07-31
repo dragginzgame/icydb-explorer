@@ -179,6 +179,107 @@ test("expanding a cell does not reshuffle the zebra striping of rows below it", 
   expect(stripeOf(after[3])).toBe(before[3]);
 });
 
+/// `expanded` is a pair of indices into `rows`, so it is only meaningful for the
+/// data it was captured against. Nothing stale is reachable today, but only
+/// because `App.tsx` unmounts the grid between fetches. Keeping it mounted —
+/// which wiring `loading` requires — makes `row[openColumn]` undefined the
+/// moment a narrower entity arrives, and the resulting TypeError has no error
+/// boundary above it.
+test("switching to a narrower entity drops the stale expansion instead of throwing", () => {
+  const columns = ["a", "b", "c", "d", "profile", "f"];
+  const sixWide = {
+    entity: "Wide",
+    columns,
+    rows: [columns.map((name) => ({ kind: "map", display: `${STRUCTURED} ${name}` }))],
+    rowCount: 1,
+    nextCursor: null,
+  };
+  const narrow = {
+    entity: "Narrow",
+    columns: ["id", "name"],
+    rows: [[{ kind: "ulid", display: "01N" }, { kind: "text", display: "narrow" }]],
+    rowCount: 1,
+    nextCursor: null,
+  };
+
+  const { rerender } = render(<RowGrid rows={sixWide} hasMore={false} onLoadMore={() => {}} />);
+
+  // Column index 4 — out of range for the two-column entity that follows.
+  fireEvent.click(screen.getByRole("button", { name: "Expand profile" }));
+  expect(document.querySelectorAll("td[colspan]")).toHaveLength(1);
+
+  expect(() =>
+    rerender(<RowGrid rows={narrow} hasMore={false} onLoadMore={() => {}} />),
+  ).not.toThrow();
+
+  expect(document.querySelectorAll("td[colspan]")).toHaveLength(0);
+  expect(screen.getByText("narrow")).toBeInTheDocument();
+});
+
+/// The guard in `ExpandableRow` catches only the out-of-range case. A different
+/// entity that happens to have the same column count leaves the index perfectly
+/// valid, so nothing throws — instead the reader is shown an expanded sub-row
+/// they never opened, containing a different entity's data. Only invalidation
+/// catches this, which is what makes it the assertion that discriminates.
+test("switching to a same-width entity also drops the expansion", () => {
+  const first = {
+    entity: "User",
+    columns: ["id", "profile"],
+    rows: [[{ kind: "ulid", display: "01A" }, { kind: "map", display: `${STRUCTURED} first` }]],
+    rowCount: 1,
+    nextCursor: null,
+  };
+  const second = {
+    entity: "Order",
+    columns: ["id", "profile"],
+    rows: [[{ kind: "ulid", display: "01B" }, { kind: "map", display: `${STRUCTURED} second` }]],
+    rowCount: 1,
+    nextCursor: null,
+  };
+
+  const { rerender } = render(<RowGrid rows={first} hasMore={false} onLoadMore={() => {}} />);
+  fireEvent.click(screen.getByRole("button", { name: "Expand profile" }));
+  expect(document.querySelectorAll("td[colspan]")).toHaveLength(1);
+
+  rerender(<RowGrid rows={second} hasMore={false} onLoadMore={() => {}} />);
+
+  expect(document.querySelectorAll("td[colspan]")).toHaveLength(0);
+  expect(screen.getByRole("button", { name: "Expand profile" })).toBeInTheDocument();
+});
+
+/// The other half of the same rule: `loadMore` APPENDS rows to the same entity,
+/// and a sub-row the reader opened must survive that. Invalidating on the row
+/// count would close it under them on every page.
+test("loading another page keeps an open sub-row open", () => {
+  const page1 = {
+    entity: "User",
+    columns: ["id", "profile"],
+    rows: [
+      [{ kind: "ulid", display: "01A" }, { kind: "map", display: `${STRUCTURED} A` }],
+    ],
+    rowCount: 1,
+    nextCursor: null,
+  };
+  const page2 = {
+    ...page1,
+    rows: [
+      ...page1.rows,
+      [{ kind: "ulid", display: "01B" }, { kind: "map", display: `${STRUCTURED} B` }],
+    ],
+    rowCount: 2,
+  };
+
+  const { rerender } = render(<RowGrid rows={page1} hasMore onLoadMore={() => {}} />);
+  fireEvent.click(screen.getByRole("button", { name: "Expand profile" }));
+  expect(document.querySelectorAll("td[colspan]")).toHaveLength(1);
+
+  rerender(<RowGrid rows={page2} hasMore={false} onLoadMore={() => {}} />);
+
+  const subRows = document.querySelectorAll("td[colspan]");
+  expect(subRows).toHaveLength(1);
+  expect(subRows[0].textContent).toContain("A");
+});
+
 /// The whole reason `expanded` is a single `{row, column}` object rather than
 /// per-cell state: opening a cell in one row must not leak into another row.
 /// The existing suite only ever expands within a single-row fixture, so the
