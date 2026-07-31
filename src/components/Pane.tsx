@@ -13,6 +13,7 @@ export function Pane({
   children,
   width,
   onResize,
+  resizeFrom = "trailing",
   trailing,
   className,
 }: {
@@ -20,6 +21,19 @@ export function Pane({
   children: ReactNode;
   width?: number;
   onResize?: (width: number) => void;
+  /** Which edge of the pane the drag handle's motion is measured from.
+   *  `"trailing"` (the default, and every caller before this one) means the
+   *  handle sits on a real boundary shared with the pane to the right:
+   *  dragging it rightward grows the pane, matching the handle's own visual
+   *  position. `"leading"` is for a pane with nothing to its right — the
+   *  handle still renders on the trailing edge, but the boundary it actually
+   *  represents is the pane's *left* edge, shared with the pane before it, so
+   *  the sign is inverted: dragging rightward (away from that shared
+   *  boundary) shrinks the pane instead of growing it. Computed here, next to
+   *  `originWidth`, rather than by having a caller negate the reported width
+   *  itself — the correctness then does not depend on how `PaneHandle`
+   *  happens to capture `width`. */
+  resizeFrom?: "leading" | "trailing";
   trailing?: ReactNode;
   className?: string;
 }) {
@@ -34,7 +48,9 @@ export function Pane({
         {trailing}
       </div>
       <div className="min-h-0 flex-1 overflow-auto">{children}</div>
-      {onResize && <PaneHandle width={width} onResize={onResize} label={title} />}
+      {onResize && (
+        <PaneHandle width={width} onResize={onResize} label={title} resizeFrom={resizeFrom} />
+      )}
     </section>
   );
 }
@@ -56,10 +72,12 @@ function PaneHandle({
   width,
   onResize,
   label,
+  resizeFrom,
 }: {
   width?: number;
   onResize: (width: number) => void;
   label: string;
+  resizeFrom: "leading" | "trailing";
 }) {
   const stopRef = useRef<(() => void) | null>(null);
 
@@ -74,9 +92,13 @@ function PaneHandle({
 
     const originX = event.clientX;
     const originWidth = width ?? 0;
+    // "leading" negates the sign right here, next to `originWidth` — both
+    // come from the same capture, so this stays correct regardless of
+    // whether `move` ever gets rebound to a fresher `onResize`.
+    const sign = resizeFrom === "leading" ? -1 : 1;
 
     const move = (moveEvent: PointerEvent) =>
-      onResize(originWidth + (moveEvent.clientX - originX));
+      onResize(originWidth + sign * (moveEvent.clientX - originX));
     const end = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", end);

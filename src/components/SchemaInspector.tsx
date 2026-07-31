@@ -10,18 +10,20 @@ import { SchemaPanel } from "./SchemaPanel";
  *  has to be visible and named. The rail keeps its own `aria-label` and a
  *  rotated visible label for that reason.
  *
- *  `Pane`'s drag handle always sits on its own trailing (right) edge. For
+ *  `Pane`'s drag handle always renders on its own trailing (right) edge. For
  *  every other pane that edge is a real boundary shared with the pane to its
  *  right. This is the rightmost pane, so its trailing edge is the window's
  *  outer edge, not a boundary — the boundary the user actually means to grab
  *  is this pane's *leading* (left) edge, shared with the pane before it.
- *  Rather than adding an `edge` prop to `Pane` (a shared component with its
- *  own test suite, not owned by this task), the drag is passed through
- *  negated: `Pane` reports `width + delta` as if growing rightward grew the
- *  pane, and `invertResize` below turns that back into `width - delta` —
- *  dragging the handle rightward now shrinks the inspector and dragging it
- *  leftward grows it, which is the direction that actually matches moving
- *  the shared boundary with the pane to the left. */
+ *  `resizeFrom="leading"` tells `Pane` to compute that inverted sign itself,
+ *  next to the `originWidth` it already captures at drag start, so the
+ *  correctness of the direction does not depend on `onResize` staying wired
+ *  to any particular render — passing `onResize` straight through here is
+ *  enough. (An earlier version negated the reported width in this
+ *  component instead; that was only correct because of a coincidence in how
+ *  `PaneHandle` captured its closure, and a perfectly reasonable freshness
+ *  refactor to `PaneHandle` would have silently broken it. Moving the sign
+ *  into `Pane` removes that trap.) */
 export function SchemaInspector({
   schema,
   error,
@@ -53,13 +55,12 @@ export function SchemaInspector({
     );
   }
 
-  const invertResize = (proposedWidth: number) => onResize(2 * width - proposedWidth);
-
   return (
     <Pane
       title="Schema"
       width={width}
-      onResize={invertResize}
+      onResize={onResize}
+      resizeFrom="leading"
       className="border-l border-rule bg-surface-1"
       trailing={
         <button

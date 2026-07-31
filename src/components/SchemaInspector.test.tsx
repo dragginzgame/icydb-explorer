@@ -24,7 +24,13 @@ test("the expanded inspector shows the schema and a way to collapse it", () => {
   render(<SchemaInspector {...props} collapsed={false} onToggle={() => {}} />);
 
   expect(screen.getByText("handle")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: /collapse schema/i })).toBeInTheDocument();
+  const collapseControl = screen.getByRole("button", { name: /collapse schema/i });
+  expect(collapseControl).toBeInTheDocument();
+  // Expanded means the disclosure is open. `aria-expanded` on this control
+  // is a bare JSX attribute (`aria-expanded` with no value, i.e. `={true}`),
+  // easy to swap to `{false}` by accident with no visible symptom — assert
+  // it directly rather than trusting the shorthand.
+  expect(collapseControl).toHaveAttribute("aria-expanded", "true");
 });
 
 /// Collapsed is the state the spec expects a reader to keep the inspector in,
@@ -39,6 +45,11 @@ test("the collapsed rail is still a labelled control that can reopen", () => {
   expect(screen.queryByText("handle")).not.toBeInTheDocument();
   const reopen = screen.getByRole("button", { name: /expand schema/i });
   expect(reopen).toHaveTextContent(/schema/i);
+  // Collapsed means the disclosure is closed. Same rationale as the expanded
+  // control's assertion above: both values are correct as shipped and not
+  // contradictory (JSX's bare `aria-expanded` reads as `{true}`), but a swap
+  // of either one would misannounce state to assistive tech silently.
+  expect(reopen).toHaveAttribute("aria-expanded", "false");
 
   fireEvent.click(reopen);
   expect(toggles).toHaveLength(1);
@@ -51,6 +62,22 @@ test("an error is shown inside the inspector, verbatim", () => {
   render(<SchemaInspector {...props} schema={null} error={error} collapsed={false} onToggle={() => {}} />);
 
   expect(screen.getByText(/E7: no such entity/)).toBeInTheDocument();
+});
+
+/// The brief's own error test (above) pairs `error` with `schema: null`, which
+/// never exercises the `!error &&` guard in front of `SchemaPanel` — a stale
+/// schema sitting next to a fresh error would pass that test just as well.
+/// The real scenario this guards: the user switches entities, the new
+/// schema's describe fails, and the previous entity's schema must not linger
+/// beside the failure.
+test("an error takes precedence over a stale schema, rather than showing both", () => {
+  const error = { kind: "backend", explanation: "E7: no such entity" };
+  render(
+    <SchemaInspector {...props} schema={SCHEMA} error={error} collapsed={false} onToggle={() => {}} />,
+  );
+
+  expect(screen.getByText(/E7: no such entity/)).toBeInTheDocument();
+  expect(screen.queryByText("handle")).not.toBeInTheDocument();
 });
 
 test("with no table selected the inspector says so rather than sitting blank", () => {
@@ -110,22 +137,24 @@ test("dragging the handle leftward grows the inspector", () => {
   expect(widths[widths.length - 1]).toBe(360); // 320 + 40, not 320 - 40
 });
 
-/// The inversion has to survive a *continuous* drag, not just one move. The two
-/// tests above each fire a single `pointerMove`, which cannot see the hazard
-/// here: `invertResize` computes `2 * width - proposed`, so it depends on
-/// `width` and on `PaneHandle`'s captured `originWidth` staying in step.
+/// A drag has to track the cursor across several moves, not just one: each
+/// move reports a width relative to where the drag *started*, not relative to
+/// the previous move, so this needs a stateful host that actually re-renders
+/// `SchemaInspector` with each new `width` — a fixed `width` prop would let a
+/// per-move accumulation bug pass unnoticed.
 ///
-/// They do stay in step, but only because `PaneHandle` registers its listener
-/// once at `pointerdown` and that listener keeps a *stale* closure — both values
-/// freeze together, so they cannot diverge. That makes an ordinary React
-/// "improvement" to `PaneHandle` (keeping `onResize` fresh through a ref, so the
-/// listener always calls the newest prop) silently break this pane: verified by
-/// doing exactly that, after which a 20px-then-40px leftward drag widened the
-/// inspector to 400 instead of 360 — accelerating away from the cursor.
-///
-/// So this test guards a coupling between two files that is invisible in either
-/// one alone. A stateful host is required; with a fixed `width` prop the feedback
-/// never happens and the test proves nothing.
+/// This also used to be the test that pinned a real hazard: with the earlier
+/// implementation (negating the reported width inside `SchemaInspector`
+/// itself, via `2 * width - proposed`), correctness depended on `width` and
+/// `PaneHandle`'s captured `originWidth` staying in step across the whole
+/// drag — which only held because `PaneHandle` rebuilt its listener once at
+/// `pointerdown` and kept a stale closure. Making `PaneHandle` keep `onResize`
+/// fresh through a ref (an entirely reasonable-looking change on its own)
+/// broke that: a 20px-then-40px leftward drag widened the inspector to 400
+/// instead of 360, accelerating away from the cursor. Now that `Pane` computes
+/// the sign itself, next to `originWidth`, in the same place and at the same
+/// time, that coupling is gone — this test stays green under the freshness
+/// change, and is kept here as a plain multi-move correctness check.
 test("a continuous drag tracks the cursor instead of accelerating away from it", () => {
   function Host() {
     const [width, setWidth] = useState(320);
