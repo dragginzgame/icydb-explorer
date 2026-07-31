@@ -610,13 +610,19 @@ function App() {
       )}
 
       {/* Four panes left to right, then the SQL bar across the bottom.
-          `min-h-0` on both of these is load-bearing and invisible to jsdom: a
-          flex item's `min-height` defaults to `auto`, which in a COLUMN flex
-          container resolves to a content-based minimum, so without it each of
-          these grows to fit its content instead of shrinking — and every pane's
-          scroll region, which sizes itself from its parent, stops scrolling and
-          the whole window overflows. `<main>`'s `h-screen` is what makes the
-          chain definite at the top. */}
+          `min-h-0` on both of these divs (and on the open SQL bar) is
+          load-bearing and invisible to jsdom: a flex item's `min-height`
+          defaults to `auto`, which in a COLUMN flex container resolves to a
+          content-based minimum, so without it each grows to fit its content
+          instead of shrinking — every pane's scroll region then sizes itself to
+          its full content, stops scrolling, and the window scrolls instead
+          (measured: an 800px viewport becomes an 11312px page, and not one of
+          the four scroll regions scrolls). `<main>`'s `h-screen` is what makes
+          the chain definite at the top; `Pane`'s own `<section>` needs no
+          `min-h-0` because it is a flex item in a ROW container, where
+          `min-height: auto` computes to 0 and `align-items: stretch` already
+          gives it a definite height — its `min-w-0` covers the axis that does
+          bind there. */}
       {root !== null && (
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="flex min-h-0 flex-1">
