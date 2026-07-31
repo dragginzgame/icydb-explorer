@@ -1,9 +1,12 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import App from "./App";
 import * as commands from "./api/commands";
-import type { EntityDto, IdentityRef, ResultDto, TreeNode } from "./api/types";
+import type { EntityDto, Environment, IdentityRef, ResultDto, TreeNode } from "./api/types";
 
 vi.mock("./api/commands");
+
+const dialogOpen = vi.hoisted(() => vi.fn());
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: dialogOpen }));
 
 // A single usable identity, reused by every fixture `Environment` below so
 // the app's initial-selection fallback (first usable entry in
@@ -35,6 +38,17 @@ function deferred<T>() {
 
 function entity(name: string): EntityDto {
   return { name, storePath: "", storage: "stable", columns: 1, indexes: 0, relations: 0, schemaVersion: 1 };
+}
+
+function environmentFixture(): Environment {
+  return {
+    name: "local",
+    replicaUrl: "http://localhost",
+    canisters: [{ name: "root", id: "root-id" }],
+    identity: null,
+    identities: [usableIdentity],
+    artifacts: [],
+  };
 }
 
 test("a stale canister's tables never overwrite a newer selection", async () => {
@@ -482,4 +496,121 @@ test("switching environments abandons an in-flight identity selection", async ()
   // Still cleanly on "ic"'s own identity, not reverted to or stuck on
   // "local"'s.
   expect(screen.getAllByRole("combobox")[1]).toHaveValue("carol");
+});
+
+test("offers the picker and no panes when no project is open", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue(null);
+
+  render(<App />);
+
+  expect(await screen.findByText(/choose a project to explore/i)).toBeInTheDocument();
+  expect(screen.queryByText(/no environments were found/i)).not.toBeInTheDocument();
+});
+
+test("adopts the project returned by a pick", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue(null);
+  vi.mocked(commands.selectProject).mockResolvedValue({
+    project: { root: "/Users/me/projects/toko", environments: [environmentFixture()], error: null },
+    persistWarning: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([]);
+  dialogOpen.mockResolvedValue("/Users/me/projects/toko");
+
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: /choose a project/i }));
+
+  await waitFor(() =>
+    expect(commands.selectProject).toHaveBeenCalledWith("/Users/me/projects/toko"),
+  );
+  expect(await screen.findByRole("button", { name: /toko/i })).toBeInTheDocument();
+  expect(screen.queryByText(/choose a project to explore/i)).not.toBeInTheDocument();
+});
+
+test("renders a discovery error carried by an adopted project", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue(null);
+  vi.mocked(commands.selectProject).mockResolvedValue({
+    project: {
+      root: "/Users/me/Documents",
+      environments: [],
+      error: { kind: "io", explanation: "no .icp layout at /Users/me/Documents" },
+    },
+    persistWarning: null,
+  });
+  dialogOpen.mockResolvedValue("/Users/me/Documents");
+
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: /choose a project/i }));
+
+  expect(await screen.findByText(/no \.icp layout/i)).toBeInTheDocument();
+});
+
+test("shows a persist warning as a note, not as an error banner", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue(null);
+  vi.mocked(commands.selectProject).mockResolvedValue({
+    project: { root: "/Users/me/projects/toko", environments: [environmentFixture()], error: null },
+    persistWarning: "Could not write project.json: permission denied",
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([]);
+  dialogOpen.mockResolvedValue("/Users/me/projects/toko");
+
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: /choose a project/i }));
+
+  expect(await screen.findByText(/won't be remembered/i)).toBeInTheDocument();
+  expect(screen.getByText(/permission denied/i)).toBeInTheDocument();
+});
+
+test("keeps the current project when a pick is rejected", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/toko",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([]);
+  vi.mocked(commands.selectProject).mockRejectedValue({
+    kind: "io",
+    explanation: "/nope is not a directory",
+  });
+  dialogOpen.mockResolvedValue("/nope");
+
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: /toko/i }));
+
+  expect(await screen.findByText(/is not a directory/i)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /toko/i })).toBeInTheDocument();
+});
+
+/// A canister id from the old project means nothing in the new one. The
+/// effects keyed on `canister`/`entity` clear their own derived data, but the
+/// *selections* themselves are not derived — without `adoptProject` nulling
+/// them, they would survive the switch and the app would try to query a
+/// canister that isn't in the new project.
+test("switching projects clears the canister and entity selection", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/first",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    { pid: "aaaaa-aa", role: "canister-a", children: [] },
+  ]);
+  vi.mocked(commands.listTables).mockResolvedValue({
+    type: "entities",
+    entities: [entity("DemoRow")],
+  });
+  vi.mocked(commands.selectProject).mockResolvedValue({
+    project: { root: "/Users/me/projects/second", environments: [environmentFixture()], error: null },
+    persistWarning: null,
+  });
+  dialogOpen.mockResolvedValue("/Users/me/projects/second");
+
+  render(<App />);
+  fireEvent.click(await screen.findByText("canister-a"));
+  expect(await screen.findByText("DemoRow")).toBeInTheDocument();
+
+  fireEvent.click(await screen.findByRole("button", { name: /first/i }));
+
+  // The entity list belonged to the old project's canister selection; with
+  // the selection cleared there is nothing to list.
+  await waitFor(() => expect(screen.queryByText("DemoRow")).not.toBeInTheDocument());
 });
