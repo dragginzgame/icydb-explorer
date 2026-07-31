@@ -20,6 +20,9 @@
 - **Semantic token names must not collide with Tailwind's theme namespace.** Tailwind owns `--font-*`, `--radius-*` and `--color-*` as theme keys, so the semantic tokens are named `--ui-font`, `--mono-font`, `--r-control`, `--r-row` and bridged onto Tailwind's names in `@theme inline`. Naming them `--font-ui`/`--radius-control` directly makes Tailwind emit a circular `--font-ui: var(--font-ui)` that only works by cascade accident, and would silently override Tailwind's own `font-mono` utility. Verified by compiling tailwindcss 4.3.3 both ways.
 - **Tailwind 4 has no `tailwind.config.js`** in this project and must not gain one. Configuration is CSS-first, inside `src/index.css` / `src/theme/tokens.css`.
 - **Existing tests must keep passing** — 39 frontend, 129 backend. They mock `./api/commands` at the module boundary, so a pure presentation change should not disturb them. If one breaks, that is a real signal, not a test to update.
+- **A menu row's hint text becomes part of its accessible name.** So no hint may contain another theme's name, or a `getByRole(…, { name: /console/i })` query matches more than one row. `Follow system`'s hint is `light or dark` for exactly this reason.
+- **Vitest stubs `.css` imports to `""`** by default (`css: { include: [] }`), and does not exempt a `?raw` query — a CSS-reading test needs a scoped `test.css.include` entry or it asserts against an empty string and passes vacuously. Verified against vitest 4.1.10. This does **not** affect `.tsx` raw imports, so the component globs in Tasks 4 and 5 need nothing.
+- **Tests may not import Node builtins.** There is no `@types/node` and `tsconfig.json`'s `types` is `["vitest/globals"]`, so `node:fs`/`node:path`/`process.cwd()` pass under Vitest but fail the `tsc` step of `npm run build`. Read a file with Vite's `?raw` import and list files with `import.meta.glob` — both declared by `vite/client` via `src/vite-env.d.ts`.
 - **Test idiom:** bare top-level `test(...)`, no imports from `vitest`, `fireEvent` from `@testing-library/react`, `jest-dom` matchers via the existing `vitest.setup.ts`. Do not add a testing dependency.
 - **No user-facing copy may claim the app enforces read-only access as a security boundary.**
 
@@ -48,6 +51,7 @@
 - Create: `src/theme/tokens.css`
 - Create: `src/theme/tokens.test.ts`
 - Modify: `src/index.css`
+- Modify: `vitest.config.ts`
 
 **Interfaces:**
 - Consumes: nothing.
@@ -85,10 +89,12 @@
 Create `src/theme/tokens.test.ts`:
 
 ```ts
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-
-const css = readFileSync(join(process.cwd(), "src/theme/tokens.css"), "utf8");
+// Read through Vite's `?raw` rather than `node:fs`. This project has no
+// `@types/node` and `tsconfig.json`'s `types` is `["vitest/globals"]`, so a Node
+// builtin passes under Vitest but fails the `tsc` step of `npm run build`.
+// `?raw` is declared by `vite/client` (referenced from `src/vite-env.d.ts`),
+// needs no dependency, and resolves relative to this file rather than the cwd.
+import css from "./tokens.css?raw";
 
 /** Every `--token: value;` declared inside the given selector's block. */
 function tokensIn(selector: string): string[] {
@@ -356,7 +362,29 @@ Create `src/theme/tokens.css`. The `:root` block holds Console's values (the def
 
 Order matters: Tailwind first, tokens second, so `@theme inline` is processed with Tailwind's machinery already loaded.
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [ ] **Step 5: Let Vitest actually load the CSS**
+
+Vitest stubs **every** `.css` import to an empty string by default — its
+config default is `css: { include: [] }` — and its matcher does not exempt a
+`?raw` query. So `import css from "./tokens.css?raw"` yields `""` under Vitest
+even though it works in the real build, and the parity tests silently pass
+against nothing.
+
+Add a scoped exemption in `vitest.config.ts`, inside `test`:
+
+```ts
+    // Vitest stubs `.css` imports to "" by default (`css: { include: [] }`),
+    // and its matcher does not exempt a `?raw` query — so tokens.test.ts would
+    // assert against an empty string and pass vacuously. Scoped to this one
+    // file rather than `css: true` so no other test's CSS handling changes.
+    css: { include: [/tokens\.css/] },
+```
+
+Verified against vitest 4.1.10: with the default config a `?raw` CSS import
+returns `""`; with this include it returns the file. Keep it scoped — `css: true`
+would work too but changes CSS handling for every test in the project.
+
+- [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `npm test -- tokens`
 Expected: PASS, 7 tests (1 base + 3 theme parity + 2 follow-system checks + 1 literal check).
@@ -364,10 +392,10 @@ Expected: PASS, 7 tests (1 base + 3 theme parity + 2 follow-system checks + 1 li
 Then: `npm run build`
 Expected: success. This is the real proof the CSS compiles — a malformed token file fails here, not in the unit test.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/theme/tokens.css src/theme/tokens.test.ts src/index.css
+git add src/theme/tokens.css src/theme/tokens.test.ts src/index.css vitest.config.ts
 git commit -m "feat: add a semantic token layer with three themes"
 ```
 
@@ -642,7 +670,10 @@ import { useEffect, useRef, useState } from "react";
 import type { ThemeChoice } from "../theme/useTheme";
 
 const LABELS: Record<ThemeChoice, { name: string; hint: string }> = {
-  system: { name: "Follow system", hint: "Instrument or Console" },
+  // The hint must not name another theme: it becomes part of this row's
+  // accessible name, so "Instrument or Console" here made
+  // getByRole("menuitemradio", { name: /console/i }) match two rows.
+  system: { name: "Follow system", hint: "light or dark" },
   console: { name: "Console", hint: "dark" },
   terminal: { name: "Terminal", hint: "dark · mono" },
   instrument: { name: "Instrument", hint: "light" },
@@ -781,16 +812,23 @@ Two additional changes, both from the spec:
 Create `src/components/tokens-only.test.ts`:
 
 ```ts
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-
-const DIR = join(process.cwd(), "src/components");
+// `import.meta.glob` rather than `node:fs`: no `@types/node` exists here and
+// `tsconfig.json`'s `types` is `["vitest/globals"]`, so a Node builtin fails the
+// `tsc` step of `npm run build`. Vite's glob is declared by `vite/client` via
+// `src/vite-env.d.ts`, needs no dependency, and picks up a newly added
+// component automatically.
+const modules = import.meta.glob("./*.tsx", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+}) as Record<string, string>;
 
 /** Every component source, excluding tests — a test may legitimately assert on
  *  a literal, and `.test.tsx` files ship to nobody. */
-const sources = readdirSync(DIR)
-  .filter((name) => name.endsWith(".tsx") && !name.endsWith(".test.tsx"))
-  .sort();
+const sources: { name: string; source: string }[] = Object.entries(modules)
+  .filter(([path]) => !path.endsWith(".test.tsx"))
+  .map(([path, source]) => ({ name: path.replace("./", ""), source }))
+  .sort((a, b) => a.name.localeCompare(b.name));
 
 test("there are components to check", () => {
   expect(sources.length).toBeGreaterThan(5);
@@ -800,8 +838,7 @@ test("there are components to check", () => {
 /// invisible in one theme and wrong in another, and the failure is silent — the
 /// component simply looks off in a theme nobody was testing when they wrote it.
 /// src/theme/tokens.css is the one place literals belong.
-test.each(sources)("%s contains no literal colour", (name) => {
-  const source = readFileSync(join(DIR, name), "utf8");
+test.each(sources)("$name contains no literal colour", ({ source }) => {
   const literals = [
     ...source.matchAll(/#[0-9a-f]{3,8}\b/gi),
     ...source.matchAll(/\b(?:rgb|rgba|hsl|hsla)\(/gi),
@@ -811,8 +848,7 @@ test.each(sources)("%s contains no literal colour", (name) => {
 
 /// Tailwind's built-in palette is just as theme-hostile as a hex literal:
 /// `text-gray-500` is a fixed value that ignores `data-theme` entirely.
-test.each(sources)("%s uses no built-in Tailwind palette colour", (name) => {
-  const source = readFileSync(join(DIR, name), "utf8");
+test.each(sources)("$name uses no built-in Tailwind palette colour", ({ source }) => {
   const palette = [
     ...source.matchAll(
       /\b(?:bg|text|border|ring|from|to|via)-(?:gray|slate|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d{2,3}\b/g,
@@ -821,8 +857,7 @@ test.each(sources)("%s uses no built-in Tailwind palette colour", (name) => {
   expect(palette).toEqual([]);
 });
 
-test.each(sources)("%s uses no bare bg-white or bg-black", (name) => {
-  const source = readFileSync(join(DIR, name), "utf8");
+test.each(sources)("$name uses no bare bg-white or bg-black", ({ source }) => {
   expect(source).not.toMatch(/\b(?:bg|text|border)-(?:white|black)\b/);
 });
 ```
@@ -885,37 +920,31 @@ git commit -m "refactor: style every component through theme tokens"
 
 - [ ] **Step 1: Extend the test to cover App.tsx**
 
-In `src/components/tokens-only.test.ts`, add `src/App.tsx` to the checked set. Replace the `sources` construction with:
+`import.meta.glob` takes a literal pattern, so add a second glob for the shell rather than parameterising the first. In `src/components/tokens-only.test.ts`, after the existing `modules` declaration:
 
 ```ts
-const ROOT = process.cwd();
-const DIR = join(ROOT, "src/components");
-
-/** Component sources plus the app shell. Tests are excluded — a test may
- *  legitimately assert on a literal, and it ships to nobody. */
-const sources: { name: string; path: string }[] = [
-  ...readdirSync(DIR)
-    .filter((name) => name.endsWith(".tsx") && !name.endsWith(".test.tsx"))
-    .sort()
-    .map((name) => ({ name, path: join(DIR, name) })),
-  { name: "App.tsx", path: join(ROOT, "src/App.tsx") },
-];
+const shell = import.meta.glob("../App.tsx", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+}) as Record<string, string>;
 ```
 
-and change each `test.each` to iterate `sources` reading `path`, reporting `name`. For example:
+and extend `sources` to include it:
 
 ```ts
-test.each(sources)("$name contains no literal colour", ({ path }) => {
-  const source = readFileSync(path, "utf8");
-  const literals = [
-    ...source.matchAll(/#[0-9a-f]{3,8}\b/gi),
-    ...source.matchAll(/\b(?:rgb|rgba|hsl|hsla)\(/gi),
-  ].map((match) => match[0]);
-  expect(literals).toEqual([]);
-});
+const sources: { name: string; source: string }[] = [
+  ...Object.entries(modules)
+    .filter(([path]) => !path.endsWith(".test.tsx"))
+    .map(([path, source]) => ({ name: path.replace("./", ""), source })),
+  ...Object.entries(shell).map(([path, source]) => ({
+    name: path.replace("../", ""),
+    source,
+  })),
+].sort((a, b) => a.name.localeCompare(b.name));
 ```
 
-Note the `$name` interpolation — `test.each` over objects uses `$property`, not `%s`.
+The three `test.each(sources)` bodies need no change — they already destructure `{ source }` and report `$name`.
 
 - [ ] **Step 2: Run it to verify it fails**
 

@@ -15,7 +15,7 @@ below.
 
 ```
 React/Vite/Tailwind  ──tauri invoke──▶  Rust backend  ──ic-agent──▶  canister.icydb_query
-   (plain JSON DTOs)                    (icydb =0.215.5)
+   (plain JSON DTOs)                    (icydb =0.215.7)
 ```
 
 ## What this app does and does not do
@@ -99,7 +99,7 @@ least a few of these.
    `AppError::IntrospectionDisabled` (`src-tauri/src/error.rs`), and the
    underlying rejection is icydb's own diagnostic code 179,
    `RUNTIME_BOUNDARY_SQL_INTROSPECTION_DISABLED`
-   (`icydb-diagnostic-code-0.215.5/src/registry.rs`) — even though
+   (`icydb-diagnostic-code-0.215.7/src/registry.rs`) — even though
    `icydb.toml` says `local = true`.
 
 5. **This app is developed and tested against `icp`'s local replica, and a
@@ -171,8 +171,8 @@ least a few of these.
 
 9. **`icydb` is pinned exactly, in two places that must move together.** The
    workspace root `Cargo.toml`'s `[workspace.dependencies]` declares both
-   `icydb = { version = "=0.215.5", features = ["sql-explain"] }` and
-   `icydb-model = "=0.215.5"`; every crate in this workspace (`src-tauri`,
+   `icydb = { version = "=0.215.7", features = ["sql-explain"] }` and
+   `icydb-model = "=0.215.7"`; every crate in this workspace (`src-tauri`,
    `fixture`, `fixture-schema`) that needs either depends on it via
    `{ workspace = true }`. These two version strings must be bumped in
    lockstep: `icydb-model-macros` emits `::icydb::__macro::...` paths, so a
@@ -184,7 +184,7 @@ least a few of these.
    version bump, which is also why the frontend
    never sees an icydb type directly.
 
-   **What the `0.202.1` → `0.215.5` bump (thirteen minor versions) actually
+   **What the `0.202.1` → `0.215.7` bump (thirteen minor versions) actually
    cost:** five bump-forced compile errors, not two, and four of them landed
    inside `src-tauri/src/view/` itself. Two are in production code, one at
    each designated boundary — `error[E0004]` on a non-exhaustive
@@ -433,7 +433,7 @@ npm run build
 npx tsc --noEmit
 ```
 
-**Fixed post-`0.215.5` bump — recorded here because it recurred once
+**Fixed during the `0.215.5` bump — recorded here because it recurred once
 already.** `#[entity]` dropping its entity-level `name` (see [Updating the
 icydb version](#updating-the-icydb-version) above) silently renamed the
 fixture's entities from `demo_row`/`demo_child` to `DemoRow`/`DemoChild`.
@@ -478,9 +478,9 @@ everything downstream (the entire frontend) should be unaffected, which is
 the entire reason that boundary exists.
 
 **If your schema crate declares entities via `#[entity]`, check whether the
-new icydb version still lets you name them.** The `0.202.1` → `0.215.5` bump
+new icydb version still lets you name them.** The `0.202.1` → `0.215.7` bump
 removed `#[entity]`'s entity-level `name` attribute entirely (confirmed
-against `icydb-model-macros-0.215.5/src/node/entity.rs`: the `Entity` struct
+against `icydb-model-macros-0.215.7/src/node/entity.rs`: the `Entity` struct
 has no name field, and the SQL-visible name is derived unconditionally from
 the annotated struct's own identifier). This is not a cosmetic rename or a
 macro-argument reshuffle like the other grammar changes in this bump — it

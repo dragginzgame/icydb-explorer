@@ -22,11 +22,17 @@ import type {
 import { CanisterTree } from "./components/CanisterTree";
 import { ErrorBanner } from "./components/ErrorBanner";
 import { IdentitySelector } from "./components/IdentitySelector";
+import { Pane } from "./components/Pane";
+import { PaneEmpty } from "./components/PaneStates";
 import { ProjectSelector } from "./components/ProjectSelector";
 import { RowGrid } from "./components/RowGrid";
+import { SchemaInspector } from "./components/SchemaInspector";
 import { SchemaPanel } from "./components/SchemaPanel";
+import { SettingsMenu } from "./components/SettingsMenu";
 import { SqlConsole } from "./components/SqlConsole";
 import { TableList } from "./components/TableList";
+import { usePaneLayout } from "./layout/usePaneLayout";
+import { useTheme } from "./theme/useTheme";
 
 // Matches `DEFAULT_ROW_LIMIT` in `src-tauri/src/commands.rs`: `fetch_rows`
 // always pages this many rows at a time. Scalar paging is LIMIT/OFFSET, not
@@ -78,6 +84,9 @@ function noUsableIdentitySummary(environment: Environment): string {
 }
 
 function App() {
+  const { choice: themeChoice, setChoice: setThemeChoice } = useTheme();
+  const { layout, setWidth, toggleSchema, setSqlExpanded } = usePaneLayout();
+
   const [environments, setEnvironments] = useState<Environment[]>([]);
   const [environmentsError, setEnvironmentsError] = useState<AppErrorDto | null>(null);
   const [environmentsLoaded, setEnvironmentsLoaded] = useState(false);
@@ -446,6 +455,33 @@ function App() {
   // claims a total.
   const hasMore = lastPageRowCount === DEFAULT_ROW_LIMIT;
 
+  // How many columns the selected entity has, for sizing the row skeletons
+  // while its first page is still in flight. `SHOW ENTITIES` already reports
+  // this per entity, so the count is known before any row arrives — including
+  // on the FIRST load of a session.
+  //
+  // Read from the *selected* entity, deliberately not carried over from the
+  // previous page. An earlier version held the last `RowsDto` in a ref and fed
+  // the grid that shape with an empty `rows` array; because `rows` only goes
+  // null when the selection changes, the shape in such a ref is by construction
+  // some *other* table's — so the skeletons showed the wrong arity under the
+  // wrong headers and then reflowed when the real data landed, which is the one
+  // thing a skeleton exists to prevent. After a project switch they were the
+  // previous project's column names. A count derived from the live selection
+  // cannot outlive that selection.
+  const skeletonColumns = entities?.find((candidate) => candidate.name === entity)?.columns;
+
+  // `rows` is null both while a fetch is in flight and after one failed, and the
+  // error is the only thing that tells the two apart — without this a rejected
+  // fetch would leave skeletons spinning underneath its own banner.
+  //
+  // The other half of the rule — that a fetch is only in flight while a table is
+  // actually selected — is the `entity === null` branch in the Rows pane below,
+  // which is the ONE place that decision is made. Do not restate it here: two
+  // gates for one rule means either can be removed with every test still green,
+  // which is how the perpetual-skeleton bug survived review the first time.
+  const rowsPending = rows === null && rowsError === null;
+
   const currentEnvironment = environments.find((candidate) => candidate.name === env) ?? null;
 
   // `selectIdentity` performs an eager export (see its doc comment in
@@ -489,15 +525,15 @@ function App() {
   );
 
   return (
-    <main className="flex h-screen flex-col bg-white text-gray-900">
-      <header className="flex items-center gap-3 border-b px-4 py-2">
+    <main className="flex h-screen flex-col bg-surface-0 font-ui text-text-1">
+      <header className="flex items-center gap-3 border-b border-rule bg-surface-1 px-4 py-2">
         <h1 className="text-lg font-semibold">icydb Explorer</h1>
         <ProjectSelector root={root} busy={projectBusy} onSelect={handleSelectProject} />
         {environments.length > 0 && (
           <select
             value={env ?? ""}
             onChange={(event) => handleSelectEnvironment(event.target.value)}
-            className="rounded border px-2 py-1 text-sm"
+            className="rounded-control border border-rule px-2 py-1 text-sm"
           >
             {environments.map((environment) => (
               <option key={environment.name} value={environment.name}>
@@ -511,6 +547,9 @@ function App() {
           selected={identity}
           onSelect={handleSelectIdentity}
         />
+        <div className="ml-auto">
+          <SettingsMenu choice={themeChoice} onChoose={setThemeChoice} />
+        </div>
       </header>
 
       {environmentsError && (
@@ -527,7 +566,7 @@ function App() {
 
       {persistWarning && (
         <div className="p-2">
-          <p className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
+          <p className="rounded-control border border-warn-border bg-warn-bg p-3 text-sm text-warn-text">
             This project is open, but the choice won&apos;t be remembered next launch:{" "}
             {persistWarning}
           </p>
@@ -539,8 +578,8 @@ function App() {
           environments" below — that one is about a project that exists. */}
       {environmentsLoaded && root === null && !environmentsError && (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8">
-          <p className="text-sm text-gray-600">Choose a project to explore.</p>
-          <p className="text-xs text-gray-500">
+          <p className="text-sm text-text-2">Choose a project to explore.</p>
+          <p className="text-xs text-text-3">
             Pick a directory containing an <code>.icp/</code> layout — or any directory inside
             one.
           </p>
@@ -554,7 +593,7 @@ function App() {
           project that simply hasn't been deployed yet. */}
       {environmentsLoaded && root !== null && environments.length === 0 && !environmentsError && (
         <div className="p-2">
-          <p className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
+          <p className="rounded-control border border-warn-border bg-warn-bg p-3 text-sm text-warn-text">
             No environments were found in this project&apos;s <code>.icp/</code> layout. Deploy
             it (e.g. <code>icp network start</code>, <code>icp canister create</code>,{" "}
             <code>icp canister install</code>) and relaunch this app.
@@ -572,67 +611,246 @@ function App() {
           call, never by there being nothing to select in the first place. */}
       {environmentsLoaded && currentEnvironment && identity === null && (
         <div className="p-2">
-          <p className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
+          <p className="rounded-control border border-warn-border bg-warn-bg p-3 text-sm text-warn-text">
             {noUsableIdentitySummary(currentEnvironment)}
           </p>
         </div>
       )}
 
+      {/* Four panes left to right, then the SQL bar across the bottom.
+          `min-h-0` on both of these divs (and on the open SQL bar) is
+          load-bearing and invisible to jsdom: a flex item's `min-height`
+          defaults to `auto`, which in a COLUMN flex container resolves to a
+          content-based minimum, so without it each grows to fit its content
+          instead of shrinking — every pane's scroll region then sizes itself to
+          its full content, stops scrolling, and the window scrolls instead
+          (measured: an 800px viewport becomes an 11312px page, and not one of
+          the four scroll regions scrolls). `<main>`'s `h-screen` is what makes
+          the chain definite at the top; `Pane`'s own `<section>` needs no
+          `min-h-0` because it is a flex item in a ROW container, where
+          `min-height: auto` computes to 0 and `align-items: stretch` already
+          gives it a definite height — its `min-w-0` covers the axis that does
+          bind there.
+
+          `overflow-hidden` on the pane row is the other half, and it is about
+          WIDTH, which `min-w-0` does not cover: the three side panes are
+          `shrink-0`, and `PANE_BOUNDS` allows 480 + 480 + 560 = 1520px of fixed
+          width, so on a narrower window dragged to those maxima the row is wider
+          than its container. Without the clip that overflow escapes all the way
+          to the document, which gains a horizontal scrollbar and slides the
+          full-width header out of alignment with the panes (measured at 1280px:
+          page scrollWidth 1520 vs clientWidth 1280). Clipped here, the rightmost
+          pane is cut off instead — local, visible, and undone by dragging back. */}
       {root !== null && (
-        <div className="flex flex-1 overflow-hidden">
-          <aside className="w-64 shrink-0 overflow-auto border-r p-2">
-            <h2 className="mb-2 text-xs font-semibold uppercase text-gray-500">Canisters</h2>
-            {treeError && <ErrorBanner error={treeError} />}
-            {forest && (
-              <CanisterTree trees={forest} selectedPid={canister} onSelect={setCanister} />
-            )}
-          </aside>
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="flex min-h-0 flex-1 overflow-hidden">
+            <Pane
+              title="Canisters"
+              width={layout.widths.fleet}
+              onResize={(width) => setWidth("fleet", width)}
+              className="border-r border-rule bg-surface-1"
+            >
+              {treeError && <ErrorBanner error={treeError} />}
+              {/* `forest === null` covers both "the fetch is still in flight"
+                  and "there is no env/identity to fetch with yet" (the effect
+                  early-returns on either, leaving `forest` null forever) — the
+                  latter already has its own banner above the pane row, so
+                  showing "loading" here is at worst redundant with it, never
+                  misleading on its own. A plain line, not `PaneEmpty`: real
+                  work may still be in flight, and `PaneEmpty` must never be
+                  mistaken for that (see its own doc comment). */}
+              {!treeError && forest === null && (
+                <p className="p-3 text-sm text-text-3">Loading canisters…</p>
+              )}
+              {/* A forest that resolved to nothing is a fact about the
+                  environment, not a loading state — `CanisterTree` itself
+                  draws no distinction and would otherwise render a silently
+                  empty `<ul>` here. */}
+              {!treeError && forest && forest.length === 0 && (
+                <PaneEmpty title="No canisters">This environment has nothing deployed yet.</PaneEmpty>
+              )}
+              {!treeError && forest && forest.length > 0 && (
+                <CanisterTree trees={forest} selectedPid={canister} onSelect={setCanister} />
+              )}
+            </Pane>
 
-          <aside className="w-72 shrink-0 overflow-auto border-r p-2">
-            <h2 className="mb-2 text-xs font-semibold uppercase text-gray-500">Tables</h2>
-            {entitiesError && <ErrorBanner error={entitiesError} />}
-            {entities && <TableList entities={entities} selected={entity} onSelect={setEntity} />}
+            <Pane
+              title="Tables"
+              width={layout.widths.tables}
+              onResize={(width) => setWidth("tables", width)}
+              className="border-r border-rule bg-surface-1"
+            >
+              {entitiesError && <ErrorBanner error={entitiesError} />}
+              {/* Three blank conditions used to collapse into one silent gap:
+                  no canister picked yet (every launch, since nothing
+                  auto-selects one), the `listTables` fetch in flight, and a
+                  canister with no entities — the last of which `TableList`
+                  already renders its own `PaneEmpty` for below. The first two
+                  need distinct states here, mirroring the Rows/Schema panes'
+                  own "no <upstream> selected" empty state. */}
+              {!entitiesError && canister === null && (
+                <PaneEmpty title="No canister selected">
+                  Select a canister to see its tables.
+                </PaneEmpty>
+              )}
+              {!entitiesError && canister !== null && entities === null && (
+                <p className="p-3 text-sm text-text-3">Loading tables…</p>
+              )}
+              {!entitiesError && entities && (
+                <TableList entities={entities} selected={entity} onSelect={setEntity} />
+              )}
+            </Pane>
 
-            {schemaError && (
-              <div className="mt-4">
-                <ErrorBanner error={schemaError} />
-              </div>
-            )}
-            {schema && (
-              <div className="mt-4">
-                <h2 className="mb-2 text-xs font-semibold uppercase text-gray-500">Schema</h2>
-                <SchemaPanel schema={schema} />
-              </div>
-            )}
-          </aside>
+            {/* The banner and the grid render TOGETHER, not one or the other: a
+                "Load more" that fails must not discard the hundred rows the
+                reader is already looking at. `RowGrid` renders nothing at all
+                when there is no page and nothing in flight, so a failed FIRST
+                fetch still leaves the banner alone in the pane.
 
-          <section className="flex flex-1 flex-col overflow-hidden p-2">
-            <div className="flex-1 overflow-auto">
+                `entity === null` is the single gate on "is anything loading at
+                all" — with no table selected the rows effect early-returns and
+                nothing is pending, so the pane must say so rather than render a
+                grid that would have nothing to draw but placeholders.
+
+                `@container` makes this pane the query container `max-w-cell`
+                (see `tokens.css`) resolves its `cqw` half against. Placed here
+                via the existing `className` prop rather than a new `container`
+                prop on `Pane` itself — `Pane` is shared by all four panes, and
+                only the rows pane's cells read a container-relative cap, so a
+                prop on the shared component would be unused surface on the
+                other three. `container-type: inline-size` needs no explicit
+                size of its own: this section's width already comes from
+                `flex-1` in the row above, not from its content, so containment
+                changes nothing about how it's sized. */}
+            <Pane title="Rows" className="@container">
               {rowsError && <ErrorBanner error={rowsError} />}
-              {rows && <RowGrid rows={rows} hasMore={hasMore} onLoadMore={loadMore} />}
-              {!rows && !rowsError && entity && (
-                <p className="p-2 text-sm text-gray-500">Loading rows…</p>
+              {entity === null ? (
+                <PaneEmpty title="No table selected">Select a table to see its rows.</PaneEmpty>
+              ) : (
+                <RowGrid
+                  rows={rows}
+                  hasMore={hasMore}
+                  onLoadMore={loadMore}
+                  loading={rowsPending}
+                  skeletonColumns={skeletonColumns}
+                />
               )}
-            </div>
+            </Pane>
 
-            <div className="mt-4 shrink-0 border-t pt-2">
-              <h2 className="mb-2 text-xs font-semibold uppercase text-gray-500">SQL console</h2>
-              <SqlConsole
-                onRun={handleRunSql}
-                error={sqlError}
-                limitAppended={sqlLimitAppended}
-                orderByMissing={sqlOrderByMissing}
-              />
-              {sqlResult && (
-                <div className="mt-2 max-h-64 overflow-auto">
-                  <SqlResultView result={sqlResult} />
-                </div>
-              )}
-            </div>
-          </section>
+            <SchemaInspector
+              schema={schema}
+              error={schemaError}
+              entity={entity}
+              collapsed={layout.schemaCollapsed}
+              onToggle={toggleSchema}
+              width={layout.widths.schema}
+              onResize={(width) => setWidth("schema", width)}
+            />
+          </div>
+
+          <SqlBar
+            expanded={layout.sqlExpanded}
+            onExpandedChange={setSqlExpanded}
+            onRun={handleRunSql}
+            error={sqlError}
+            limitAppended={sqlLimitAppended}
+            orderByMissing={sqlOrderByMissing}
+            result={sqlResult}
+          />
         </div>
       )}
     </main>
+  );
+}
+
+/** The SQL console as a bar across the bottom of the shell, rather than a
+ *  permanent third of the rows pane.
+ *
+ *  A wrapper in this file, not a component of its own: it is composition — a
+ *  disclosure around `SqlConsole` and `SqlResultView`, both of which already
+ *  exist — and phase 3 replaces its contents with the CodeMirror editor. A
+ *  separate file would have to be unpicked again then.
+ *
+ *  Opens on click and closes on the close button. No keyboard shortcut: the
+ *  keyboard map is phase 3, and half a map is worse than none.
+ *
+ *  Two layout details that jsdom cannot see. `basis-1/3` gives the open bar a
+ *  third of the shell's height, and `min-h-0` is what makes that a ceiling
+ *  rather than a floor: `min-height: auto` on a column flex item resolves to a
+ *  content-based minimum, so a tall result would otherwise push the bar past a
+ *  third and squeeze the panes above it. And the console and its result share
+ *  ONE scroll region — the same rule `Pane` follows, and for the same reason:
+ *  the result's own sticky header only works if the nearest scrollport is the
+ *  one that actually scrolls. */
+function SqlBar({
+  expanded,
+  onExpandedChange,
+  onRun,
+  error,
+  limitAppended,
+  orderByMissing,
+  result,
+}: {
+  expanded: boolean;
+  onExpandedChange: (expanded: boolean) => void;
+  onRun: (sql: string) => void;
+  error?: AppErrorDto;
+  limitAppended: boolean;
+  orderByMissing: boolean;
+  result: ResultDto | null;
+}) {
+  if (!expanded) {
+    return (
+      <div className="flex shrink-0 items-center border-t border-rule bg-surface-1 px-2 py-1">
+        <button
+          type="button"
+          onClick={() => onExpandedChange(true)}
+          aria-expanded={false}
+          className="rounded-control border border-rule px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-text-2 hover:bg-surface-2"
+        >
+          SQL
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex min-h-0 basis-1/3 flex-col border-t border-rule bg-surface-1">
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-rule px-2 py-1">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-text-2">SQL</h2>
+        <button
+          type="button"
+          onClick={() => onExpandedChange(false)}
+          aria-label="Close SQL"
+          aria-expanded
+          className="rounded-control px-1 text-xs text-text-3 hover:bg-surface-2"
+        >
+          ×
+        </button>
+      </div>
+      {/* `@container` gives this scroll region its own query container, so a
+          "rows" result rendered through `RowGrid` below (specifically
+          `SqlResultView`'s call site) has an ancestor for `max-w-cell`'s `cqw`
+          half to resolve against — the Rows pane's `@container` (see its own
+          comment) only covers *that* call site, not this one. Without it
+          `cqw` here resolves against no container at all: Chromium measured
+          that as a collapse to zero width, and the CSS container-query spec's
+          documented fallback is the small viewport size instead — different
+          failures, but both wrong, and this is the fix for either reading. */}
+      <div className="min-h-0 flex-1 overflow-auto p-2 @container">
+        <SqlConsole
+          onRun={onRun}
+          error={error}
+          limitAppended={limitAppended}
+          orderByMissing={orderByMissing}
+        />
+        {result && (
+          <div className="mt-2">
+            <SqlResultView result={result} />
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -706,7 +924,7 @@ function SqlResultView({ result }: { result: ResultDto }) {
     return (
       <table className="text-sm">
         <thead>
-          <tr className="text-left text-xs uppercase text-gray-500">
+          <tr className="text-left text-xs uppercase text-text-2">
             <th className="pr-4">Name</th>
             <th className="pr-4">Kind</th>
             <th className="pr-4">Origin</th>

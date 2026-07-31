@@ -987,7 +987,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1228,7 +1228,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2324,9 +2324,9 @@ dependencies = [
 
 [[package]]
 name = "icydb"
-version = "0.215.5"
+version = "0.215.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9455d063872135b2b86a59c1954e4f56863c0387107be1bf0fec48f52af0e0cc"
+checksum = "04e07d8d0da97462a77ad116afb0c8df34c5a1846303c70551431961ecf3f102"
 dependencies = [
  "candid",
  "ctor 1.0.12",
@@ -2336,6 +2336,7 @@ dependencies = [
  "icydb-config",
  "icydb-core",
  "icydb-diagnostic-code",
+ "icydb-model",
  "icydb-schema",
  "remain",
  "serde",
@@ -2343,9 +2344,9 @@ dependencies = [
 
 [[package]]
 name = "icydb-config"
-version = "0.215.5"
+version = "0.215.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac3300a0e7f0cd327206f34e8b8391f8dd10a859a55a653bd79b1f3118d67419"
+checksum = "9e412d2a177576c327b7cbf890ad9c72c7b3558f3c1c93febd558cb67a3bac50"
 dependencies = [
  "icydb-model",
  "serde",
@@ -2355,9 +2356,9 @@ dependencies = [
 
 [[package]]
 name = "icydb-core"
-version = "0.215.5"
+version = "0.215.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e64bb185d1058fd1f1fd16d39714d2e88b293b41b3541348ba1d137502f78d06"
+checksum = "f4bc981323e2ab93a628894b1a9dac19effb70412e1604d3178a078b47ae578d"
 dependencies = [
  "candid",
  "derive_more",
@@ -2382,9 +2383,9 @@ dependencies = [
 
 [[package]]
 name = "icydb-diagnostic-code"
-version = "0.215.5"
+version = "0.215.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7e5ed5d50a20eecba4cb0f0b1778941a4d6c3800ea372767039863ced8f088c"
+checksum = "624229b12a4efcefe56bcfa64382050bccbb5399a720a2e0934c4919b429aeb4"
 dependencies = [
  "remain",
 ]
@@ -2417,9 +2418,9 @@ dependencies = [
 
 [[package]]
 name = "icydb-model"
-version = "0.215.5"
+version = "0.215.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6f35a81d7e85b26ee9826c3e8ee8fa86bcf714158f2f238117ab7d3ad87c318"
+checksum = "4bdfa496aa41baf46d4fc990a7bd2aa272938e171ff8760ab07cd56b9a5cd4af"
 dependencies = [
  "candid",
  "convert_case",
@@ -2439,9 +2440,9 @@ dependencies = [
 
 [[package]]
 name = "icydb-model-macros"
-version = "0.215.5"
+version = "0.215.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8d564f479450cedcd712d32f761fa5425b27d254ebbdcfa6bf4f315cd749379"
+checksum = "7fdb8c4a1f5748438afcd6e3f6c033c6f77d10bb7111634b52432ce26c24a990"
 dependencies = [
  "convert_case",
  "darling",
@@ -2457,9 +2458,9 @@ dependencies = [
 
 [[package]]
 name = "icydb-schema"
-version = "0.215.5"
+version = "0.215.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09dc7ba4e3a1e7767b2c3b7b4ab62de5eaa8a02db659b8f32faf9aaa2d598184"
+checksum = "8fac437b3647580a436699aef83a29ececf43dbba9ef96c44cb7ebcf81735aed"
 dependencies = [
  "candid",
  "derive_more",
@@ -2945,7 +2946,7 @@ dependencies = [
  "png 0.18.1",
  "serde",
  "thiserror 2.0.19",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3030,7 +3031,7 @@ version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "680998035259dcfcafe653688bf2aa6d3e2dc05e98be6ab46afb089dc84f1df8"
 dependencies = [
- "proc-macro-crate 3.5.0",
+ "proc-macro-crate 1.3.1",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -3670,7 +3671,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4010,7 +4011,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4462,7 +4463,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4539,7 +4540,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "psm",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5381,7 +5382,7 @@ dependencies = [
  "png 0.18.1",
  "serde",
  "thiserror 2.0.19",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5802,7 +5803,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

@@ -42,7 +42,7 @@ export function ProjectSelector({ root, busy, onSelect }: Props) {
       onClick={choose}
       disabled={busy}
       title={root ?? undefined}
-      className="rounded border px-2 py-1 text-sm disabled:opacity-50"
+      className="rounded-control border border-rule px-2 py-1 text-sm disabled:opacity-50"
     >
       {root ? `📁 ${basename(root)}` : "Choose a project…"}
     </button>

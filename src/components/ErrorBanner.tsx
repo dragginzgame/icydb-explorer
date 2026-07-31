@@ -8,8 +8,11 @@ import type { AppErrorDto } from "../api/types";
 // never truncated or paraphrased.
 export function ErrorBanner({ error }: { error: AppErrorDto }) {
   return (
-    <div role="alert" className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800">
-      <pre className="whitespace-pre-wrap font-sans">{error.explanation}</pre>
+    <div
+      role="alert"
+      className="rounded-control border border-danger-border bg-danger-bg p-3 text-sm text-danger-text"
+    >
+      <pre className="whitespace-pre-wrap font-prose">{error.explanation}</pre>
     </div>
   );
 }
