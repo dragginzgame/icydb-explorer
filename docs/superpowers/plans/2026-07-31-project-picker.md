@@ -19,7 +19,7 @@
 - **Exact dependency versions:** `tauri-plugin-dialog = "2.7.2"` (Rust), `@tauri-apps/plugin-dialog` `^2.7.2` (JS). Capability permission string is `dialog:allow-open` — least privilege; `dialog:default` would also grant `allow-save` and `allow-message`, which this app does not use.
 - **Test fixtures mirror reality.** Filesystem fixtures follow the existing pattern: committed directories under `src-tauri/tests/fixtures/`. A fixture authored to match the code's assumptions caused this project's one Critical finding.
 - **Rust MSRV 1.96.0.** Do not use APIs newer than that.
-- **`cargo test` from `src-tauri/`, `npm test` from the repo root.** Both suites must be green at every commit. Baseline: 100 backend tests, 25 frontend tests. Final: 121 backend, 36 frontend.
+- **`cargo test` from `src-tauri/`, `npm test` from the repo root.** Both suites must be green at every commit. Baseline: 100 backend tests, 25 frontend tests. Final: 123 backend, 36 frontend.
 
 ## Spec deviation you must know about
 
@@ -483,10 +483,13 @@ In `src-tauri/src/lib.rs`, add `pub mod project;` to the module list at the top,
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `cd src-tauri && cargo test project::config`
-Expected: PASS, 8 tests.
+Expected: PASS, 10 tests (the 8 listed above, plus two added during review:
+`an_unreadable_file_is_none_not_an_error` and `a_non_string_root_is_none`,
+closing the "unreadable file" and "non-string `root`" failure modes the
+Step-1 listing had enumerated in prose but not covered).
 
 Then: `cd src-tauri && cargo test`
-Expected: PASS, 116 tests.
+Expected: PASS, 118 tests.
 
 - [ ] **Step 6: Commit**
 
@@ -776,7 +779,7 @@ The handler list is **unchanged from what's already there** — `select_project`
 - [ ] **Step 8: Run the full suite**
 
 Run: `cd src-tauri && cargo test`
-Expected: PASS, 120 tests. There must be **zero** warnings about the removed `discover_project`; if the compiler reports dead code, delete what it names.
+Expected: PASS, 122 tests. There must be **zero** warnings about the removed `discover_project`; if the compiler reports dead code, delete what it names.
 
 - [ ] **Step 9: Commit**
 
@@ -1007,7 +1010,7 @@ Replace the `permissions` array in `src-tauri/capabilities/default.json`:
 - [ ] **Step 8: Run the full suite**
 
 Run: `cd src-tauri && cargo test`
-Expected: PASS, 121 tests.
+Expected: PASS, 123 tests.
 
 Then confirm the app builds with the plugin registered: `cd src-tauri && cargo build`
 Expected: success, no warnings.
@@ -1608,7 +1611,7 @@ Add a line under it recording why: `The spec originally separated these; impleme
 
 - [ ] **Step 3: Verify both suites are still green**
 
-Run: `cd src-tauri && cargo test` — expected PASS, 121 tests.
+Run: `cd src-tauri && cargo test` — expected PASS, 123 tests.
 Run: `npm test` — expected PASS, 36 tests.
 
 - [ ] **Step 4: Commit**
