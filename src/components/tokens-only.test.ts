@@ -33,6 +33,15 @@ test("there are components to check", () => {
   expect(sources.length).toBeGreaterThan(5);
 });
 
+/// `import.meta.glob` takes a literal pattern, so a rename or a copy-paste typo
+/// silently matches nothing — and `sources.length > 5` is already satisfied by
+/// the components alone, so the suite would stay green while the shell quietly
+/// left the checked set. This is the only assertion that would notice.
+test("the app shell is in the checked set", () => {
+  expect(Object.keys(shell)).toHaveLength(1);
+  expect(sources.map((entry) => entry.name)).toContain("App.tsx");
+});
+
 /// The rule that keeps the second and third themes alive. A literal colour is
 /// invisible in one theme and wrong in another, and the failure is silent — the
 /// component simply looks off in a theme nobody was testing when they wrote it.
