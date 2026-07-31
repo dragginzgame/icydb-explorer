@@ -6,7 +6,7 @@
 
 **Architecture:** The project root stops being a startup constant and becomes mutable, optional Tauri managed state (`ProjectState(Mutex<Option<Project>>)`). A new `select_project` command resolves a picked path up to the nearest `.icp/`, re-runs the existing `discovery::discover`, clears the `AgentPool` (whose `(environment, identity)` key is not unique across projects), swaps the state, and persists the root. The frontend opens a native folder dialog via `tauri-plugin-dialog` and adopts the returned project through the same code path launch uses.
 
-**Tech Stack:** Rust 1.96.0, Tauri 2 (`tauri` 2.11.5), `tauri-plugin-dialog` 2.7.2, `tokio::sync::Mutex`, React 19 + TypeScript, `@tauri-apps/plugin-dialog` 2.7.2, Vitest.
+**Tech Stack:** Rust 1.96.0, Tauri 2 (`tauri` 2.11.5), `tauri-plugin-dialog` 2.7.2, `std::sync::Mutex` for project state (`tokio::sync::Mutex` remains in `AgentPool`), React 19 + TypeScript, `@tauri-apps/plugin-dialog` 2.7.2, Vitest.
 
 **Spec:** `docs/superpowers/specs/2026-07-31-project-picker-design.md` — read it before Task 1.
 
@@ -18,6 +18,7 @@
 - **No new user-facing sentinel values.** Absent state is `Option`/`null`, never an empty-string root or a fabricated environment. Precedent: `IdentityRef.pem_path` was made `Option<PathBuf>` for exactly this reason.
 - **Exact dependency versions:** `tauri-plugin-dialog = "2.7.2"` (Rust), `@tauri-apps/plugin-dialog` `^2.7.2` (JS). Capability permission string is `dialog:allow-open` — least privilege; `dialog:default` would also grant `allow-save` and `allow-message`, which this app does not use.
 - **Test fixtures mirror reality.** Filesystem fixtures follow the existing pattern: committed directories under `src-tauri/tests/fixtures/`. A fixture authored to match the code's assumptions caused this project's one Critical finding.
+- **Tauri macro constraint.** An `async` `#[tauri::command]` that takes a lifetime-bearing parameter (`State<'_, T>`) **must** return `Result<_, _>` — `tauri-macros-2.6.3/src/command/wrapper.rs:176`, upstream tauri-apps/tauri#2533. This is why `ProjectState`'s accessors are synchronous and `list_environments` is a plain `fn`: never add a `Result` that cannot be `Err` just to satisfy this macro.
 - **Rust MSRV 1.96.0.** Do not use APIs newer than that.
 - **`cargo test` from `src-tauri/`, `npm test` from the repo root.** Both suites must be green at every commit. Baseline: 100 backend tests, 25 frontend tests. Final: 123 backend, 36 frontend.
 
@@ -512,14 +513,14 @@ git commit -m "feat: remember the chosen project root across launches"
 - Consumes: `project::config::read_recorded_root` (Task 2).
 - Produces:
   - `project::ProjectState::new(project: Option<Project>) -> ProjectState`
-  - `project::ProjectState::snapshot(&self) -> Option<Project>` — async
-  - `project::ProjectState::replace(&self, project: Project)` — async
+  - `project::ProjectState::snapshot(&self) -> Option<Project>` — **synchronous**
+  - `project::ProjectState::replace(&self, project: Project)` — **synchronous**
   - `error::AppError::NoProjectSelected`
   - `commands::list_environments` now returns `Option<Project>`
 
 **Why `Option`:** with the picker, "no project chosen yet" is a real state — first launch, or a remembered path that has since vanished. Representing it as an empty `Project` with a fabricated root would be the same class of lie that `IdentityRef.pem_path: Option<PathBuf>` was introduced to remove. `None` is the honest representation, and it is what drives the frontend's empty state.
 
-**Why `tokio::sync::Mutex`:** `AgentPool` already uses it (`src-tauri/src/agent/mod.rs:23`), and `replace` is called from the async `select_project`. `snapshot` and `replace` are therefore `async fn`.
+**Why `std::sync::Mutex` and not `tokio`'s,** even though `AgentPool` next door uses tokio's: it makes the never-hold-a-lock-across-`.await` rule compiler-enforced (`std::sync::MutexGuard` is `!Send`), and it keeps `snapshot`/`replace` synchronous — which is load-bearing, because **Tauri's macro rejects an `async` command that takes a lifetime-bearing parameter like `State<'_, T>` and does not return `Result`** (`tauri-macros-2.6.3/src/command/wrapper.rs:176`, upstream tauri-apps/tauri#2533). An async `snapshot` would force `list_environments` to return a `Result` that can never be `Err`, purely to satisfy a macro. Nothing here needs to hold the lock across an await.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -539,42 +540,46 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn starts_empty_when_constructed_with_none() {
+    #[test]
+    fn starts_empty_when_constructed_with_none() {
         let state = ProjectState::new(None);
-        assert!(state.snapshot().await.is_none());
+        assert!(state.snapshot().is_none());
     }
 
-    #[tokio::test]
-    async fn snapshot_returns_what_was_managed() {
+    #[test]
+    fn snapshot_returns_what_was_managed() {
         let state = ProjectState::new(Some(project("/a")));
-        assert_eq!(state.snapshot().await.unwrap().root, PathBuf::from("/a"));
+        assert_eq!(state.snapshot().unwrap().root, PathBuf::from("/a"));
     }
 
-    #[tokio::test]
-    async fn replace_swaps_the_project() {
+    #[test]
+    fn replace_swaps_the_project() {
         let state = ProjectState::new(Some(project("/a")));
-        state.replace(project("/b")).await;
-        assert_eq!(state.snapshot().await.unwrap().root, PathBuf::from("/b"));
+        state.replace(project("/b"));
+        assert_eq!(state.snapshot().unwrap().root, PathBuf::from("/b"));
     }
 
-    /// The invariant that matters: `snapshot` clones and releases, so a
-    /// caller holding a snapshot across an `.await` cannot block another
-    /// caller. Holding a pool-wide lock across an await is a bug this
-    /// project already shipped once (`AgentPool::get` across a 20-second
-    /// `icp identity export`), so it is tested rather than merely commented.
+    /// The invariant that matters: a snapshot is an owned value, so it can be
+    /// held across an `.await` — and taking another one meanwhile cannot
+    /// deadlock, because `snapshot` never hands out a guard.
     ///
-    /// Deterministic, no timers: the second snapshot simply has to complete.
-    /// If `snapshot` returned a guard instead of a clone, this deadlocks and
-    /// the test hangs rather than failing — which is itself an unambiguous
-    /// signal.
+    /// Be clear about what this test is. Its real force is at *compile* time:
+    /// if `snapshot` returned a `std::sync::MutexGuard`, this function would
+    /// not compile, because a guard is `!Send` and cannot be held across an
+    /// await in this future. The runtime assertions below are secondary — they
+    /// confirm both snapshots see the same project. A guard-returning
+    /// implementation additionally self-deadlocks at the second call, but the
+    /// compiler stops it before that ever runs.
+    ///
+    /// This is the rule `AgentPool::get` broke once, holding a pool-wide lock
+    /// across a 20-second `icp identity export` subprocess.
     #[tokio::test]
-    async fn a_held_snapshot_does_not_block_another_snapshot() {
+    async fn a_snapshot_is_owned_and_does_not_block_another_snapshot() {
         let state = ProjectState::new(Some(project("/a")));
 
-        let held = state.snapshot().await;
+        let held = state.snapshot();
         tokio::task::yield_now().await;
-        let second = state.snapshot().await;
+        let second = state.snapshot();
 
         assert_eq!(held.unwrap().root, PathBuf::from("/a"));
         assert_eq!(second.unwrap().root, PathBuf::from("/a"));
@@ -592,7 +597,7 @@ Expected: FAIL — `cannot find type 'ProjectState' in this scope`.
 In `src-tauri/src/project/mod.rs`, between the `pub mod config;` line and the test module:
 
 ```rust
-use tokio::sync::Mutex;
+use std::sync::Mutex;
 
 use crate::discovery::Project;
 
@@ -603,6 +608,28 @@ use crate::discovery::Project;
 /// the remembered root has since been moved or deleted, there genuinely is
 /// no project. The frontend renders it as the "choose a project" empty
 /// state.
+///
+/// Deliberately a **`std::sync::Mutex`**, not `tokio`'s, even though
+/// `AgentPool` next door uses tokio's. Two reasons, and the first is the
+/// important one:
+///
+/// 1. It makes the never-hold-a-lock-across-`.await` rule a *compile-time*
+///    guarantee instead of a convention. `std::sync::MutexGuard` is `!Send`,
+///    so holding one across an `.await` in a spawned future does not compile.
+///    The rule this project already broke once — `AgentPool::get` held a
+///    pool-wide lock across a 20-second `icp identity export` subprocess —
+///    can no longer be broken here by accident.
+/// 2. It keeps `snapshot`/`replace` synchronous, which keeps
+///    `list_environments` a synchronous command. Tauri's macro rejects an
+///    `async` command that takes a lifetime-bearing parameter (`State<'_, T>`)
+///    and does not return `Result`
+///    (`tauri-macros-2.6.3/src/command/wrapper.rs:176`, upstream issue #2533),
+///    so an async `snapshot` would force `list_environments` to return a
+///    `Result` that can never be `Err` purely to satisfy a macro.
+///
+/// Nothing needs to hold this lock across an await: every holder either
+/// clones out of it (`snapshot`) or writes into it (`replace`), both of which
+/// complete without suspending.
 pub struct ProjectState(Mutex<Option<Project>>);
 
 impl ProjectState {
@@ -613,18 +640,29 @@ impl ProjectState {
     /// A clone of the current project.
     ///
     /// Clones and releases the lock rather than handing out a guard, so no
-    /// caller can hold this lock across an `.await`. Every command below
-    /// does exactly that — snapshot, then make network calls — and a guard
-    /// would let one slow query stall every other command in the app. That
-    /// is not hypothetical: `AgentPool::get` shipped with a pool-wide lock
-    /// held across a 20-second `icp identity export` subprocess. The clone
-    /// is a handful of small `Vec`s and is not worth optimising away.
-    pub async fn snapshot(&self) -> Option<Project> {
-        self.0.lock().await.clone()
+    /// caller can hold this lock while it makes network calls. Every command
+    /// does exactly that — snapshot, then query a canister — and a guard
+    /// would let one slow query stall every other command in the app. The
+    /// clone is a handful of small `Vec`s and is not worth optimising away.
+    ///
+    /// Lock poisoning is recovered from rather than propagated. Poisoning
+    /// means some other caller panicked while holding this lock, which here
+    /// could only happen mid-clone; the stored `Option<Project>` is still
+    /// structurally intact, and refusing to serve the open project for the
+    /// rest of the session would be a far worse outcome than continuing.
+    pub fn snapshot(&self) -> Option<Project> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
-    pub async fn replace(&self, project: Project) {
-        *self.0.lock().await = Some(project);
+    /// Swaps in a newly-opened project. See `snapshot` on poison recovery.
+    pub fn replace(&self, project: Project) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(project);
     }
 }
 ```
@@ -684,20 +722,20 @@ use crate::project::ProjectState;
 /// so a layout this app can't read stays distinguishable from a project
 /// that simply has no environments yet.
 #[tauri::command]
-pub async fn list_environments(project: State<'_, ProjectState>) -> Option<Project> {
-    project.snapshot().await
+pub fn list_environments(project: State<'_, ProjectState>) -> Option<Project> {
+    project.snapshot()
 }
 ```
 
-Note it becomes `async` (because `snapshot` is), and keeps returning a plain value rather than a `Result`.
+It stays **synchronous** — it must. Tauri's macro rejects an `async` command that takes a lifetime-bearing parameter (`State<'_, ProjectState>` qualifies) and returns something other than `Result` (`tauri-macros-2.6.3/src/command/wrapper.rs:176`, upstream #2533). Because `snapshot` is synchronous there is nothing to await, so this is a plain `fn` returning a plain `Option<Project>` — no `Result` that can never be `Err`.
 
 The other **six** commands take a uniform, mechanical change. Their `project: State<'_, Project>` parameter becomes `project: State<'_, ProjectState>`, and one line goes in above the existing `let environment = find_environment(&project, &env)?;`:
 
 ```rust
-    let project = project.snapshot().await.ok_or(AppError::NoProjectSelected)?;
+    let project = project.snapshot().ok_or(AppError::NoProjectSelected)?;
 ```
 
-`find_environment(&project, &env)?` then borrows the local owned `Project` and needs no further change; the borrow lives in the async fn's frame across the later `.await`s, which is fine — what must not cross an `.await` is the *lock guard*, and `snapshot` has already released it.
+No `.await` — `snapshot` is synchronous. `find_environment(&project, &env)?` then borrows the local owned `Project` and needs no further change; the borrow lives in the async fn's frame across the later `.await`s, which is fine — what must not cross an `.await` is the *lock guard*, and `snapshot` never hands one out. These six commands already return `Result<_, AppError>`, so the macro constraint that shapes `list_environments` does not affect them.
 
 The six sites, by their current line numbers:
 
@@ -800,7 +838,7 @@ git commit -m "feat: make the open project mutable, optional managed state"
 - Modify: `src-tauri/capabilities/default.json`
 
 **Interfaces:**
-- Consumes: `discovery::resolve_root` (Task 1), `project::config::{read_recorded_root, write_recorded_root}` (Task 2), `project::ProjectState::{snapshot, replace}` (Task 3).
+- Consumes: `discovery::resolve_root` (Task 1), `project::config::{read_recorded_root, write_recorded_root}` (Task 2), `project::ProjectState::{snapshot, replace}` (Task 3 — both **synchronous**, no `.await`).
 - Produces:
   - `agent::AgentPool::clear(&self)` — async
   - `commands::ProjectSelection { project: Project, persist_warning: Option<String> }`, serialized camelCase
@@ -951,7 +989,7 @@ pub async fn select_project(
     // the project being left, and its key may collide with the incoming
     // project's (see `AgentPool::clear`).
     pool.clear().await;
-    project.replace(discovered.clone()).await;
+    project.replace(discovered.clone());
 
     let persist_warning = app
         .path()
