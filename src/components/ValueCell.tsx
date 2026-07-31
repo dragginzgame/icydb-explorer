@@ -19,7 +19,12 @@ const NUMERIC_KINDS = new Set([
 
 // Identifier-shaped kinds route through `Identifier`: elided, copyable, and
 // monospace so runs of base32 stay aligned.
-const IDENTIFIER_KINDS = new Set(["principal", "ulid", "subaccount", "account", "blob"]);
+//
+// `blob` is deliberately absent. `src-tauri/src/view/value.rs` renders a blob as
+// `"<n> bytes"` — a human-readable label, not the value — so routing it here
+// would offer a copy affordance that puts the literal string "1024 bytes" on the
+// clipboard and confirms success. A misleading action is worse than inert text.
+const IDENTIFIER_KINDS = new Set(["principal", "ulid", "subaccount", "account"]);
 
 // Above this many characters a value clips and gains an expand affordance.
 // A length threshold rather than a measured overflow check: it needs no ref, no
@@ -102,16 +107,34 @@ export function ValueCell({
     return <div className="italic text-text-3">null</div>;
   }
 
+  // Numbers are not exempt from the width cap: `intbig`/`natbig` are arbitrary
+  // precision and `nat128` reaches 39 digits, so an uncapped numeric column
+  // blows out exactly like a structured one. They stay non-expandable — a
+  // sub-row of re-indented digits would say nothing — so `title` is the only
+  // route to the full value and must always be there.
   if (NUMERIC_KINDS.has(kind)) {
-    return <div className="text-right tabular-nums">{display}</div>;
+    return (
+      <div className="max-w-88 truncate text-right tabular-nums" title={display}>
+        {display}
+      </div>
+    );
   }
 
   if (IDENTIFIER_KINDS.has(kind)) {
     return <Identifier value={display} />;
   }
 
+  // `title` is load-bearing here, not a nicety. `CLIP_AFTER` counts characters
+  // while `max-w-88` is 352 pixels — unrelated units that do not coincide, so a
+  // 45-character value of digits or capitals overflows the box and clips while
+  // `isExpandable` still reports false. Without `title` there is then no
+  // tooltip and no chevron, and the value is unreadable by any means.
   if (!isExpandable(value) || !onToggle) {
-    return <div className="max-w-88 truncate">{display}</div>;
+    return (
+      <div className="max-w-88 truncate" title={display}>
+        {display}
+      </div>
+    );
   }
 
   return (

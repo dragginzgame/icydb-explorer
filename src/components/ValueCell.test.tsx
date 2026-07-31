@@ -51,6 +51,48 @@ test("a clipped value exposes its full text in title", () => {
   expect(screen.getByTitle(STRUCTURED)).toBeInTheDocument();
 });
 
+/// The test above passes `onToggle`, so it only ever exercises the EXPANDABLE
+/// branch — which is why a dropped `title` on the plain branch survived a full
+/// green suite. This one pins the other branch, and it matters because the two
+/// bounds are in different units: `CLIP_AFTER` counts 48 characters, `max-w-88`
+/// is 352 pixels. A 45-character value of digits and capitals overflows the box
+/// and clips while `isExpandable` reports false, so there is no chevron either —
+/// `title` is then the ONLY way to read the value.
+test("a non-expandable value still exposes its full text in title", () => {
+  const belowThreshold = "A9B8C7D6E5F4G3H2-J1K0L9M8N7O6P5Q4R3-0000000".slice(0, 45);
+  expect(isExpandable({ kind: "text", display: belowThreshold })).toBe(false);
+
+  render(<ValueCell value={{ kind: "text", display: belowThreshold }} />);
+  expect(screen.getByTitle(belowThreshold)).toBeInTheDocument();
+});
+
+/// Numbers were exempt from both the cap and the expand affordance, but
+/// `intbig`/`natbig` are arbitrary precision and `nat128` reaches 39 digits, so
+/// the column blows out exactly like a structured value — the very bug this
+/// phase exists to fix. Non-expandable by design, so `title` is the only route
+/// to the full value.
+test("a big number is width-capped, clips, and keeps its full value in title", () => {
+  const huge = "9".repeat(78);
+  expect(isExpandable({ kind: "natbig", display: huge })).toBe(false);
+
+  const { container } = render(<ValueCell value={{ kind: "natbig", display: huge }} />);
+  expect(container.firstChild).toHaveClass("max-w-88");
+  expect(container.firstChild).toHaveClass("truncate");
+  expect(container.firstChild).toHaveClass("text-right");
+  expect(container.firstChild).toHaveClass("tabular-nums");
+  expect(screen.getByTitle(huge)).toBeInTheDocument();
+});
+
+/// `view/value.rs` renders a blob as `"<n> bytes"` — a label, not the value. As
+/// an identifier it became a button whose click copied the literal string
+/// "1024 bytes" and confirmed success: a misleading action where inert text
+/// belonged.
+test("a blob renders as inert text, not a copyable identifier", () => {
+  render(<ValueCell value={{ kind: "blob", display: "1024 bytes" }} />);
+  expect(screen.queryByRole("button")).toBeNull();
+  expect(screen.getByText("1024 bytes")).toBeInTheDocument();
+});
+
 test("isExpandable is true only for values that would clip", () => {
   expect(isExpandable({ kind: "map", display: STRUCTURED })).toBe(true);
   expect(isExpandable({ kind: "text", display: "short" })).toBe(false);
