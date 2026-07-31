@@ -9,9 +9,13 @@ type Props = {
 };
 
 /** The last path segment — what the user actually recognises. The full path
- * stays available as the button's title. */
+ * stays available as the button's title.
+ *
+ * Splits on both separators because the dialog plugin returns native paths:
+ * POSIX `/Users/me/projects/toko` and Windows `C:\Users\me\projects\toko`.
+ * Splitting on `/` alone would return the whole Windows path unchanged. */
 function basename(path: string): string {
-  const segments = path.split("/").filter((segment) => segment.length > 0);
+  const segments = path.split(/[/\\]/).filter((segment) => segment.length > 0);
   return segments[segments.length - 1] ?? path;
 }
 

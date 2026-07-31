@@ -17,6 +17,16 @@ test("shows the root's basename, with the full path available", () => {
   expect(button).toHaveAttribute("title", "/Users/me/projects/toko");
 });
 
+test("shows the basename of a Windows path, not the whole path", () => {
+  render(
+    <ProjectSelector root="C:\\Users\\me\\projects\\toko" busy={false} onSelect={vi.fn()} />,
+  );
+
+  const button = screen.getByRole("button");
+  expect(button).toHaveTextContent("toko");
+  expect(button).not.toHaveTextContent("C:");
+});
+
 test("invites a choice when no project is open", () => {
   render(<ProjectSelector root={null} busy={false} onSelect={vi.fn()} />);
 
@@ -35,13 +45,17 @@ test("passes the picked directory to onSelect", async () => {
 });
 
 test("does nothing at all when the dialog is cancelled", async () => {
-  open.mockResolvedValue(null);
+  const cancelled = Promise.resolve(null);
+  open.mockReturnValue(cancelled);
   const onSelect = vi.fn();
   render(<ProjectSelector root="/Users/me/projects/toko" busy={false} onSelect={onSelect} />);
 
   fireEvent.click(screen.getByRole("button"));
+  // Await the exact promise the component chained onto, so the assertion
+  // cannot run before the callback it is guarding would have fired. Relying
+  // on `waitFor`'s internal ordering here would pass for the wrong reason.
+  await cancelled;
 
-  await waitFor(() => expect(open).toHaveBeenCalled());
   expect(onSelect).not.toHaveBeenCalled();
 });
 
