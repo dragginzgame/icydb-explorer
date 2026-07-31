@@ -1282,6 +1282,79 @@ test("the SQL bar starts closed, opens on click, and closes again", async () => 
   expect(screen.getByRole("button", { name: "SQL" })).toBeInTheDocument();
 });
 
+/// A flex item's default `min-height: auto` refuses to shrink below its content,
+/// so a scroll region whose column-flex ancestors lack `min-h-0` makes its pane
+/// grow instead of scrolling. Phase 2b measured that in a browser (an 800px page
+/// becoming 11312px, with nothing scrolling) and left it unguarded because jsdom
+/// has no layout engine.
+///
+/// It does not need one: the requirement is structural. Walk up from each scroll
+/// region and assert every column-flex ancestor either carries `min-h-0` or opts
+/// out with `shrink-0`. This is the real property, not a proxy for it.
+///
+/// `Pane`'s own `<section>` is deliberately exempt and must stay that way: it is a
+/// flex item in a ROW container, where per CSS Flexbox §4.5 the automatic minimum
+/// applies only on the main axis — so `min-width` binds (covered by its `min-w-0`)
+/// and `min-height: auto` computes to 0. That is why the walk tests the PARENT's
+/// direction rather than blindly demanding `min-h-0` on every ancestor.
+test("every scroll region can actually shrink: its column-flex ancestors carry min-h-0", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/toko",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    { pid: "aaaaa-aa", role: "canister-a", children: [] },
+  ]);
+  vi.mocked(commands.listTables).mockResolvedValue({
+    type: "entities",
+    entities: [entity("DemoRow", 2)],
+  });
+  vi.mocked(commands.describeTable).mockResolvedValue({
+    type: "schema",
+    entity: "DemoRow",
+    columns: [{ name: "id", typeName: "Ulid", primaryKey: true, optional: false }],
+    indexes: [],
+  });
+  vi.mocked(commands.fetchRows).mockResolvedValue(rowsFixture("DemoRow", ["a", "b"], 1));
+
+  render(<App />);
+
+  // Mount every pane's scroll region at once: a canister and a table selected
+  // (so Rows and Schema populate) and the SQL bar opened — it starts closed.
+  // The schema pane is expanded by default (`schemaCollapsed` is false unless
+  // something set it), so no click is needed to reach its scroll region.
+  fireEvent.click(await screen.findByText("canister-a"));
+  fireEvent.click(await screen.findByText("DemoRow"));
+  await screen.findByText("a-0");
+  fireEvent.click(screen.getByRole("button", { name: "SQL" }));
+  expect(screen.getByRole("textbox")).toBeInTheDocument();
+
+  const scrollers = document.querySelectorAll(".overflow-auto, .overflow-y-auto, .overflow-scroll");
+  // Canisters, Tables, Rows, and Schema each own exactly one scroll region
+  // (`Pane`'s own invariant, see `Pane.test.tsx`), plus the SQL bar's own —
+  // five in total. A lower count would mean some pane failed to mount and
+  // this walk is weaker than it looks.
+  expect(scrollers.length).toBe(5);
+
+  const offenders: string[] = [];
+  for (const scroller of scrollers) {
+    for (let node = scroller as HTMLElement | null; node && node !== document.body; ) {
+      const parent = node.parentElement;
+      if (!parent) break;
+      const inColumn = parent.classList.contains("flex-col");
+      const isFlexItem = parent.classList.contains("flex");
+      const exempt = node.classList.contains("shrink-0") || node.classList.contains("min-h-0");
+      if (isFlexItem && inColumn && !exempt) {
+        offenders.push(`${node.tagName.toLowerCase()}.${[...node.classList].join(".")}`);
+      }
+      node = parent;
+    }
+  }
+
+  expect(offenders).toEqual([]);
+});
+
 test("the settings gear offers theme choices from the header", async () => {
   vi.mocked(commands.listEnvironments).mockResolvedValue({
     root: "/Users/me/projects/toko",
