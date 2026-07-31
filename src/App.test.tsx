@@ -972,6 +972,33 @@ test("switching to a canister with no tables shows the empty state, not skeleton
   expect(screen.getByText(/doesn't expose any icydb entities/i)).toBeInTheDocument();
 });
 
+/// `max-w-cell` is `min(22rem, 42cqw)`, and `cqw` resolves against the nearest
+/// ancestor with `container-type: inline-size` — which is what the Rows pane's
+/// `@container` class establishes. Lose that class and every capped cell in the
+/// grid resolves its cap against nothing.
+///
+/// Nothing else would catch it: jsdom evaluates no container queries and no
+/// layout, `tokens-only`'s existence check covers `bg-`/`text-`/`border-`/
+/// `rounded-` but NOT `max-w-`, and every width test asserts only that the class
+/// is present. So the whole suite stays green while the grid is broken. This is
+/// a class-presence assertion, which is all jsdom can offer — it cannot see the
+/// resolved width, only that the container the width depends on is declared.
+test("the rows pane declares the query container that the cell cap resolves against", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/toko",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    { pid: "root-id", role: "root", children: [] },
+  ]);
+
+  render(<App />);
+
+  const rowsPane = await screen.findByRole("region", { name: "Rows" });
+  expect(rowsPane.className).toMatch(/(?:^|\s)@container(?:\s|$)/);
+});
+
 /// A paging failure must not throw away what the reader is already reading.
 /// Rendering the banner and the grid as alternatives (`{!rowsError && …}`) meant
 /// a rejected "Load more" replaced 100 rows with an error, recoverable only by
