@@ -149,10 +149,7 @@ mod tests {
             ),
             (OutputValue::Blob(vec![1, 2, 3]), "blob"),
             (OutputValue::Bool(true), "bool"),
-            (
-                OutputValue::Date(Date::try_new(2024, 1, 1).expect("valid calendar date")),
-                "date",
-            ),
+            (OutputValue::Date(Date::new(2024, 1, 1)), "date"),
             (OutputValue::Decimal(Decimal::new(1050, 2)), "decimal"),
             (OutputValue::Duration(Duration::from(60u64)), "duration"),
             (OutputValue::Enum(enum_value), "enum"),
@@ -177,11 +174,7 @@ mod tests {
             (OutputValue::Nat64(7), "nat"),
             (OutputValue::Nat128(7u128), "nat128"),
             (OutputValue::NatBig(NatBig::from(7u64)), "natbig"),
-            // `Ulid::generate()` now returns `Result<Self, InternalError>` and
-            // needs live entropy; this test only needs *a* valid `Ulid`
-            // value, not a freshly generated one, so `from_bytes` avoids
-            // pulling entropy concerns into a pure-mapping test.
-            (OutputValue::Ulid(Ulid::from_bytes([0u8; 16])), "ulid"),
+            (OutputValue::Ulid(Ulid::generate()), "ulid"),
             (OutputValue::Unit, "unit"),
         ];
 

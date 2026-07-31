@@ -78,17 +78,17 @@ pub async fn run_query(
 /// this is genuinely how `SqlIntrospectionDisabled` reaches this app, and
 /// `map_reject_message`'s `"SqlIntrospectionDisabled"` string match (below)
 /// does **not** fire for it. `icydb_query` returns a well-formed, successful
-/// reply whose Candid-decoded body is `Err(icydb::Error { code: 179, .. })`
+/// reply whose Candid-decoded body is `Err(icydb::Error { code: 183, .. })`
 /// — a query-level rejection carried in the *value*, not an agent-level
 /// reject/trap — so it never reaches `map_agent_error`/`map_reject_message`
 /// at all; it decodes cleanly and lands here. `icydb::Error`'s `Display` is
 /// exactly `"E{code}"` (the same fact `error.rs`'s `is_unordered_pagination`
-/// relies on for code 5), and 179 is
+/// relies on for code 5), and 183 is
 /// `RUNTIME_BOUNDARY_SQL_INTROSPECTION_DISABLED`'s one and only code
-/// (`icydb-diagnostic-code-0.215.5/src/registry.rs`), so matching the full
-/// string `"E179"` is exact, not a substring guess.
+/// (`icydb-diagnostic-code-0.202.1/src/registry.rs`), so matching the full
+/// string `"E183"` is exact, not a substring guess.
 fn map_icydb_error(error: icydb::Error) -> AppError {
-    if error.to_string() == "E179" {
+    if error.to_string() == "E183" {
         return AppError::IntrospectionDisabled;
     }
     AppError::IcyDb {
@@ -205,9 +205,9 @@ mod tests {
     /// `icydb::Error`'s fields are private with no public constructor for
     /// an arbitrary code, but it derives `serde::Deserialize`, so this
     /// builds one the same way any other cross-boundary payload is
-    /// decoded — code 179 is `RUNTIME_BOUNDARY_SQL_INTROSPECTION_DISABLED`
-    /// (`icydb-diagnostic-code-0.215.5/src/registry.rs`), and its `Display`
-    /// is exactly `"E{code}"` (`icydb-0.215.5/src/error.rs`).
+    /// decoded — code 183 is `RUNTIME_BOUNDARY_SQL_INTROSPECTION_DISABLED`
+    /// (`icydb-diagnostic-code-0.202.1/src/registry.rs`), and its `Display`
+    /// is exactly `"E{code}"` (`icydb-0.202.1/src/error.rs`).
     fn icydb_error(code: u16) -> icydb::Error {
         serde_json::from_value(serde_json::json!({ "code": code, "class": 7, "origin": 5 }))
             .expect("icydb::Error should deserialize for testing")
@@ -220,8 +220,8 @@ mod tests {
     /// `map_reject_message`'s string-based classification above does not
     /// fire for it in practice; this is the one that matters.
     #[test]
-    fn code_179_from_a_decoded_icydb_error_maps_to_introspection_disabled() {
-        let error = map_icydb_error(icydb_error(179));
+    fn code_183_from_a_decoded_icydb_error_maps_to_introspection_disabled() {
+        let error = map_icydb_error(icydb_error(183));
         assert!(matches!(error, AppError::IntrospectionDisabled));
     }
 

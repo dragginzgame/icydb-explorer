@@ -16,7 +16,7 @@
 //! pin note (item 9) for the upgrade note on what that changed for this
 //! repo's own SQL literals.
 
-use icydb_model::prelude::*;
+use icydb::design::prelude::*;
 
 ///
 /// Canister
@@ -38,6 +38,8 @@ pub mod store {
     ///
 
     #[store(
+        ident = "FIXTURE_DATA",
+        store_name = "fixture",
         canister = "Canister",
         storage(journaled(
             data_memory_id = 100,
@@ -56,7 +58,7 @@ pub mod store {
 /// `OutputValue` coverage the fixture is meant to exercise.
 ///
 
-#[list(item(prim = "Text", unbounded), typed_adapters = true)]
+#[list(item(prim = "Text", unbounded))]
 pub struct DemoTags {}
 
 ///
@@ -70,20 +72,19 @@ pub struct DemoTags {}
 #[entity(
     store = "store::FixtureStore",
     version = 1,
+    name = "demo_row",
     pk(field = "id"),
-    typed_adapters = true,
-    timestamps(created_at(name = "created_at"), updated_at(name = "updated_at")),
     fields(
-        field(name = "id", value(item(prim = "Ulid")), generated(insert = "Ulid::generate")),
-        field(name = "name", value(item(prim = "Text", unbounded))),
-        field(name = "count", value(item(prim = "Nat64"))),
-        field(name = "balance", value(item(prim = "Decimal", scale = 2))),
-        field(name = "owner", value(item(prim = "Principal"))),
-        field(name = "created", value(item(prim = "Timestamp"))),
-        field(name = "payload", value(item(prim = "Blob", unbounded))),
-        field(name = "active", value(item(prim = "Bool"))),
-        field(name = "note", value(opt, item(prim = "Text", unbounded))),
-        field(name = "tags", value(item(is = "DemoTags"))),
+        field(ident = "id", value(item(prim = "Ulid")), generated(insert = "Ulid::generate")),
+        field(ident = "name", value(item(prim = "Text", unbounded))),
+        field(ident = "count", value(item(prim = "Nat64"))),
+        field(ident = "balance", value(item(prim = "Decimal", scale = 2))),
+        field(ident = "owner", value(item(prim = "Principal"))),
+        field(ident = "created", value(item(prim = "Timestamp"))),
+        field(ident = "payload", value(item(prim = "Blob", unbounded))),
+        field(ident = "active", value(item(prim = "Bool"))),
+        field(ident = "note", value(opt, item(prim = "Text", unbounded))),
+        field(ident = "tags", value(item(is = "DemoTags"))),
     )
 )]
 pub struct DemoRow {}
@@ -96,11 +97,7 @@ pub struct DemoRow {}
 impl Default for DemoRow {
     fn default() -> Self {
         Self {
-            // `Ulid::generate()` now returns `Result<Self, InternalError>` and
-            // needs live entropy; a `Default` impl only needs *a* valid
-            // `Ulid`, not a freshly generated one (matches the same fix in
-            // `src-tauri/src/view/value.rs`).
-            id: Ulid::from_bytes([0u8; 16]),
+            id: Ulid::generate(),
             name: String::new(),
             count: 0,
             balance: Decimal::ZERO,
@@ -129,13 +126,12 @@ impl Default for DemoRow {
 #[entity(
     store = "store::FixtureStore",
     version = 1,
+    name = "demo_child",
     pk(field = "id"),
     index(fields = ["parent"]),
-    typed_adapters = true,
-    timestamps(created_at(name = "created_at"), updated_at(name = "updated_at")),
     fields(
-        field(name = "id", value(item(prim = "Ulid")), generated(insert = "Ulid::generate")),
-        field(name = "parent", value(item(prim = "Ulid"))),
+        field(ident = "id", value(item(prim = "Ulid")), generated(insert = "Ulid::generate")),
+        field(ident = "parent", value(item(prim = "Ulid"))),
     )
 )]
 pub struct DemoChild {}
@@ -143,11 +139,8 @@ pub struct DemoChild {}
 impl Default for DemoChild {
     fn default() -> Self {
         Self {
-            // See `DemoRow`'s `Default` impl above for why `from_bytes`
-            // rather than `generate()`. Distinct fixed values so `id` and
-            // `parent` are never coincidentally equal.
-            id: Ulid::from_bytes([0u8; 16]),
-            parent: Ulid::from_bytes([1u8; 16]),
+            id: Ulid::generate(),
+            parent: Ulid::generate(),
             created_at: Timestamp::default(),
             updated_at: Timestamp::default(),
         }

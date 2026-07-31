@@ -80,24 +80,6 @@ pub struct MemoryDto {
     pub store_path: String,
 }
 
-/// One constraint from `SHOW CONSTRAINTS`.
-///
-/// icydb's `EntityConstraintDescription` exposes sixteen accessors; this
-/// carries the six the UI displays. The rest (`id`, `field_id`, `index_id`,
-/// `relation_id`, `index`, `relation`, `target_entity`, `action`,
-/// `check_sql`, `validation_progress`) are deliberately omitted — nothing
-/// renders them, and a DTO field with no consumer is a maintenance cost.
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ConstraintDto {
-    pub name: String,
-    pub kind: String,
-    pub origin: String,
-    pub validation_state: String,
-    pub fields: Vec<String>,
-    pub semantics: String,
-}
-
 /// The frontend-facing shape of a `SqlQueryResult`, internally tagged with
 /// `type` so the frontend can discriminate on one field.
 ///
@@ -139,9 +121,5 @@ pub enum ResultDto {
     },
     Memory {
         memory: Vec<MemoryDto>,
-    },
-    Constraints {
-        entity: String,
-        constraints: Vec<ConstraintDto>,
     },
 }

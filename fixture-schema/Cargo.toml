@@ -6,4 +6,3 @@ rust-version = "1.96.0"
 
 [dependencies]
 icydb = { workspace = true }
-icydb-model = { workspace = true }

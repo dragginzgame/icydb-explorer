@@ -3,5 +3,4 @@ members = ["src-tauri", "fixture", "fixture-schema"]
 resolver = "2"
 
 [workspace.dependencies]
-icydb = { version = "=0.215.5", features = ["sql-explain"] }
-icydb-model = "=0.215.5"
+icydb = { version = "=0.202.1", features = ["sql-explain"] }

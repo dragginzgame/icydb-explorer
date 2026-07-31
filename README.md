@@ -1,5 +1,32 @@
 # icydb Explorer
 
+> **This branch (`compat/icydb-0202`) pins `icydb = "=0.202.1"`, not `0.215.5`.**
+>
+> It exists to browse canisters built against 0.202.1 — `dragginz/toko`'s fleet,
+> specifically. `master` is on `=0.215.5` and is the branch to develop against.
+>
+> The two versions are **not wire-compatible**, which is why this branch exists
+> rather than a runtime compatibility layer. A 0.215.5 client cannot decode a
+> 0.202.1 canister's responses, in at least two independent ways:
+>
+> 1. `EntitySchemaDescription` (the `DESCRIBE` payload) gained three non-`opt`
+>    fields in 0.215 — `constraints`, `row_layout_current`,
+>    `row_layout_history_floor`. Candid ignores *extra* fields on the wire but
+>    treats a missing non-`opt` field as a hard error, so every `DESCRIBE` fails,
+>    and with it the schema pane and paged row browsing (which needs `DESCRIBE`
+>    to find a primary key for its `ORDER BY`).
+> 2. `OutputValue`'s `Int` and `Nat` variants were removed in favour of `Int64`
+>    and `Nat64`. Candid matches variants by name hash, so any row containing an
+>    integer cell fails to decode.
+>
+> Both were found by running this app against a real 0.202.1 fleet, *after* a
+> static check of the variant tags had suggested compatibility — the tags were a
+> subset, but payload records and variant *names* were not.
+>
+> When toko bumps to 0.215.5, switch back to `master` and delete this branch.
+> Everything else here — the project picker, the identity selector, the
+> read-only guarantee — is identical on both branches.
+
 A read-only Tauri desktop app for browsing [icydb](https://github.com/dragginzgame/icydb)
 databases living inside Internet Computer canisters: pick a canister, see its
 tables, inspect their schemas, page through rows, and run read-only SQL
@@ -15,7 +42,7 @@ below.
 
 ```
 React/Vite/Tailwind  ──tauri invoke──▶  Rust backend  ──ic-agent──▶  canister.icydb_query
-   (plain JSON DTOs)                    (icydb =0.215.5)
+   (plain JSON DTOs)                    (icydb =0.202.1)
 ```
 
 ## What this app does and does not do
@@ -97,9 +124,9 @@ least a few of these.
    unconditionally — not falling back to either configured value. Without
    it, `SHOW`/`DESCRIBE`/`EXPLAIN` start failing: this app reports it as
    `AppError::IntrospectionDisabled` (`src-tauri/src/error.rs`), and the
-   underlying rejection is icydb's own diagnostic code 179,
+   underlying rejection is icydb's own diagnostic code 183,
    `RUNTIME_BOUNDARY_SQL_INTROSPECTION_DISABLED`
-   (`icydb-diagnostic-code-0.215.5/src/registry.rs`) — even though
+   (`icydb-diagnostic-code-0.202.1/src/registry.rs`) — even though
    `icydb.toml` says `local = true`.
 
 5. **This app is developed and tested against `icp`'s local replica, and a
@@ -169,15 +196,17 @@ least a few of these.
    to opt in explicitly for mainnet schema browsing (and this app's row
    browsing) to be available at all.
 
-9. **`icydb` is pinned exactly, in two places that must move together.** The
-   workspace root `Cargo.toml`'s `[workspace.dependencies]` declares both
-   `icydb = { version = "=0.215.5", features = ["sql-explain"] }` and
-   `icydb-model = "=0.215.5"`; every crate in this workspace (`src-tauri`,
-   `fixture`, `fixture-schema`) that needs either depends on it via
-   `{ workspace = true }`. These two version strings must be bumped in
-   lockstep: `icydb-model-macros` emits `::icydb::__macro::...` paths, so a
-   mismatch between the two pins produces macro-expansion errors far from
-   the actual cause. This matters because `SqlQueryResult`/`OutputValue`
+9. **`icydb` is pinned exactly.** On this branch the workspace root
+   `Cargo.toml`'s `[workspace.dependencies]` declares
+   `icydb = { version = "=0.202.1", features = ["sql-explain"] }` and no
+   `icydb-model` — at 0.202.1 the `#[entity]`/`#[canister]`/`#[store]`/`#[list]`
+   macro surface still lives in `icydb::design`, and `icydb-model` does not exist
+   yet. Every crate in this workspace (`src-tauri`, `fixture`, `fixture-schema`)
+   depends on it via `{ workspace = true }`. On `master`, which is on `=0.215.5`,
+   there are **two** pins that must move in lockstep (`icydb` and `icydb-model`),
+   because `icydb-model-macros` emits `::icydb::__macro::...` paths and a
+   mismatch produces macro-expansion errors far from the actual cause.
+   Pinning matters because `SqlQueryResult`/`OutputValue`
    shapes are version-coupled and icydb moves fast. `src-tauri/src/view/` is
    the one module that translates icydb's types into this app's stable
    frontend DTOs — it is the only module that should need to change on a
