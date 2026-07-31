@@ -694,13 +694,21 @@ Then render `{gridRows && <RowGrid rows={gridRows} loading={rows === null} … /
 
 - [ ] **Step 1: Write the failing tests**
 
+`src/App.test.tsx` has **no** `renderApp`-style helper — read it before writing anything. Every test there builds its own setup inline from these existing primitives, and yours must too:
+
+- `vi.mock("./api/commands")` at module scope, then `vi.mocked(commands.listEnvironments)` etc. per test (`vi` is a configured global — do not import it).
+- `environmentFixture()` for an `Environment`, `entity(name)` for an `EntityDto`, `usableIdentity` for the identity every fixture shares.
+- `deferred<T>()` when a test needs to control exactly when a call settles — which the loading test does, since it must observe the app *while* the rows fetch is still pending.
+
+Write the two tests in that style:
+
 ```tsx
 /// The four panes, each with its own accessible name, so a failure in one is
 /// anchored in one. Before this the schema lived inside the Tables aside and
 /// errors were inserted above the panes, shifting everything below them.
 test("the shell presents four named panes", async () => {
-  renderAppReady();
-
+  // ...arrange with environmentFixture()/entity()/vi.mocked(...) as the
+  // neighbouring tests do, then render <App />.
   for (const name of ["Canisters", "Tables", "Rows", "Schema"]) {
     expect(await screen.findByRole("region", { name })).toBeInTheDocument();
   }
@@ -711,14 +719,17 @@ test("the shell presents four named panes", async () => {
 /// "mounted, loading, no rows" was unreachable and the words "Loading rows…"
 /// stayed on screen. This is the test that would have caught that.
 test("a pending row fetch shows skeletons, not the words Loading rows", async () => {
-  renderAppLoadingRows();
-
+  // Hold the *second* listRows call open with deferred<T>() so the grid has a
+  // shape from the first (see the `lastShape` note in Step 3) and is therefore
+  // mounted and loading. On the very first fetch of a session there is no
+  // shape yet and no skeletons render — that is expected, so this test must
+  // select a table twice, not once.
   expect(await screen.findByTestId("row-skeletons")).toBeInTheDocument();
   expect(screen.queryByText(/loading rows/i)).not.toBeInTheDocument();
 });
 ```
 
-Match the existing helpers in `src/App.test.tsx` — read it first and reuse its `invoke` mocking rather than inventing a second style. If no `renderAppReady`-style helper exists, name yours after what the file already does.
+`row-skeletons` is a `data-testid` you must add to `RowGrid`'s skeleton container — check whether one already exists there first, and reuse `[data-skeleton="true"]` (which `RowGrid.test.tsx` already queries) instead if that is cleaner. Do not add a second marker for the same thing.
 
 - [ ] **Step 2: Run and confirm failure**
 
