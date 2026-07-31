@@ -50,11 +50,16 @@ impl ProjectState {
     /// would let one slow query stall every other command in the app. The
     /// clone is a handful of small `Vec`s and is not worth optimising away.
     ///
-    /// Lock poisoning is recovered from rather than propagated. Poisoning
-    /// means some other caller panicked while holding this lock, which here
-    /// could only happen mid-clone; the stored `Option<Project>` is still
-    /// structurally intact, and refusing to serve the open project for the
-    /// rest of the session would be a far worse outcome than continuing.
+    /// Lock poisoning is recovered from rather than propagated, as cheap
+    /// insurance against a currently-unreachable case rather than a live
+    /// risk: the only operations ever performed under this lock are
+    /// `Option<Project>::clone` and a plain assignment, and the only panic
+    /// either could raise is an allocation failure, which aborts rather than
+    /// unwinds in a default build — so poisoning cannot actually occur today.
+    /// If `Project`'s `Clone` impl ever grows a panicking case, though,
+    /// refusing to serve the open project for the rest of the session would
+    /// be a far worse outcome than recovering the (structurally intact)
+    /// `Option<Project>` and continuing.
     pub fn snapshot(&self) -> Option<Project> {
         self.0
             .lock()
@@ -107,13 +112,20 @@ mod tests {
     /// held across an `.await` — and taking another one meanwhile cannot
     /// deadlock, because `snapshot` never hands out a guard.
     ///
-    /// Be clear about what this test is. Its real force is at *compile* time:
-    /// if `snapshot` returned a `std::sync::MutexGuard`, this function would
-    /// not compile, because a guard is `!Send` and cannot be held across an
-    /// await in this future. The runtime assertions below are secondary — they
-    /// confirm both snapshots see the same project. A guard-returning
-    /// implementation additionally self-deadlocks at the second call, but the
-    /// compiler stops it before that ever runs.
+    /// Be clear about what actually pins that at *compile* time, because it
+    /// is not the `.await` above: `#[tokio::test]` expands to
+    /// `Runtime::block_on`, and `block_on` imposes no `Send` bound on its
+    /// future, so holding a value across this test's `.await` proves nothing
+    /// about `Send`-ness on its own — a `!Send` guard would happily ride
+    /// along here. The `requires_send` assertion below is what actually pins
+    /// it: `std::sync::MutexGuard` is `!Send`, so a guard-returning
+    /// `snapshot` fails *that* check to compile, regardless of how the
+    /// assertions afterward are shaped. (`ProjectState`'s own doc comment,
+    /// about a guard not surviving a *spawned* future, is a separate and
+    /// still-accurate claim — Tauri's async command futures do require
+    /// `Send + 'static`; this comment is only about what this specific test
+    /// proves.) The runtime assertions below are secondary — they confirm
+    /// both snapshots see the same project.
     ///
     /// This is the rule `AgentPool::get` broke once, holding a pool-wide lock
     /// across a 20-second `icp identity export` subprocess.
@@ -122,6 +134,11 @@ mod tests {
         let state = ProjectState::new(Some(project("/a")));
 
         let held = state.snapshot();
+        // A guard would fail this: `std::sync::MutexGuard` is `!Send`. This is
+        // the actual compile-time pin on `snapshot` returning an owned value —
+        // it does not depend on the shape of the assertions below.
+        fn requires_send<T: Send>(_: &T) {}
+        requires_send(&held);
         tokio::task::yield_now().await;
         let second = state.snapshot();
 

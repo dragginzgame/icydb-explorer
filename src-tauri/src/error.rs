@@ -338,6 +338,7 @@ mod tests {
             AppError::NoOrderableColumns {
                 entity: "demo_row".into(),
             },
+            AppError::NoProjectSelected,
         ];
         for error in errors {
             assert_eq!(error.to_string(), error.explanation());

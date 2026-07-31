@@ -62,3 +62,58 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    /// A per-test scratch config directory under the system temp dir, named
+    /// after the test so two tests can never collide, and cleared on entry
+    /// so a previous run's leftovers cannot make a test pass. Mirrors
+    /// `project::config::tests::scratch`.
+    fn scratch(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("icydb-explorer-lib-{name}"));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).expect("scratch dir should be creatable");
+        path
+    }
+
+    #[test]
+    fn no_recorded_root_is_none() {
+        let config_dir = scratch("no-recorded-root");
+        assert!(recorded_project(&config_dir).is_none());
+    }
+
+    /// The case that pins the finding: a recorded root that still exists but
+    /// has no `.icp/` layout must not be discarded down to `None` — it must
+    /// come back as a `Project` carrying `discover()`'s error, so the
+    /// frontend can say what's wrong rather than rendering "no environments
+    /// yet" for what is actually an unreadable project.
+    #[test]
+    fn a_recorded_root_with_no_icp_layout_keeps_the_discover_error() {
+        let config_dir = scratch("no-icp-layout");
+        let root = config_dir.join("some-project");
+        fs::create_dir_all(&root).expect("root should be creatable");
+        project::config::write_recorded_root(&config_dir, &root).expect("write should succeed");
+
+        let project = recorded_project(&config_dir).expect("root exists, so this is Some");
+        assert!(
+            project.error.is_some(),
+            "a project with no .icp/ layout should carry discover()'s error"
+        );
+        assert!(project.environments.is_empty());
+    }
+
+    #[test]
+    fn a_recorded_root_that_no_longer_exists_is_none() {
+        let config_dir = scratch("stale-root");
+        let root = config_dir.join("deleted-project");
+        fs::create_dir_all(&root).expect("root should be creatable");
+        project::config::write_recorded_root(&config_dir, &root).expect("write should succeed");
+        fs::remove_dir_all(&root).expect("removal should succeed");
+
+        assert!(recorded_project(&config_dir).is_none());
+    }
+}
