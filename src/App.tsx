@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   canisterTree,
   countRows,
+  sqlCapabilities,
   describeTable,
   fetchRows,
   listEnvironments,
@@ -20,7 +21,7 @@ import type {
   SchemaDto,
   TreeNode,
 } from "./api/types";
-import { CanisterTree } from "./components/CanisterTree";
+import { CanisterTree, type QueryableMap } from "./components/CanisterTree";
 import { ErrorBanner } from "./components/ErrorBanner";
 import { IdentitySelector } from "./components/IdentitySelector";
 import { Pane } from "./components/Pane";
@@ -84,6 +85,15 @@ function noUsableIdentitySummary(environment: Environment): string {
   return `No usable identity is available for this environment. ${reasons}`;
 }
 
+/// Every canister in the forest, roots and descendants alike.
+///
+/// The tree is arbitrarily deep — a canic fleet nests shards under hubs under
+/// root — so probing "the canisters" means walking it, not reading the top
+/// level.
+function flattenForest(trees: TreeNode[]): TreeNode[] {
+  return trees.flatMap((tree) => [tree, ...flattenForest(tree.children)]);
+}
+
 function App() {
   const { choice: themeChoice, setChoice: setThemeChoice } = useTheme();
   const { layout, setWidth, toggleSchema, setSqlExpanded } = usePaneLayout();
@@ -121,6 +131,7 @@ function App() {
   // Row counts, once asked for. Keyed by entity name and cleared whenever the
   // entity list is replaced, so a count can never be shown against a different
   // canister's table of the same name.
+  const [queryable, setQueryable] = useState<QueryableMap>({});
   const [rowCounts, setRowCounts] = useState<RowCounts>({});
   const [counting, setCounting] = useState(false);
 
@@ -286,6 +297,7 @@ function App() {
     setForest(null);
     setTreeError(null);
     setCanister(null);
+    setQueryable({});
     if (!env || !identity) return;
     let cancelled = false;
     canisterTree(env, identity)
@@ -377,6 +389,36 @@ function App() {
 
   // `loadMore` isn't tied to a `useEffect` cleanup (it's fired from a click,
   // not a selection change), so it uses a request-token equivalent instead:
+  // Probe each canister for an icydb surface, once the fleet is known.
+  //
+  // Its own effect, deliberately. Probing used to run inside the handler that
+  // set the forest, which meant a probe that threw took the whole tree down
+  // with it — navigation vanishing because a metadata read failed is a bad
+  // trade, and the App tests caught it. Marks are decoration on top of the
+  // tree; they must never gate it.
+  //
+  // These are certified metadata reads rather than statements, so running them
+  // for the whole fleet is cheap — unlike the row counts, which are full scans
+  // and stay user-initiated. A probe that fails leaves its canister unmarked,
+  // which reads as "not known" rather than claiming it has nothing.
+  useEffect(() => {
+    if (!forest || !env || !identity) return;
+    let cancelled = false;
+    for (const node of flattenForest(forest)) {
+      void Promise.resolve(sqlCapabilities(env, node.pid, identity))
+        .then((caps) => {
+          if (cancelled || !caps) return;
+          setQueryable((current) => ({ ...current, [node.pid]: caps.query }));
+        })
+        .catch(() => {
+          /* leave unmarked */
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [forest, env, identity]);
+
   // `selectionRef` always holds the *currently selected* env/canister/entity,
   // updated by the effect below on every selection change. If the user picks
   // a different table (or canister, or environment) while a "Load more"
@@ -758,7 +800,12 @@ function App() {
                 <PaneEmpty title="No canisters">This environment has nothing deployed yet.</PaneEmpty>
               )}
               {!treeError && forest && forest.length > 0 && (
-                <CanisterTree trees={forest} selectedPid={canister} onSelect={setCanister} />
+                <CanisterTree
+                  trees={forest}
+                  selectedPid={canister}
+                  onSelect={setCanister}
+                  queryable={queryable}
+                />
               )}
             </Pane>
 

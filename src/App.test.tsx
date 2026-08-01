@@ -1443,3 +1443,27 @@ test("the settings gear offers theme choices from the header", async () => {
 
   expect(screen.getByRole("menuitemradio", { name: /terminal/i })).toBeInTheDocument();
 });
+
+/// Capability marks are decoration on top of the tree and must never gate it.
+/// This started as a real defect: probing ran inside the handler that set the
+/// forest, so a probe that threw took the whole fleet pane down with it. A
+/// metadata read failing must not cost the user their navigation.
+test("a failing capability probe still leaves the fleet navigable", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/toko",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    { pid: "root-id", role: "root", children: [{ pid: "aaaaa-aa", role: "project_hub", children: [] }] },
+  ]);
+  vi.mocked(commands.sqlCapabilities).mockRejectedValue(
+    { kind: "agent", explanation: "metadata unavailable" },
+  );
+
+  render(<App />);
+
+  expect(await screen.findByText("project_hub")).toBeInTheDocument();
+  // Unmarked, because unknown is not the same as "has nothing".
+  expect(screen.queryByText(/no tables/)).not.toBeInTheDocument();
+});
