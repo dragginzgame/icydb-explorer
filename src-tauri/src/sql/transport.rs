@@ -64,7 +64,7 @@ pub async fn run_query(
     Decode!(bytes.as_slice(), Result<SqlQueryEnvelope, icydb::Error>)
         .map_err(|e| AppError::Parse(e.to_string()))?
         .map(|envelope| envelope.result)
-        .map_err(map_icydb_error)
+        .map_err(|e| map_icydb_error(e, &identity_descriptor(agent, identity)))
 }
 
 /// Classifies a decoded `icydb::Error` (the `Err` arm of the
@@ -87,9 +87,26 @@ pub async fn run_query(
 /// `RUNTIME_BOUNDARY_SQL_INTROSPECTION_DISABLED`'s one and only code
 /// (`icydb-diagnostic-code-0.215.7/src/registry.rs`), so matching the full
 /// string `"E179"` is exact, not a substring guess.
-fn map_icydb_error(error: icydb::Error) -> AppError {
+fn map_icydb_error(error: icydb::Error, identity: &str) -> AppError {
     if error.to_string() == "E179" {
         return AppError::IntrospectionDisabled;
+    }
+    // Same shape as E179, and for the same reason: the generated glue's
+    // controller check returns `Err(icydb::Error)` as a *value*, so a rejected
+    // caller produces a well-formed reply that decodes here rather than an
+    // agent-level reject. `map_reject_message`'s `"Unauthorized"`/`"not a
+    // controller"` match below therefore never fires for it, and before this
+    // arm existed `AppError::NotController` — and the explanation naming the
+    // identity — was unreachable for this icydb version; the user saw a bare
+    // `icydb reported error ...: E25` instead.
+    //
+    // 25 is `RUNTIME_BOUNDARY_SQL_SURFACE_CONTROLLER_REQUIRED`'s one and only
+    // code (`icydb-diagnostic-code-0.215.7/src/registry.rs:189`), so matching
+    // the full string is exact rather than a substring guess.
+    if error.to_string() == "E25" {
+        return AppError::NotController {
+            identity: identity.to_string(),
+        };
     }
     AppError::IcyDb {
         code: format!("{error:?}"),
@@ -221,13 +238,27 @@ mod tests {
     /// fire for it in practice; this is the one that matters.
     #[test]
     fn code_179_from_a_decoded_icydb_error_maps_to_introspection_disabled() {
-        let error = map_icydb_error(icydb_error(179));
+        let error = map_icydb_error(icydb_error(179), "test-identity");
         assert!(matches!(error, AppError::IntrospectionDisabled));
+    }
+
+    /// A rejected caller comes back as an `Err` *value* (code 25), not an
+    /// agent-level reject, so `map_reject_message` never sees it. Before this
+    /// was handled here, `AppError::NotController` was unreachable against
+    /// icydb 0.215.x and the user got the bare-code fallback instead of the
+    /// explanation naming their identity.
+    #[test]
+    fn controller_required_value_maps_to_not_controller() {
+        let error = map_icydb_error(icydb_error(25), "toko-local");
+        match error {
+            AppError::NotController { identity } => assert_eq!(identity, "toko-local"),
+            other => panic!("expected NotController, got {other:?}"),
+        }
     }
 
     #[test]
     fn other_icydb_error_codes_keep_the_generic_icydb_variant() {
-        let error = map_icydb_error(icydb_error(5));
+        let error = map_icydb_error(icydb_error(5), "test-identity");
         assert!(matches!(error, AppError::IcyDb { .. }));
     }
 
