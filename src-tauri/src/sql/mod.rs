@@ -9,11 +9,13 @@
 //! guarantee actually lives" section for the full explanation.
 
 mod classify;
+mod count;
 mod limit;
 mod rows;
 mod transport;
 
 pub use classify::{classify, Statement};
 pub use limit::{apply_default_limit, LimitedSql};
+pub use count::{count_sql, read_count};
 pub use rows::rows_sql;
 pub use transport::{map_reject_message, run_query};

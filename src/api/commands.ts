@@ -87,6 +87,23 @@ export async function canisterTree(env: string, identity: string): Promise<TreeN
   }
 }
 
+/// `SELECT COUNT(*)` for one entity.
+///
+/// One call per entity, because counting is a full scan — see the Rust
+/// `count_rows` for why this is not folded into `listTables`.
+export async function countRows(
+  env: string,
+  canister: string,
+  entity: string,
+  identity: string,
+): Promise<number> {
+  try {
+    return await invoke<number>("count_rows", { env, canister, entity, identity });
+  } catch (error) {
+    throw toAppErrorDto(error);
+  }
+}
+
 export async function listTables(
   env: string,
   canister: string,

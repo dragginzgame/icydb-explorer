@@ -59,6 +59,7 @@ pub fn run() {
             commands::select_identity,
             commands::canister_tree,
             commands::list_tables,
+            commands::count_rows,
             commands::describe_table,
             commands::fetch_rows,
             commands::run_sql,

@@ -20,7 +20,7 @@ use crate::discovery::{self, resolve_root, Environment, IdentityRef, Project};
 use crate::error::AppError;
 use crate::project::config::write_recorded_root;
 use crate::project::ProjectState;
-use crate::sql::{apply_default_limit, classify, rows_sql, run_query};
+use crate::sql::{apply_default_limit, classify, count_sql, read_count, rows_sql, run_query};
 use crate::topology::{build_tree, fetch_children, TreeNode};
 use crate::view::{result_to_dto, ResultDto};
 
@@ -230,6 +230,47 @@ pub async fn list_tables(
         "SHOW ENTITIES",
     )
     .await
+}
+
+/// `SELECT COUNT(*)` for one entity.
+///
+/// Separate from `list_tables` on purpose. `SHOW ENTITIES` reports how many
+/// columns, indexes and relations an entity declares — all schema facts, free
+/// to read — but says nothing about how many rows it holds, which is usually
+/// the first thing a reader wants to know and the only way to tell a table
+/// worth opening from an empty one.
+///
+/// Counting is a full scan, so this is one call per entity and the caller
+/// decides when to spend them. That is why it is not folded into
+/// `list_tables`: counting every entity the moment a canister is selected
+/// would be free against an empty local replica and careless against a
+/// production canister holding millions of rows. The user asks; the app does
+/// not guess on their behalf.
+#[tauri::command]
+pub async fn count_rows(
+    env: String,
+    canister: String,
+    entity: String,
+    identity: String,
+    project: State<'_, ProjectState>,
+    pool: State<'_, AgentPool>,
+) -> Result<u64, AppError> {
+    let project = project.snapshot().ok_or(AppError::NoProjectSelected)?;
+    let environment = find_environment(&project, &env)?;
+    let identity_ref = find_identity(environment, &identity)?;
+    let canister_id = parse_principal(&canister)?;
+
+    let result = query_dto(
+        &pool,
+        &project.root,
+        environment,
+        identity_ref,
+        canister_id,
+        &count_sql(&entity),
+    )
+    .await?;
+
+    read_count(&result, &entity)
 }
 
 /// `DESCRIBE <entity>` against `canister`.

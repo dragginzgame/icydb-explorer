@@ -215,3 +215,54 @@ async fn show_describe_and_page_work_against_the_fleet() {
         }
     }
 }
+
+/// Counting is the feature this suite is best placed to prove: it is one
+/// statement whose whole job is to return a number, and the only way to know
+/// the number is right is to ask a canister whose contents are known.
+#[tokio::test]
+#[ignore = "requires ICYDB_EXPLORER_TOKO_PROJECT_ROOT pointed at a deployed toko checkout"]
+async fn counting_reports_a_real_number_for_every_entity() {
+    use icydb_explorer_lib::sql::{count_sql, read_count};
+
+    let (agent, env) = connect_as_the_app_would().await;
+    let root_pid = env
+        .canisters
+        .iter()
+        .find(|c| c.name == "root")
+        .expect("expected a root canister")
+        .id
+        .parse()
+        .expect("root id should be a principal");
+
+    let children = fetch_children(&agent, root_pid).await.expect("fleet walk");
+
+    let mut counted = 0usize;
+    for child in &children {
+        let Ok(listed) = run_query(&agent, child.pid, "SHOW ENTITIES", CALLER).await else {
+            continue;
+        };
+        let Ok(ResultDto::Entities { entities }) = result_to_dto(listed) else {
+            continue;
+        };
+
+        for entity in entities {
+            let result = run_query(&agent, child.pid, &count_sql(&entity.name), CALLER)
+                .await
+                .unwrap_or_else(|e| panic!("counting {} failed: {e:?}", entity.name));
+            let dto = result_to_dto(result).expect("count should decode");
+
+            // The assertion that matters is that a number comes back at all —
+            // `read_count` refuses to turn an unrecognised shape into a zero,
+            // so reaching here means icydb answered in the shape this app
+            // expects. A freshly installed fleet holds no rows, so the value
+            // is 0; asserting a specific number would pin this test to the
+            // state of someone's replica rather than to the behaviour.
+            let count = read_count(&dto, &entity.name)
+                .unwrap_or_else(|e| panic!("counting {} returned an unreadable shape: {e:?}", entity.name));
+            println!("  {} :: {} -> {count} rows", child.role, entity.name);
+            counted += 1;
+        }
+    }
+
+    assert!(counted > 0, "no entity in the fleet could be counted");
+}

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   canisterTree,
+  countRows,
   describeTable,
   fetchRows,
   listEnvironments,
@@ -30,7 +31,7 @@ import { SchemaInspector } from "./components/SchemaInspector";
 import { SchemaPanel } from "./components/SchemaPanel";
 import { SettingsMenu } from "./components/SettingsMenu";
 import { SqlConsole } from "./components/SqlConsole";
-import { TableList } from "./components/TableList";
+import { TableList, type RowCounts } from "./components/TableList";
 import { usePaneLayout } from "./layout/usePaneLayout";
 import { useTheme } from "./theme/useTheme";
 
@@ -117,6 +118,11 @@ function App() {
   const [entities, setEntities] = useState<EntityDto[] | null>(null);
   const [entitiesError, setEntitiesError] = useState<AppErrorDto | null>(null);
   const [entity, setEntity] = useState<string | null>(null);
+  // Row counts, once asked for. Keyed by entity name and cleared whenever the
+  // entity list is replaced, so a count can never be shown against a different
+  // canister's table of the same name.
+  const [rowCounts, setRowCounts] = useState<RowCounts>({});
+  const [counting, setCounting] = useState(false);
 
   const [schema, setSchema] = useState<SchemaDto | null>(null);
   const [schemaError, setSchemaError] = useState<AppErrorDto | null>(null);
@@ -300,6 +306,11 @@ function App() {
     setEntities(null);
     setEntitiesError(null);
     setEntity(null);
+    // Counts belong to the entity list they were taken against. Two canisters
+    // can hold tables of the same name, so keeping them would show one
+    // canister's count beside another's table.
+    setRowCounts({});
+    setCounting(false);
     if (!env || !canister || !identity) return;
     let cancelled = false;
     listTables(env, canister, identity)
@@ -382,6 +393,43 @@ function App() {
   useEffect(() => {
     selectionRef.current = { env, canister, entity, identity };
   }, [env, canister, entity, identity]);
+
+  // Counts every listed entity, one statement each. Sequential rather than
+  // concurrent: this is N full scans against someone's canister, and firing
+  // them in parallel would turn one deliberate click into a burst. A failure
+  // is recorded as null for that entity rather than aborting the run — one
+  // unreadable table should not deny the reader every other count.
+  const countAllRows = useCallback(
+    async (listed: EntityDto[]) => {
+      if (!env || !canister || !identity) return;
+      // The same staleness rule `loadMore` uses, and for the same reason:
+      // compare the *values* selected when this started, not the ref object,
+      // which is replaced on every selection change.
+      const isStale = () => {
+        const current = selectionRef.current;
+        return (
+          current.env !== env || current.canister !== canister || current.identity !== identity
+        );
+      };
+
+      setCounting(true);
+      try {
+        for (const listedEntity of listed) {
+          let counted: number | null = null;
+          try {
+            counted = await countRows(env, canister, listedEntity.name, identity);
+          } catch {
+            counted = null;
+          }
+          if (isStale()) return;
+          setRowCounts((current) => ({ ...current, [listedEntity.name]: counted }));
+        }
+      } finally {
+        if (!isStale()) setCounting(false);
+      }
+    },
+    [env, canister, identity],
+  );
 
   const loadMore = useCallback(() => {
     if (!env || !canister || !entity || !identity) return;
@@ -737,7 +785,14 @@ function App() {
                 <p className="p-3 text-sm text-text-3">Loading tables…</p>
               )}
               {!entitiesError && entities && (
-                <TableList entities={entities} selected={entity} onSelect={setEntity} />
+                <TableList
+                  entities={entities}
+                  selected={entity}
+                  onSelect={setEntity}
+                  counts={rowCounts}
+                  counting={counting}
+                  onCount={() => void countAllRows(entities)}
+                />
               )}
             </Pane>
 
