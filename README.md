@@ -255,6 +255,84 @@ launch, pick this repository's root (or any directory inside it, e.g.
 app](#running-the-app) below — the app discovers its `.icp/` project layout
 (environments, replica URL, default identity) from there.
 
+## Running against a real canic fleet (worked example: toko)
+
+The fixture above proves the pipeline. This is what it took to point the app at
+an actual project, recorded because most of the effort was environment
+archaeology rather than anything to do with this app.
+
+**1. The SQL surface is not on by default, and enabling it takes two
+independent switches.** Neither is set by a stock `canic` project:
+
+```rust
+// each icydb canister's build.rs
+icydb_model::build_with_options!(
+    "design::schema::project::hub::Canister",
+    icydb_model::build::BuildOptions::default()
+        .with_sql_readonly_enabled(true)      // emits `icydb_query` at all
+        .with_sql_introspection_enabled(true) // emits SHOW / DESCRIBE
+);
+```
+
+```toml
+# and each icydb canister's Cargo.toml
+[features]
+default = ["sql"]
+sql = ["icydb/sql"]
+```
+
+The crate-level feature is the part that is easy to miss: the generated
+endpoint is wrapped in `#[cfg(feature = "sql")]`, and that resolves against
+**the canister crate**, not against icydb. Setting `features = ["sql"]` on the
+workspace's `icydb` dependency does nothing for it. In toko, eight of the ten
+icydb crates had no `[features]` section at all.
+
+Confirm the endpoint really made it in before deploying anything:
+
+```bash
+gunzip -c .icp/local/canisters/project_hub/project_hub.wasm.gz \
+  | strings | grep -c icydb_query      # expect >= 1
+```
+
+**2. Deploy, and expect the deploy script to need help.** Three things went
+wrong in a row on a machine that had been used before, none of them the
+project's fault:
+
+- `bin/deploy_be_local` aborts with `network 'local' is already running`. Its
+  probe asks `icp network status --environment toko` while `icp network start`
+  reports the network as `local`, so the script's own stop-and-restart branch
+  never fires.
+- Skipping the network step and deploying against the replica that *was*
+  running fails with `no descriptor found for port 8000`. `icp` manages port
+  **8000**; a `dfx`-started replica sits on **4943**. They are different
+  networks, and `canic install` goes through `icp`.
+- Port 8000 was held by an orphaned `pocket-ic` launched from the project's own
+  `.icp/cli-home/` in an earlier session, with its port descriptor gone — so
+  `icp` could neither see it nor reuse it.
+
+The recovery is the deploy script's own first step, done by hand:
+
+```bash
+icp network stop  --environment toko
+icp network start --environment toko -d
+cd backend && ICP_ENVIRONMENT=toko canic install --profile fast toko
+```
+
+**3. Use the identity that installed the fleet.** `icydb_query` is
+controller-gated. `canic install` runs through `icp`, so the controller is
+`icp`'s identity (`icp identity principal`) — **not** your `dfx` identity, even
+though both exist and both appear selectable. Picking the wrong one gives
+`NotController`, which is accurate but easy to misread as the surface being
+disabled.
+
+**4. Not every table can be paged, and that is a property of the schema.**
+Automatic paging derives `ORDER BY <primary key>` from `DESCRIBE`, because
+icydb requires an ordering whenever a statement uses `LIMIT`. If the primary
+key's type declares no ordering, icydb rejects that statement with diagnostic
+96 and the table can only be browsed from the SQL console with an explicit
+`ORDER BY <some orderable column>`. toko's `PlatformClaimConfigState` is a live
+example. The app explains this rather than showing the bare code.
+
 ## Running the app
 
 ```bash
