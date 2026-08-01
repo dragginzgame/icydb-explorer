@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod commands;
+pub mod diagnostics;
 pub mod discovery;
 pub mod error;
 pub mod project;

@@ -134,6 +134,8 @@ impl AppError {
                      doesn't need to be unique or the primary key), e.g. `ORDER BY id LIMIT 100`, \
                      and it will run."
                         .to_string()
+                } else if let Some(named) = named_icydb_code(message) {
+                    named
                 } else {
                     format!("icydb reported error {code}: {message}")
                 }
@@ -193,6 +195,28 @@ impl AppError {
 /// struct field interpolation, `icydb-0.215.5/src/error.rs`), and 5 is this
 /// registry's one and only code for unordered pagination, so matching the
 /// full string `"E5"` is exact, not a substring guess.
+/// Names an icydb code this app has no purpose-written explanation for.
+///
+/// Four codes are explained by hand, with remedies. The registry has 240, and
+/// every other one used to surface as `icydb reported error <debug>: E<n>` — a
+/// number, for an error the user did not cause and cannot look up. Three of the
+/// four that *are* explained were written only because someone happened to hit
+/// that code and notice, which does not scale to the rest.
+///
+/// icydb cannot supply the name at runtime by design (see
+/// `crate::diagnostics`), so this reads the generated table. The number is kept
+/// alongside the name because the table is pinned to one icydb version and a
+/// rename would otherwise be invisible.
+fn named_icydb_code(message: &str) -> Option<String> {
+    let raw = message.strip_prefix('E')?.parse::<u16>().ok()?;
+    let name = crate::diagnostics::diagnostic_name(raw)?;
+
+    Some(format!(
+        "icydb rejected this with {name} (code {raw}). This explorer has no specific guidance for \
+         this one — that name is what to search icydb's diagnostics for."
+    ))
+}
+
 fn is_unordered_pagination(message: &str) -> bool {
     message == "E5"
 }
@@ -338,18 +362,47 @@ mod tests {
         );
     }
 
-    /// Any other icydb error code keeps the generic, verbatim fallback —
-    /// the purpose-written explanation above is specific to code 5 and
-    /// must not swallow unrelated `IcyDb` errors.
+    /// Any other icydb code must not be swallowed by the purpose-written
+    /// explanations above, which are specific to their own codes.
+    ///
+    /// This used to assert the raw `Error { code: 179, .. }` debug string,
+    /// because that was all the fallback produced. It now names the code from
+    /// icydb's registry instead — strictly more useful, since the name is
+    /// searchable and the debug form was not. The assertion moved with the
+    /// behaviour; what it is really checking, that an unrelated code keeps its
+    /// own identity, is unchanged.
     #[test]
-    fn other_icydb_errors_use_the_generic_fallback() {
+    fn other_icydb_errors_are_named_rather_than_explained_wrongly() {
         let text = AppError::IcyDb {
             code: "Error { code: 179, class: 7, origin: 5 }".into(),
             message: "E179".into(),
         }
         .explanation();
-        assert!(text.contains("E179"));
-        assert!(text.contains("Error { code: 179, class: 7, origin: 5 }"));
+
+        assert!(text.contains("179"), "should carry the code: {text}");
+        assert!(
+            text.contains("RUNTIME_BOUNDARY_SQL_INTROSPECTION_DISABLED"),
+            "should name the code: {text}"
+        );
+        assert!(
+            !text.contains("ORDER BY"),
+            "must not borrow another code's explanation: {text}"
+        );
+    }
+
+    /// A code outside the pinned registry — a canister newer than this build —
+    /// still falls through to the verbatim form, which keeps whatever detail
+    /// icydb sent rather than inventing a name for it.
+    #[test]
+    fn a_code_outside_the_table_keeps_the_verbatim_fallback() {
+        let text = AppError::IcyDb {
+            code: "Error { code: 60000 }".into(),
+            message: "E60000".into(),
+        }
+        .explanation();
+
+        assert!(text.contains("E60000"), "got: {text}");
+        assert!(text.contains("Error { code: 60000 }"), "got: {text}");
     }
 
     #[test]
