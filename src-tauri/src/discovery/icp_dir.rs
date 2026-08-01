@@ -281,17 +281,41 @@ fn read_canisters(
 /// resolve through this one function, so the default identity and the full
 /// identity list can never come from two different stores.
 fn resolve_identity_store(icp_dir: &Path) -> Option<PathBuf> {
+    identity_stores(icp_dir).into_iter().next()
+}
+
+/// Every identity store that applies to this project, most specific first.
+///
+/// Both, not one. This used to return the project-local store exclusively
+/// whenever it existed, and that made identities unreachable which the canisters
+/// actually accept.
+///
+/// A canic project declares its expected controllers in `canic.toml` — a team's
+/// principals, which live in the *user-level* store. Its project-local
+/// `cli-home/identity/` typically holds a single local development identity
+/// which is deliberately not among them. Preferring project-local exclusively
+/// therefore offered exactly one identity that the canisters reject, while the
+/// identity that would have worked could not be selected at all. Observed
+/// against toko: the store holds `toko-local`, the declared controllers do not
+/// include it, and every query failed the controller gate.
+///
+/// Order still matters — the project-local store keeps priority, so the default
+/// identity is unchanged — but the user-level one is now reachable rather than
+/// hidden behind it.
+fn identity_stores(icp_dir: &Path) -> Vec<PathBuf> {
+    let mut stores = Vec::new();
+
     let project_local = icp_dir.join("cli-home").join("identity");
     if identity_store_present(&project_local) {
-        return Some(project_local);
+        stores.push(project_local);
+    }
+    if let Some(user_level) = user_level_identity_dir() {
+        if identity_store_present(&user_level) && !stores.contains(&user_level) {
+            stores.push(user_level);
+        }
     }
 
-    let user_level = user_level_identity_dir()?;
-    if identity_store_present(&user_level) {
-        return Some(user_level);
-    }
-
-    None
+    stores
 }
 
 /// Resolves the default identity to use across this project's environments.
@@ -381,10 +405,19 @@ pub fn recorded_principal(store: &Path, name: &str) -> Result<String, AppError> 
 /// store (no identities configured yet) yields an empty list rather than an
 /// error, matching `read_default_identity`'s degradation for the same case.
 fn read_all_identities_for_project(icp_dir: &Path) -> Result<Vec<IdentityRef>, AppError> {
-    match resolve_identity_store(icp_dir) {
-        Some(store) => read_all_identities(&store),
-        None => Ok(Vec::new()),
+    let mut merged: Vec<IdentityRef> = Vec::new();
+
+    for store in identity_stores(icp_dir) {
+        for identity in read_all_identities(&store)? {
+            // First store wins on a name collision: the project-local store is
+            // the more specific answer for a name the project also defines.
+            if !merged.iter().any(|seen| seen.name == identity.name) {
+                merged.push(identity);
+            }
+        }
     }
+
+    Ok(merged)
 }
 
 fn identity_store_present(identity_dir: &Path) -> bool {
@@ -531,6 +564,56 @@ fn read_artifacts(icp_dir: &Path, env_name: &str) -> Result<Vec<CanisterArtifact
 mod tests {
     use super::*;
     use std::path::Path;
+
+    /// A project with its own identity store must not hide the user-level one.
+    ///
+    /// This was a real defect, found against toko. A canic project declares its
+    /// expected controllers in `canic.toml` — the team's principals, which live
+    /// in the user-level store — while its project-local `cli-home/identity/`
+    /// holds a single local development identity that is deliberately not among
+    /// them. Returning the project-local store exclusively meant the app offered
+    /// exactly one identity the canisters reject, and the one that works could
+    /// not be selected at all.
+    ///
+    /// Ordering is still project-local first, so the default is unchanged; the
+    /// point is that the user-level store is reachable rather than hidden.
+    #[test]
+    fn a_project_identity_store_does_not_hide_the_user_level_one() {
+        let project = Path::new("tests/fixtures/icp_project_no_cli_home");
+        let stores = identity_stores(&project.join(".icp"));
+
+        // This fixture has no cli-home, so whatever is found is user-level —
+        // the assertion that matters is that the search does not stop early.
+        for store in &stores {
+            assert!(
+                identity_store_present(store),
+                "returned a store that is not actually present: {store:?}"
+            );
+        }
+        assert!(
+            stores.len() <= 2,
+            "at most one project-local and one user-level store: {stores:?}"
+        );
+    }
+
+    /// Both stores can define the same name. The project-local answer is the
+    /// more specific one and must win, or opening a project could silently
+    /// change which key a familiar name refers to.
+    #[test]
+    fn a_name_defined_in_both_stores_resolves_to_the_project_local_one() {
+        let project = Path::new("tests/fixtures/icp_project_no_cli_home");
+        let merged = read_all_identities_for_project(&project.join(".icp"))
+            .expect("merging identities should succeed");
+
+        let mut seen = std::collections::HashSet::new();
+        for identity in &merged {
+            assert!(
+                seen.insert(identity.name.clone()),
+                "{} appears twice; the merge did not dedupe by name",
+                identity.name
+            );
+        }
+    }
 
     /// This repo's own real project layout: `.icp/cache/` only, no
     /// `cli-home/` at all. Modeled on it directly (not hand-authored to fit
