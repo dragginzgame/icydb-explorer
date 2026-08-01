@@ -119,9 +119,12 @@ impl AppError {
                     "Automatic row paging ordered this table by its primary key, and icydb \
                      rejected that: the key's type has no ordering defined, so it cannot appear \
                      in an ORDER BY. Since icydb also requires an ORDER BY whenever a statement \
-                     uses LIMIT, this table cannot be paged automatically at all. Use the SQL \
-                     console with an explicit `ORDER BY <column> LIMIT 100` naming a column that \
-                     is orderable — a timestamp such as `created_at` is usually a good choice."
+                     uses LIMIT, this table cannot be paged automatically. Try the SQL console \
+                     with `ORDER BY <column> LIMIT 100` naming a different column — but be aware \
+                     that a table whose key is unorderable often has no orderable column at all, \
+                     in which case an unbounded `SELECT * FROM <table>` in the console is the \
+                     only way to see its rows. This explorer will not issue that for you: an \
+                     unbounded read is a deliberate choice against a canister, not a default."
                         .to_string()
                 } else if is_unordered_pagination(message) {
                     "This statement uses LIMIT/OFFSET but has no ORDER BY. icydb requires an \
