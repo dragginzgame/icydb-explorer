@@ -138,3 +138,10 @@ export type Project = {
  * project was opened but the choice could not be remembered for next
  * launch — a note, never a failure. */
 export type ProjectSelection = { project: Project; persistWarning: string | null };
+
+/** Which icydb SQL endpoints a canister exports (see the Rust `sql_capabilities`).
+ *
+ * `update` is false unless the canister was built with an update policy, which
+ * is not the default. Editing affordances are gated on it: a control the
+ * canister cannot honour must not be offered in the first place. */
+export type SqlCapabilities = { query: boolean; update: boolean };

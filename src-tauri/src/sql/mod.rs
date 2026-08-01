@@ -8,12 +8,14 @@
 //! persist canister state; see README.md's "Read-only, and where that
 //! guarantee actually lives" section for the full explanation.
 
+mod capability;
 mod classify;
 mod count;
 mod limit;
 mod rows;
 mod transport;
 
+pub use capability::{probe, SqlCapabilities};
 pub use classify::{classify, Statement};
 pub use limit::{apply_default_limit, LimitedSql};
 pub use count::{count_sql, read_count};

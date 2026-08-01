@@ -266,3 +266,54 @@ async fn counting_reports_a_real_number_for_every_entity() {
 
     assert!(counted > 0, "no entity in the fleet could be counted");
 }
+
+/// The capability probe against canisters that really do lack an update
+/// endpoint. toko is built with only the readonly and introspection surfaces,
+/// so every canister in the fleet must report `update: false` — and `query:
+/// true`, since this app is querying them successfully throughout this suite.
+///
+/// This is the negative half of the write feature, and the half that matters:
+/// the permissive failure would offer an edit control for a canister that can
+/// only reject the write.
+#[tokio::test]
+#[ignore = "requires ICYDB_EXPLORER_TOKO_PROJECT_ROOT pointed at a deployed toko checkout"]
+async fn a_read_only_fleet_reports_no_update_capability() {
+    use icydb_explorer_lib::sql::probe;
+
+    let (agent, env) = connect_as_the_app_would().await;
+    let root_pid = env
+        .canisters
+        .iter()
+        .find(|c| c.name == "root")
+        .expect("expected a root canister")
+        .id
+        .parse()
+        .expect("root id should be a principal");
+
+    let children = fetch_children(&agent, root_pid).await.expect("fleet walk");
+
+    let mut queryable = 0usize;
+    for child in &children {
+        let caps = probe(&agent, child.pid)
+            .await
+            .unwrap_or_else(|e| panic!("probing {} failed: {e:?}", child.role));
+
+        assert!(
+            !caps.update,
+            "{} reported update support, but toko enables only the readonly and \
+             introspection surfaces — a false positive here would put an edit control in \
+             front of a canister that will reject the write",
+            child.role
+        );
+        if caps.query {
+            queryable += 1;
+        }
+        println!("  {} :: query={} update={}", child.role, caps.query, caps.update);
+    }
+
+    assert!(
+        queryable > 0,
+        "no canister reported query support, yet this suite queries them successfully — \
+         the probe is not reading the interface correctly"
+    );
+}

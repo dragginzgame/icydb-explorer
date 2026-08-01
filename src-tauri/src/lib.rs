@@ -60,6 +60,7 @@ pub fn run() {
             commands::canister_tree,
             commands::list_tables,
             commands::count_rows,
+            commands::sql_capabilities,
             commands::describe_table,
             commands::fetch_rows,
             commands::run_sql,

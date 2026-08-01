@@ -19,7 +19,15 @@
 // like an `AppErrorDto` (e.g. Tauri's own IPC-level failures) is normalized
 // into one rather than left as an opaque string or `Error`.
 import { invoke } from "@tauri-apps/api/core";
-import type { AppErrorDto, Project, ProjectSelection, ResultDto, SqlRunDto, TreeNode } from "./types";
+import type {
+  AppErrorDto,
+  Project,
+  ProjectSelection,
+  ResultDto,
+  SqlCapabilities,
+  SqlRunDto,
+  TreeNode,
+} from "./types";
 
 function isAppErrorDto(error: unknown): error is AppErrorDto {
   return (
@@ -91,6 +99,22 @@ export async function canisterTree(env: string, identity: string): Promise<TreeN
 ///
 /// One call per entity, because counting is a full scan — see the Rust
 /// `count_rows` for why this is not folded into `listTables`.
+/// Which icydb SQL endpoints this canister exports.
+///
+/// A certified metadata read, not a statement — cheap, and it cannot mutate
+/// anything. Gate any editing UI on `update`; never assume it.
+export async function sqlCapabilities(
+  env: string,
+  canister: string,
+  identity: string,
+): Promise<SqlCapabilities> {
+  try {
+    return await invoke<SqlCapabilities>("sql_capabilities", { env, canister, identity });
+  } catch (error) {
+    throw toAppErrorDto(error);
+  }
+}
+
 export async function countRows(
   env: string,
   canister: string,

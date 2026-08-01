@@ -20,7 +20,10 @@ use crate::discovery::{self, resolve_root, Environment, IdentityRef, Project};
 use crate::error::AppError;
 use crate::project::config::write_recorded_root;
 use crate::project::ProjectState;
-use crate::sql::{apply_default_limit, classify, count_sql, read_count, rows_sql, run_query};
+use crate::sql::{
+    apply_default_limit, classify, count_sql, probe, read_count, rows_sql, run_query,
+    SqlCapabilities,
+};
 use crate::topology::{build_tree, fetch_children, TreeNode};
 use crate::view::{result_to_dto, ResultDto};
 
@@ -230,6 +233,35 @@ pub async fn list_tables(
         "SHOW ENTITIES",
     )
     .await
+}
+
+/// What icydb SQL endpoints `canister` exports.
+///
+/// The frontend uses this to decide whether an editing affordance may exist at
+/// all. A canister built without an update policy exports no `icydb_update`,
+/// and no amount of willingness in this app changes that — so the control has
+/// to be absent before the user reaches for it, not error after they have
+/// committed to an edit.
+///
+/// Read from the canister's own `candid:service` metadata: a certified
+/// read-state call, not a statement, so it cannot mutate anything and costs
+/// nothing to ask.
+#[tauri::command]
+pub async fn sql_capabilities(
+    env: String,
+    canister: String,
+    identity: String,
+    project: State<'_, ProjectState>,
+    pool: State<'_, AgentPool>,
+) -> Result<SqlCapabilities, AppError> {
+    let project = project.snapshot().ok_or(AppError::NoProjectSelected)?;
+    let environment = find_environment(&project, &env)?;
+    let identity_ref = find_identity(environment, &identity)?;
+    let canister_id = parse_principal(&canister)?;
+
+    let agent = pool.get(&project.root, environment, identity_ref).await?;
+
+    probe(&agent, canister_id).await
 }
 
 /// `SELECT COUNT(*)` for one entity.
