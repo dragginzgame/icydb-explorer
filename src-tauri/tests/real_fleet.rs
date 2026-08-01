@@ -38,7 +38,6 @@ use std::path::Path;
 
 use ic_agent::Agent;
 
-use icydb_explorer_lib::agent::load_identity;
 use icydb_explorer_lib::discovery::discover;
 use icydb_explorer_lib::sql::run_query;
 use icydb_explorer_lib::topology::fetch_children;
