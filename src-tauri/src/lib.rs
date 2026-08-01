@@ -64,6 +64,7 @@ pub fn run() {
             commands::write_export,
             commands::describe_table,
             commands::fetch_rows,
+            commands::explain_rows,
             commands::run_sql,
         ])
         .run(tauri::generate_context!())

@@ -99,6 +99,26 @@ export async function canisterTree(env: string, identity: string): Promise<TreeN
 ///
 /// One call per entity, because counting is a full scan — see the Rust
 /// `count_rows` for why this is not folded into `listTables`.
+/// `EXPLAIN` of the statement the rows pane is running.
+///
+/// Needs the canister to have icydb's `sql-explain` feature. That is
+/// undetectable from outside — EXPLAIN travels through the same `icydb_query`
+/// method, so a canister without it looks identical and simply rejects the
+/// statement. The rejection is the answer; this cannot be pre-disabled.
+export async function explainRows(
+  env: string,
+  canister: string,
+  entity: string,
+  offset: number,
+  identity: string,
+): Promise<ResultDto> {
+  try {
+    return await invoke<ResultDto>("explain_rows", { env, canister, entity, offset, identity });
+  } catch (error) {
+    throw toAppErrorDto(error);
+  }
+}
+
 /// Writes an exported file to a path the user chose.
 ///
 /// Serialising happens here (the rows are already in hand); writing happens in

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   canisterTree,
   countRows,
+  explainRows,
   sqlCapabilities,
   writeExport,
   describeTable,
@@ -438,6 +439,26 @@ function App() {
   useEffect(() => {
     selectionRef.current = { env, canister, entity, identity };
   }, [env, canister, entity, identity]);
+
+  // Explains the statement the grid is running.
+  //
+  // Two things a reader cannot otherwise see: which SQL the rows pane issued —
+  // paging SQL is derived, never typed — and what icydb does with it. The
+  // result goes into the SQL bar rather than a surface of its own, so the same
+  // rendering that already shows explain output is reused and the reader ends
+  // up looking at the statement itself.
+  const explainCurrentRows = useCallback(async () => {
+    if (!env || !canister || !entity || !identity) return;
+    setSqlExpanded(true);
+    try {
+      const result = await explainRows(env, canister, entity, offset, identity);
+      setSqlResult(result);
+      setSqlError(undefined);
+    } catch (error) {
+      setSqlResult(null);
+      setSqlError(error as AppErrorDto);
+    }
+  }, [env, canister, entity, identity, offset, setSqlExpanded]);
 
   // Saves the page on screen. The rows are already here, so this serialises
   // locally and asks Rust only to write — no extra query, and nothing fetched
@@ -897,6 +918,7 @@ function App() {
                   loading={rowsPending}
                   skeletonColumns={skeletonColumns}
                   onExport={(format) => void exportCurrentRows(format)}
+                  onExplain={() => void explainCurrentRows()}
                 />
               )}
             </Pane>

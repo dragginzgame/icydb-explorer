@@ -23,6 +23,7 @@ export function RowGrid({
   loading = false,
   skeletonColumns,
   onExport,
+  onExplain,
 }: {
   /** The page to render, or `null` when there is no page: a fetch is in flight
    *  (with `loading`) or one failed (without it). Nullable rather than a
@@ -41,6 +42,8 @@ export function RowGrid({
   skeletonColumns?: number;
   /** Save the page currently on screen. Absent means no export control. */
   onExport?: (format: "csv" | "json") => void;
+  /** Explain the statement this grid is running. Absent means no control. */
+  onExplain?: () => void;
 }) {
   const [expanded, setExpanded] = useState<Expanded>(null);
 
@@ -158,6 +161,15 @@ export function RowGrid({
               Export JSON
             </button>
           </>
+        )}
+        {onExplain && (
+          <button
+            type="button"
+            onClick={onExplain}
+            className="rounded-control border border-rule px-2 py-0.5 text-xs text-text-2 hover:bg-surface-2"
+          >
+            Explain query
+          </button>
         )}
       </div>
       {hasMore && (

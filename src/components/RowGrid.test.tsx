@@ -388,3 +388,22 @@ test("the grid does not own a scroll container, so its sticky header can stick",
   expect(header).toHaveClass("sticky");
   expect(header).toHaveClass("top-0");
 });
+
+/// Paging SQL is derived, never typed, so a reader cannot otherwise see which
+/// statement the grid issued. The control is offered only when the caller
+/// supplies a handler.
+test("no explain control unless the caller supplies one", () => {
+  render(<RowGrid rows={wide} hasMore={false} onLoadMore={() => {}} />);
+
+  expect(screen.queryByRole("button", { name: /explain/i })).not.toBeInTheDocument();
+});
+
+test("explaining is user-initiated", () => {
+  const clicks: number[] = [];
+  render(
+    <RowGrid rows={wide} hasMore={false} onLoadMore={() => {}} onExplain={() => clicks.push(1)} />,
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: /explain query/i }));
+  expect(clicks).toHaveLength(1);
+});

@@ -1541,3 +1541,76 @@ test("cancelling the save dialog writes nothing", async () => {
   await waitFor(() => expect(dialogSave).toHaveBeenCalled());
   expect(vi.mocked(commands.writeExport).mock.calls.length).toBe(writesBeforeCancel);
 });
+
+/// Explaining reuses the SQL bar's rendering rather than inventing a surface,
+/// so the reader ends up looking at the statement itself — which paging SQL
+/// otherwise never shows them.
+test("explaining the row view opens the SQL bar with the plan", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/toko",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    { pid: "root-id", role: "root", children: [{ pid: "aaaaa-aa", role: "hub", children: [] }] },
+  ]);
+  vi.mocked(commands.listTables).mockResolvedValue({
+    type: "entities",
+    entities: [entity("User", 2)],
+  });
+  vi.mocked(commands.describeTable).mockResolvedValue({
+    type: "schema",
+    entity: "User",
+    columns: [],
+    indexes: [],
+  });
+  vi.mocked(commands.fetchRows).mockResolvedValue(rowsFixture("User", ["id", "handle"], 1));
+  vi.mocked(commands.explainRows).mockResolvedValue({
+    type: "explain",
+    entity: "User",
+    explain: "index scan on User.id",
+  });
+
+  render(<App />);
+  fireEvent.click(await screen.findByText("hub"));
+  fireEvent.click(await screen.findByText("User"));
+  fireEvent.click(await screen.findByRole("button", { name: /explain query/i }));
+
+  expect(await screen.findByText(/index scan on User.id/)).toBeInTheDocument();
+});
+
+/// A canister built without icydb's sql-explain feature rejects the statement,
+/// and that cannot be detected in advance — EXPLAIN travels through the same
+/// method. The rejection has to reach the reader rather than fail silently.
+test("a canister without sql-explain surfaces the rejection", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/toko",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    { pid: "root-id", role: "root", children: [{ pid: "aaaaa-aa", role: "hub", children: [] }] },
+  ]);
+  vi.mocked(commands.listTables).mockResolvedValue({
+    type: "entities",
+    entities: [entity("User", 2)],
+  });
+  vi.mocked(commands.describeTable).mockResolvedValue({
+    type: "schema",
+    entity: "User",
+    columns: [],
+    indexes: [],
+  });
+  vi.mocked(commands.fetchRows).mockResolvedValue(rowsFixture("User", ["id", "handle"], 1));
+  vi.mocked(commands.explainRows).mockRejectedValue({
+    kind: "icydb",
+    explanation: "icydb rejected this with SQL_FEATURE_OTHER (code 72).",
+  });
+
+  render(<App />);
+  fireEvent.click(await screen.findByText("hub"));
+  fireEvent.click(await screen.findByText("User"));
+  fireEvent.click(await screen.findByRole("button", { name: /explain query/i }));
+
+  expect(await screen.findByText(/SQL_FEATURE_OTHER/)).toBeInTheDocument();
+});

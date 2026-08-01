@@ -392,24 +392,23 @@ pub async fn describe_table(
 /// `SELECT`. Any other `DESCRIBE` failure — a genuinely unreachable replica,
 /// a non-controller identity, etc — still propagates as before; only the
 /// introspection-disabled case gets this treatment.
-#[tauri::command]
-pub async fn fetch_rows(
-    env: String,
-    canister: String,
-    entity: String,
+/// The paging statement `fetch_rows` would issue for this page.
+///
+/// Shared so that explaining the row view explains the *same* statement it
+/// actually runs. Deriving it twice would let the two drift, and an EXPLAIN of a
+/// query the grid does not issue is worse than no EXPLAIN at all.
+async fn rows_page_sql(
+    pool: &AgentPool,
+    project: &Project,
+    environment: &Environment,
+    identity_ref: &IdentityRef,
+    canister_id: Principal,
+    entity: &str,
     offset: u32,
-    identity: String,
-    project: State<'_, ProjectState>,
-    pool: State<'_, AgentPool>,
-) -> Result<ResultDto, AppError> {
-    let project = project.snapshot().ok_or(AppError::NoProjectSelected)?;
-    let environment = find_environment(&project, &env)?;
-    let identity_ref = find_identity(environment, &identity)?;
-    let canister_id = parse_principal(&canister)?;
-
+) -> Result<String, AppError> {
     let describe_sql = format!("DESCRIBE {entity}");
-    let sql = match query_dto(
-        &pool,
+    match query_dto(
+        pool,
         &project.root,
         environment,
         identity_ref,
@@ -425,22 +424,95 @@ pub async fn fetch_rows(
                 .filter(|column| column.primary_key)
                 .map(|column| column.name.clone())
                 .collect();
-            rows_sql(&entity, &pk_columns, DEFAULT_ROW_LIMIT, offset)?
+            rows_sql(entity, &pk_columns, DEFAULT_ROW_LIMIT, offset)
         }
-        // An unexpected (non-Schema) shape from DESCRIBE: fall back to the
-        // same "no primary key derivable" path `rows_sql` already handles,
-        // rather than inventing a new error for a case that cannot occur
-        // against a well-behaved canister. `rows_sql` itself refuses to
-        // build unordered SQL for this, so this still ends in a clear error,
-        // not a silent unordered/unbounded `SELECT`.
-        Ok(_) => rows_sql(&entity, &[], DEFAULT_ROW_LIMIT, offset)?,
-        Err(AppError::IntrospectionDisabled) => {
-            return Err(AppError::RowPagingRequiresIntrospection {
-                entity: entity.clone(),
-            })
-        }
-        Err(other) => return Err(other),
-    };
+        // An unexpected (non-Schema) shape from DESCRIBE: fall back to the same
+        // "no primary key derivable" path `rows_sql` already handles, rather
+        // than inventing a new error for a case that cannot occur against a
+        // well-behaved canister. `rows_sql` itself refuses to build unordered
+        // SQL, so this still ends in a clear error rather than a silent
+        // unordered/unbounded `SELECT`.
+        Ok(_) => rows_sql(entity, &[], DEFAULT_ROW_LIMIT, offset),
+        Err(AppError::IntrospectionDisabled) => Err(AppError::RowPagingRequiresIntrospection {
+            entity: entity.to_string(),
+        }),
+        Err(other) => Err(other),
+    }
+}
+
+/// `EXPLAIN` of the statement the rows pane is running.
+///
+/// Two things a reader cannot otherwise see: which statement the grid issued —
+/// paging SQL is derived, never typed — and what icydb does with it.
+///
+/// Needs the canister to have been built with icydb's `sql-explain` feature.
+/// Unlike the update surface, that is undetectable from the outside: `EXPLAIN`
+/// travels through the same `icydb_query` method, so a canister without the
+/// feature is byte-identical in `candid:service` and simply rejects the
+/// statement. The caller therefore cannot pre-disable this, and the rejection
+/// is the answer.
+#[tauri::command]
+pub async fn explain_rows(
+    env: String,
+    canister: String,
+    entity: String,
+    offset: u32,
+    identity: String,
+    project: State<'_, ProjectState>,
+    pool: State<'_, AgentPool>,
+) -> Result<ResultDto, AppError> {
+    let project = project.snapshot().ok_or(AppError::NoProjectSelected)?;
+    let environment = find_environment(&project, &env)?;
+    let identity_ref = find_identity(environment, &identity)?;
+    let canister_id = parse_principal(&canister)?;
+
+    let sql = rows_page_sql(
+        &pool,
+        &project,
+        environment,
+        identity_ref,
+        canister_id,
+        &entity,
+        offset,
+    )
+    .await?;
+
+    query_dto(
+        &pool,
+        &project.root,
+        environment,
+        identity_ref,
+        canister_id,
+        &format!("EXPLAIN {sql}"),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn fetch_rows(
+    env: String,
+    canister: String,
+    entity: String,
+    offset: u32,
+    identity: String,
+    project: State<'_, ProjectState>,
+    pool: State<'_, AgentPool>,
+) -> Result<ResultDto, AppError> {
+    let project = project.snapshot().ok_or(AppError::NoProjectSelected)?;
+    let environment = find_environment(&project, &env)?;
+    let identity_ref = find_identity(environment, &identity)?;
+    let canister_id = parse_principal(&canister)?;
+
+    let sql = rows_page_sql(
+        &pool,
+        &project,
+        environment,
+        identity_ref,
+        canister_id,
+        &entity,
+        offset,
+    )
+    .await?;
 
     query_dto(
         &pool,
