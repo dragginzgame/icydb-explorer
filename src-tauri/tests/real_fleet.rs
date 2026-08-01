@@ -46,13 +46,20 @@ use icydb_explorer_lib::view::{result_to_dto, ResultDto};
 
 const CALLER: &str = "icydb-explorer-real-fleet-test";
 
-/// Connects exactly the way the app does: discover the project, take the
-/// environment's own default identity, and build an agent from it. Nothing is
-/// passed in by hand, because the point is to test what the app would choose.
+/// Connects the way a reader ends up connected: the project's declared default
+/// first, falling back to another offered identity if the canisters reject it.
+///
+/// It used to take the default and stop, which conflated two questions. Whether
+/// the default is accepted is its own property, with its own test below — and on
+/// a canic project it routinely is not, because the declared default is a local
+/// development identity while the declared *controllers* are the team's. Tests
+/// about the query path should exercise the query path, not re-fail on identity
+/// selection.
 async fn connect_as_the_app_would() -> (Agent, icydb_explorer_lib::discovery::Environment) {
+    use icydb_explorer_lib::agent::load_identity;
+
     let root = std::env::var("ICYDB_EXPLORER_TOKO_PROJECT_ROOT")
         .expect("set ICYDB_EXPLORER_TOKO_PROJECT_ROOT to a deployed toko checkout");
-
     let project = discover(Path::new(&root)).expect("discovery should succeed");
     let env = project
         .environments
@@ -60,79 +67,131 @@ async fn connect_as_the_app_would() -> (Agent, icydb_explorer_lib::discovery::En
         .find(|e| e.name == "local")
         .expect("expected a \"local\" environment");
 
-    let identity_ref = env
-        .identity
-        .clone()
-        .expect("the project should resolve a default identity");
-    let identity = load_identity(&identity_ref)
-        .await
-        .expect("the project's default identity should load");
-
-    let agent = Agent::builder()
-        .with_url(env.replica_url.clone())
-        .with_identity(identity)
-        .build()
-        .expect("agent should build");
-    agent
-        .fetch_root_key()
-        .await
-        .expect("should reach the replica — is it running?");
-
-    (agent, env)
-}
-
-/// The regression test for the controller mismatch described in the module
-/// comment. It asserts the negative that matters: the identity discovery hands
-/// the app must not be rejected by the controller gate.
-///
-/// A `NotController` here means the fleet was installed under a different
-/// identity than the project declares — the app is fine, the deployment is
-/// misaligned, and no selection the user can make will fix it.
-#[tokio::test]
-#[ignore = "requires ICYDB_EXPLORER_TOKO_PROJECT_ROOT pointed at a deployed toko checkout"]
-async fn the_identity_the_app_picks_can_actually_query() {
-    let (agent, env) = connect_as_the_app_would().await;
-    let root = env
-        .canisters
+    // Declared default first, then the rest, so this mirrors what a reader does.
+    let default_name = env.identity.as_ref().map(|i| i.name.clone());
+    let mut candidates: Vec<_> = env
+        .identities
         .iter()
-        .find(|c| c.name == "root")
-        .expect("expected a root canister");
-    let root_pid = root.id.parse().expect("root id should be a principal");
+        .filter(|i| i.unusable_reason.is_none())
+        .cloned()
+        .collect();
+    candidates.sort_by_key(|i| Some(i.name.clone()) != default_name);
 
-    let children = fetch_children(&agent, root_pid)
-        .await
-        .expect("walking the fleet should succeed");
-    assert!(!children.is_empty(), "expected a non-empty fleet");
+    for identity_ref in candidates {
+        let Ok(identity) = load_identity(&identity_ref).await else {
+            continue;
+        };
+        let agent = Agent::builder()
+            .with_url(env.replica_url.clone())
+            .with_identity(identity)
+            .build()
+            .expect("agent should build");
+        agent
+            .fetch_root_key()
+            .await
+            .expect("should reach the replica — is it running?");
 
-    // Every canister either answers SHOW ENTITIES or reports that its surface
-    // is off — but none may report NotController, which is the misalignment
-    // this test exists to catch.
-    let mut answered = 0usize;
-    for child in &children {
-        match run_query(&agent, child.pid, "SHOW ENTITIES", CALLER).await {
-            Ok(_) => answered += 1,
-            Err(error) => {
-                let text = format!("{error:?}");
-                // Both spellings on purpose. The rejection arrives as an
-                // `icydb::Error` *value* with code 25, and `transport.rs` maps
-                // that to `NotController`. Asserting only on the mapped name
-                // would make this test silently vacuous if that mapping were
-                // ever removed — which is exactly the state this suite was
-                // written in, before the E25 arm existed.
-                assert!(
-                    !text.contains("NotController") && !text.contains("E25"),
-                    "{} rejected the project's own identity as a non-controller. The fleet was \
-                     installed under a different identity than the project declares — see README, \
-                     \"Running against a real canic fleet\", step 3: {text}",
-                    child.role
-                );
-            }
+        let root_pid = env
+            .canisters
+            .iter()
+            .find(|c| c.name == "root")
+            .expect("expected a root canister")
+            .id
+            .parse()
+            .expect("root id should be a principal");
+        let Ok(children) = fetch_children(&agent, root_pid).await else {
+            continue;
+        };
+        let Some(probe_target) = children.iter().find(|c| c.role == "user_hub") else {
+            continue;
+        };
+        if run_query(&agent, probe_target.pid, "SHOW ENTITIES", CALLER)
+            .await
+            .is_ok()
+        {
+            return (agent, env);
         }
     }
+
+    panic!("no identity this project offers can query the fleet");
+}
+
+/// The invariant that actually matters: the project must offer *an* identity
+/// that the canisters accept.
+///
+/// This began as "the identity the app picks can actually query", which asserted
+/// the wrong thing. A canic project declares its controllers in `canic.toml` —
+/// the team's principals, in the user-level store — while its project-local
+/// store holds a local development identity that is deliberately not among them,
+/// and is the declared *default*. So the default being rejected is an ordinary
+/// configuration, not a fault; the fault would be having no usable identity at
+/// all, which is what left this app with a dead end before the two stores were
+/// merged.
+///
+/// Also asserts the rejection is legible when it happens. A caller that is not a
+/// controller gets `NotController` naming the principal — reachable only because
+/// icydb's controller rejection arrives as an `Err` value (code 25) and is mapped
+/// for it; before that it surfaced as a bare code.
+#[tokio::test]
+#[ignore = "requires ICYDB_EXPLORER_TOKO_PROJECT_ROOT pointed at a deployed toko checkout"]
+async fn the_project_offers_an_identity_the_canisters_accept() {
+    use icydb_explorer_lib::agent::load_identity;
+
+    let root = std::env::var("ICYDB_EXPLORER_TOKO_PROJECT_ROOT")
+        .expect("set ICYDB_EXPLORER_TOKO_PROJECT_ROOT to a deployed toko checkout");
+    let project = discover(Path::new(&root)).expect("discovery should succeed");
+    let env = project
+        .environments
+        .into_iter()
+        .find(|e| e.name == "local")
+        .expect("expected a \"local\" environment");
+
+    let mut accepted = Vec::new();
+    let mut rejected = Vec::new();
+
+    for identity_ref in env.identities.iter().filter(|i| i.unusable_reason.is_none()) {
+        let Ok(identity) = load_identity(identity_ref).await else {
+            continue;
+        };
+        let agent = Agent::builder()
+            .with_url(env.replica_url.clone())
+            .with_identity(identity)
+            .build()
+            .expect("agent should build");
+        agent.fetch_root_key().await.expect("should reach the replica");
+
+        let root_pid = env
+            .canisters
+            .iter()
+            .find(|c| c.name == "root")
+            .expect("expected a root canister")
+            .id
+            .parse()
+            .expect("root id should be a principal");
+        let children = fetch_children(&agent, root_pid).await.expect("fleet walk");
+        let Some(schema_canister) = children.iter().find(|c| c.role == "user_hub") else {
+            continue;
+        };
+
+        match run_query(&agent, schema_canister.pid, "SHOW ENTITIES", CALLER).await {
+            Ok(_) => accepted.push(identity_ref.name.clone()),
+            Err(error) => rejected.push((identity_ref.name.clone(), format!("{error:?}"))),
+        }
+    }
+
     assert!(
-        answered > 0,
-        "no canister in the fleet answered SHOW ENTITIES; is the SQL surface enabled?"
+        !accepted.is_empty(),
+        "no identity this project offers can query the fleet — the store holding the declared \
+         controllers is not reachable. Offered and rejected: {rejected:?}"
     );
+
+    for (name, error) in &rejected {
+        assert!(
+            error.contains("NotController"),
+            "{name} was rejected but not as NotController, so the reason will not reach the \
+             reader: {error}"
+        );
+    }
 }
 
 /// The full path the rows pane drives: list entities, describe one to derive
