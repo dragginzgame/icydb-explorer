@@ -318,12 +318,36 @@ icp network start --environment toko -d
 cd backend && ICP_ENVIRONMENT=toko canic install --profile fast toko
 ```
 
-**3. Use the identity that installed the fleet.** `icydb_query` is
-controller-gated. `canic install` runs through `icp`, so the controller is
-`icp`'s identity (`icp identity principal`) — **not** your `dfx` identity, even
-though both exist and both appear selectable. Picking the wrong one gives
-`NotController`, which is accurate but easy to misread as the surface being
-disabled.
+**3. Install under the project's own `ICP_HOME`, or the app cannot connect at
+all.** `icydb_query` is controller-gated, and this is the subtlest failure of
+the lot, because everything else looks correct when you get it wrong.
+
+A canic project keeps a repo-local icp home (`.icp/cli-home/`) holding the
+identity its canisters are meant to be controlled by — toko's is `toko-local`.
+`.envrc` exports `ICP_HOME` so that direnv users get it automatically. Run
+`canic install` in a shell *without* direnv and `icp` silently falls back to
+your **global** identity, so the fleet is installed with a controller that is
+not the one the project declares.
+
+This app discovers identities from the project's store. So it will offer
+`toko-local`, that identity is not a controller, every query is rejected with
+`NotController`, and no identity you can pick from the menu will work — the
+controlling principal is not in the project's store at all. The deployment is
+fine; it is simply owned by the wrong key.
+
+Set it explicitly rather than relying on direnv:
+
+```bash
+export ICP_HOME="$PWD/.icp/cli-home"
+icp identity principal        # must match what the app shows for the project
+cd backend && ICP_ENVIRONMENT=toko canic install --profile fast toko
+```
+
+Confirm afterwards that the controller is the identity the app will use:
+
+```bash
+icp canister status <root-canister-id> -e local | grep Controllers
+```
 
 **4. Not every table can be paged, and that is a property of the schema.**
 Automatic paging derives `ORDER BY <primary key>` from `DESCRIBE`, because
