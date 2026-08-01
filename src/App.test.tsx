@@ -6,7 +6,8 @@ import type { EntityDto, Environment, IdentityRef, ResultDto, TreeNode } from ".
 vi.mock("./api/commands");
 
 const dialogOpen = vi.hoisted(() => vi.fn());
-vi.mock("@tauri-apps/plugin-dialog", () => ({ open: dialogOpen }));
+const dialogSave = vi.hoisted(() => vi.fn());
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: dialogOpen, save: dialogSave }));
 
 // The pane layout (widths, the schema collapse, and whether the SQL bar is
 // open) persists to `localStorage`, and vitest gives one jsdom to the whole
@@ -1466,4 +1467,77 @@ test("a failing capability probe still leaves the fleet navigable", async () => 
   expect(await screen.findByText("project_hub")).toBeInTheDocument();
   // Unmarked, because unknown is not the same as "has nothing".
   expect(screen.queryByText(/no tables/)).not.toBeInTheDocument();
+});
+
+/// Export saves the page in hand rather than re-querying, and writes only what
+/// the reader can already see.
+test("exporting writes the rows on screen to the chosen path", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/toko",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    { pid: "root-id", role: "root", children: [{ pid: "aaaaa-aa", role: "hub", children: [] }] },
+  ]);
+  vi.mocked(commands.listTables).mockResolvedValue({
+    type: "entities",
+    entities: [entity("User", 2)],
+  });
+  vi.mocked(commands.describeTable).mockResolvedValue({
+    type: "schema",
+    entity: "User",
+    columns: [],
+    indexes: [],
+  });
+  vi.mocked(commands.fetchRows).mockResolvedValue(rowsFixture("User", ["id", "handle"], 1));
+  dialogSave.mockResolvedValue("/tmp/User.csv");
+
+  render(<App />);
+  fireEvent.click(await screen.findByText("hub"));
+  fireEvent.click(await screen.findByText("User"));
+  // Counted before the click, because mock calls accumulate across this file.
+  const fetchesBeforeExport = vi.mocked(commands.fetchRows).mock.calls.length;
+  fireEvent.click(await screen.findByRole("button", { name: /export csv/i }));
+
+  await waitFor(() => expect(vi.mocked(commands.writeExport)).toHaveBeenCalled());
+  const [path, contents] = vi.mocked(commands.writeExport).mock.calls[0];
+  expect(path).toBe("/tmp/User.csv");
+  expect(contents).toContain("id,handle");
+  // No further fetch: export uses the page already in hand.
+  expect(vi.mocked(commands.fetchRows).mock.calls.length).toBe(fetchesBeforeExport);
+});
+
+/// Cancelling the save dialog is an ordinary outcome, not a failure — nothing
+/// should be written and no error shown.
+test("cancelling the save dialog writes nothing", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/toko",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    { pid: "root-id", role: "root", children: [{ pid: "aaaaa-aa", role: "hub", children: [] }] },
+  ]);
+  vi.mocked(commands.listTables).mockResolvedValue({
+    type: "entities",
+    entities: [entity("User", 2)],
+  });
+  vi.mocked(commands.describeTable).mockResolvedValue({
+    type: "schema",
+    entity: "User",
+    columns: [],
+    indexes: [],
+  });
+  vi.mocked(commands.fetchRows).mockResolvedValue(rowsFixture("User", ["id", "handle"], 1));
+  dialogSave.mockResolvedValue(null);
+  const writesBeforeCancel = vi.mocked(commands.writeExport).mock.calls.length;
+
+  render(<App />);
+  fireEvent.click(await screen.findByText("hub"));
+  fireEvent.click(await screen.findByText("User"));
+  fireEvent.click(await screen.findByRole("button", { name: /export json/i }));
+
+  await waitFor(() => expect(dialogSave).toHaveBeenCalled());
+  expect(vi.mocked(commands.writeExport).mock.calls.length).toBe(writesBeforeCancel);
 });

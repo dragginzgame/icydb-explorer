@@ -235,6 +235,21 @@ pub async fn list_tables(
     .await
 }
 
+/// Writes an exported page of rows to `path`.
+///
+/// The frontend serialises (it holds the rows already) and picks the path
+/// through the save dialog; this only writes, so the one privileged step —
+/// touching the filesystem — stays in Rust where it can be reasoned about.
+///
+/// No `fs` plugin: a single `std::fs::write` behind a command is a smaller
+/// surface than a general filesystem capability, and this app needs exactly one
+/// operation.
+#[tauri::command]
+pub fn write_export(path: String, contents: String) -> Result<(), AppError> {
+    std::fs::write(&path, contents)
+        .map_err(|e| AppError::Agent(format!("could not write {path}: {e}")))
+}
+
 /// What icydb SQL endpoints `canister` exports.
 ///
 /// The frontend uses this to decide whether an editing affordance may exist at

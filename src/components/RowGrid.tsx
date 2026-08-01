@@ -22,6 +22,7 @@ export function RowGrid({
   onLoadMore,
   loading = false,
   skeletonColumns,
+  onExport,
 }: {
   /** The page to render, or `null` when there is no page: a fetch is in flight
    *  (with `loading`) or one failed (without it). Nullable rather than a
@@ -38,6 +39,8 @@ export function RowGrid({
    *  with the schema or the first page. See the skeleton branch below for what
    *  is drawn in the header when the names are not known yet. */
   skeletonColumns?: number;
+  /** Save the page currently on screen. Absent means no export control. */
+  onExport?: (format: "csv" | "json") => void;
 }) {
   const [expanded, setExpanded] = useState<Expanded>(null);
 
@@ -133,6 +136,29 @@ export function RowGrid({
             })}
           </tbody>
         </table>
+      </div>
+      <div className="flex items-center gap-2">
+        {onExport && (
+          // Exports the page in hand, which is what "save what I am looking at"
+          // means here — not the whole table, since that would be an unbounded
+          // read this app does not issue.
+          <>
+            <button
+              type="button"
+              onClick={() => onExport("csv")}
+              className="rounded-control border border-rule px-2 py-0.5 text-xs text-text-2 hover:bg-surface-2"
+            >
+              Export CSV
+            </button>
+            <button
+              type="button"
+              onClick={() => onExport("json")}
+              className="rounded-control border border-rule px-2 py-0.5 text-xs text-text-2 hover:bg-surface-2"
+            >
+              Export JSON
+            </button>
+          </>
+        )}
       </div>
       {hasMore && (
         <button

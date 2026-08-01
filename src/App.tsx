@@ -1,8 +1,10 @@
+import { save } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   canisterTree,
   countRows,
   sqlCapabilities,
+  writeExport,
   describeTable,
   fetchRows,
   listEnvironments,
@@ -22,6 +24,7 @@ import type {
   TreeNode,
 } from "./api/types";
 import { CanisterTree, type QueryableMap } from "./components/CanisterTree";
+import { exportFilename, exportRows, type ExportFormat } from "./lib/exportRows";
 import { ErrorBanner } from "./components/ErrorBanner";
 import { IdentitySelector } from "./components/IdentitySelector";
 import { Pane } from "./components/Pane";
@@ -435,6 +438,24 @@ function App() {
   useEffect(() => {
     selectionRef.current = { env, canister, entity, identity };
   }, [env, canister, entity, identity]);
+
+  // Saves the page on screen. The rows are already here, so this serialises
+  // locally and asks Rust only to write — no extra query, and nothing fetched
+  // that the reader is not already looking at.
+  const exportCurrentRows = useCallback(
+    async (format: ExportFormat) => {
+      if (!rows) return;
+      const path = await save({ defaultPath: exportFilename(rows, format) });
+      // Cancelling the dialog is an ordinary outcome, not a failure.
+      if (!path) return;
+      try {
+        await writeExport(path, exportRows(rows, format));
+      } catch (error) {
+        setRowsError(error as AppErrorDto);
+      }
+    },
+    [rows],
+  );
 
   // Counts every listed entity, one statement each. Sequential rather than
   // concurrent: this is N full scans against someone's canister, and firing
@@ -875,6 +896,7 @@ function App() {
                   onLoadMore={loadMore}
                   loading={rowsPending}
                   skeletonColumns={skeletonColumns}
+                  onExport={(format) => void exportCurrentRows(format)}
                 />
               )}
             </Pane>

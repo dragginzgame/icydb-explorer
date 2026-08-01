@@ -99,6 +99,18 @@ export async function canisterTree(env: string, identity: string): Promise<TreeN
 ///
 /// One call per entity, because counting is a full scan — see the Rust
 /// `count_rows` for why this is not folded into `listTables`.
+/// Writes an exported file to a path the user chose.
+///
+/// Serialising happens here (the rows are already in hand); writing happens in
+/// Rust, so the privileged step stays on one side.
+export async function writeExport(path: string, contents: string): Promise<void> {
+  try {
+    await invoke<void>("write_export", { path, contents });
+  } catch (error) {
+    throw toAppErrorDto(error);
+  }
+}
+
 /// Which icydb SQL endpoints this canister exports.
 ///
 /// A certified metadata read, not a statement — cheap, and it cannot mutate
