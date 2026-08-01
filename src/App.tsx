@@ -987,6 +987,8 @@ function App() {
           </div>
 
           <SqlBar
+            entities={entities}
+            schema={schema}
             expanded={layout.sqlExpanded}
             onExpandedChange={setSqlExpanded}
             onRun={handleRunSql}
@@ -1028,6 +1030,8 @@ function SqlBar({
   limitAppended,
   orderByMissing,
   result,
+  entities,
+  schema,
 }: {
   expanded: boolean;
   onExpandedChange: (expanded: boolean) => void;
@@ -1036,6 +1040,10 @@ function SqlBar({
   limitAppended: boolean;
   orderByMissing: boolean;
   result: ResultDto | null;
+  /** Passed through for completion: the canister's tables, and the selected
+   *  table's schema for its columns and its real primary key. */
+  entities: EntityDto[] | null;
+  schema: SchemaDto | null;
 }) {
   if (!expanded) {
     return (
@@ -1081,6 +1089,8 @@ function SqlBar({
           error={error}
           limitAppended={limitAppended}
           orderByMissing={orderByMissing}
+          entities={entities}
+          schema={schema}
         />
         {result && (
           <div className="mt-2">
