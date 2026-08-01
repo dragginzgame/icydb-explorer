@@ -85,7 +85,7 @@ pub async fn run_query(
 /// exactly `"E{code}"` (the same fact `error.rs`'s `is_unordered_pagination`
 /// relies on for code 5), and 179 is
 /// `RUNTIME_BOUNDARY_SQL_INTROSPECTION_DISABLED`'s one and only code
-/// (`icydb-diagnostic-code-0.215.5/src/registry.rs`), so matching the full
+/// (`icydb-diagnostic-code-0.215.7/src/registry.rs`), so matching the full
 /// string `"E179"` is exact, not a substring guess.
 fn map_icydb_error(error: icydb::Error) -> AppError {
     if error.to_string() == "E179" {
@@ -206,7 +206,7 @@ mod tests {
     /// an arbitrary code, but it derives `serde::Deserialize`, so this
     /// builds one the same way any other cross-boundary payload is
     /// decoded — code 179 is `RUNTIME_BOUNDARY_SQL_INTROSPECTION_DISABLED`
-    /// (`icydb-diagnostic-code-0.215.5/src/registry.rs`), and its `Display`
+    /// (`icydb-diagnostic-code-0.215.7/src/registry.rs`), and its `Display`
     /// is exactly `"E{code}"` (`icydb-0.215.5/src/error.rs`).
     fn icydb_error(code: u16) -> icydb::Error {
         serde_json::from_value(serde_json::json!({ "code": code, "class": 7, "origin": 5 }))

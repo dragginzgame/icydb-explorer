@@ -115,7 +115,15 @@ impl AppError {
                  is correct."
             ),
             AppError::IcyDb { code, message } => {
-                if is_unordered_pagination(message) {
+                if is_order_by_not_orderable(message) {
+                    "Automatic row paging ordered this table by its primary key, and icydb \
+                     rejected that: the key's type has no ordering defined, so it cannot appear \
+                     in an ORDER BY. Since icydb also requires an ORDER BY whenever a statement \
+                     uses LIMIT, this table cannot be paged automatically at all. Use the SQL \
+                     console with an explicit `ORDER BY <column> LIMIT 100` naming a column that \
+                     is orderable — a timestamp such as `created_at` is usually a good choice."
+                        .to_string()
+                } else if is_unordered_pagination(message) {
                     "This statement uses LIMIT/OFFSET but has no ORDER BY. icydb requires an \
                      explicit ordering whenever a statement paginates — without one, which rows \
                      land on which page isn't well-defined, so icydb rejects the statement \
@@ -186,6 +194,21 @@ fn is_unordered_pagination(message: &str) -> bool {
     message == "E5"
 }
 
+/// `SQL_FEATURE_ORDER_BY_FIELD_NOT_ORDERABLE`
+/// (`icydb-diagnostic-code-0.215.7/src/registry.rs`), raised when a statement
+/// orders by a field whose type declares no ordering.
+///
+/// This is a *different* failure from [`AppError::NoOrderableColumns`], which
+/// fires when an entity declares no primary key for paging to order by at all.
+/// Here the entity does declare one, this explorer builds what looks like a
+/// perfectly good `ORDER BY <pk> LIMIT 100`, and icydb rejects it at query
+/// time. Found against toko's `PlatformClaimConfigState`, whose primary key is
+/// not an orderable type; before this, that surfaced as a bare `icydb reported
+/// error ...: E96` with no indication of what to do about it.
+fn is_order_by_not_orderable(message: &str) -> bool {
+    message == "E96"
+}
+
 impl Serialize for AppError {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -244,6 +267,57 @@ mod tests {
     /// `Display` is exactly `"E{code}"`. Confirmed live against a real
     /// canister (Task 10's report): `SELECT * FROM demo_row LIMIT 10`
     /// rejects with precisely this code/message pair.
+    /// icydb's diagnostic 96 (`SQL_FEATURE_ORDER_BY_FIELD_NOT_ORDERABLE`)
+    /// surfaces as `AppError::IcyDb { message: "E96", .. }`. Confirmed live
+    /// against toko's `PlatformClaimConfigState` on a local replica: the
+    /// entity declares primary key `id`, this explorer therefore builds
+    /// `SELECT * FROM PlatformClaimConfigState ORDER BY id LIMIT 100`, and the
+    /// canister rejects it with `code = 96, class = 7, origin = 7`.
+    ///
+    /// Before this case existed, that fell through to the generic arm and the
+    /// user saw only `icydb reported error ...: E96` — a bare code, for a
+    /// situation they did not cause and could not act on without knowing that
+    /// icydb ties LIMIT to ORDER BY.
+    #[test]
+    fn order_by_not_orderable_explains_why_paging_cannot_work() {
+        let text = AppError::IcyDb {
+            code: "Error { code: 96, class: 7, origin: 7 }".into(),
+            message: "E96".into(),
+        }
+        .explanation();
+
+        assert!(text.contains("ORDER BY"), "expected the clause named, got: {text}");
+        assert!(
+            text.contains("SQL console"),
+            "expected the remedy, got: {text}"
+        );
+        // Must not be the generic fallback, which is what shipped before.
+        assert!(
+            !text.contains("icydb reported error"),
+            "fell through to the generic arm: {text}"
+        );
+    }
+
+    /// The two ORDER BY failures are distinct and must not share an
+    /// explanation: E5 means the statement omitted ORDER BY and the user can
+    /// add one, while E96 means the column paging chose cannot be ordered at
+    /// all and no automatic ORDER BY will ever work for this table.
+    #[test]
+    fn the_two_order_by_failures_explain_different_things() {
+        let missing = AppError::IcyDb {
+            code: "Error { code: 5, class: 1, origin: 7 }".into(),
+            message: "E5".into(),
+        }
+        .explanation();
+        let not_orderable = AppError::IcyDb {
+            code: "Error { code: 96, class: 7, origin: 7 }".into(),
+            message: "E96".into(),
+        }
+        .explanation();
+
+        assert_ne!(missing, not_orderable);
+    }
+
     #[test]
     fn unordered_pagination_explains_the_missing_order_by() {
         let text = AppError::IcyDb {
