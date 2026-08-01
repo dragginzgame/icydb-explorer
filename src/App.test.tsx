@@ -1,4 +1,5 @@
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { EditorView } from "@codemirror/view";
+import { act, render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import App from "./App";
 import * as commands from "./api/commands";
 import type { EntityDto, Environment, IdentityRef, ResultDto, TreeNode } from "./api/types";
@@ -50,6 +51,22 @@ function deferred<T>() {
 // skeletons from `EntityDto.columns` — so a test whose `entity()` arity
 // disagrees with the arity its `fetchRows` fixture returns is testing a
 // contradiction. Defaulted so the tests that do not care stay unchanged.
+/// Sets the console's statement.
+///
+/// The console is a CodeMirror editor rather than a textarea, so `fireEvent`
+/// cannot set its text — the document lives in editor state. `findFromDOM` is
+/// CodeMirror's own documented way in, and `act` flushes the update listener's
+/// callback into React state before the assertion reads it.
+function typeSql(text: string) {
+  const host = document.querySelector<HTMLElement>("[data-sql-editor]");
+  if (!host) throw new Error("no SQL editor mounted");
+  const view = EditorView.findFromDOM(host);
+  if (!view) throw new Error("no CodeMirror view found");
+  act(() => {
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
+  });
+}
+
 function entity(name: string, columns = 1): EntityDto {
   return { name, storePath: "", storage: "stable", columns, indexes: 0, relations: 0, schemaVersion: 1 };
 }
@@ -304,7 +321,7 @@ test("a stale SQL console run never overwrites a newer canister's result", async
   // driving it. (It stays open across the canister switch below: the bar's
   // expanded state is layout, not selection.)
   fireEvent.click(screen.getByRole("button", { name: "SQL" }));
-  fireEvent.change(screen.getByRole("textbox"), { target: { value: "SELECT 1" } });
+  typeSql("SELECT 1");
   fireEvent.click(screen.getByRole("button", { name: /run/i }));
 
   // Switch canisters and re-run before A's runSql resolves.
@@ -482,9 +499,7 @@ test("renders SHOW CONSTRAINTS results from the console", async () => {
   fireEvent.click(screen.getByText("canister-a"));
   // The console lives in the SQL bar, which starts collapsed.
   fireEvent.click(screen.getByRole("button", { name: "SQL" }));
-  fireEvent.change(screen.getByRole("textbox"), {
-    target: { value: "SHOW CONSTRAINTS FROM demo_row" },
-  });
+  typeSql("SHOW CONSTRAINTS FROM demo_row");
   fireEvent.click(screen.getByRole("button", { name: /run/i }));
 
   expect(await screen.findByText("demo_row_pk")).toBeDefined();
@@ -1155,7 +1170,7 @@ test("every max-w-cell element in the app has an @container ancestor", async () 
   // The second call site: `SqlResultView`'s `RowGrid`, reached through the SQL
   // bar, which starts collapsed.
   fireEvent.click(screen.getByRole("button", { name: "SQL" }));
-  fireEvent.change(screen.getByRole("textbox"), { target: { value: "SELECT x, y FROM DemoRow" } });
+  typeSql("SELECT x, y FROM DemoRow");
   fireEvent.click(screen.getByRole("button", { name: "Run" }));
   expect(await screen.findByText("x-0")).toBeInTheDocument();
 

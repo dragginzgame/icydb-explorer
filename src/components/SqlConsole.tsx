@@ -1,7 +1,8 @@
 import { useState } from "react";
 
 import type { AppErrorDto, EntityDto, SchemaDto } from "../api/types";
-import { applyOrderByAssist, applySuggestion, orderByAssist, suggestSql } from "../lib/suggestSql";
+import { applyOrderByAssist, orderByAssist } from "../lib/suggestSql";
+import { SqlEditor } from "./SqlEditor";
 
 export function SqlConsole({
   onRun,
@@ -25,19 +26,12 @@ export function SqlConsole({
   orderByMissing?: boolean;
 }) {
   const [sql, setSql] = useState("");
-  const suggestions = suggestSql(sql, entities ?? null, schema ?? null).slice(0, 8);
   const assist = orderByAssist(sql, schema ?? null);
 
   return (
     <div className="flex flex-col gap-2">
-      <textarea
-        value={sql}
-        onChange={(event) => setSql(event.target.value)}
-        rows={4}
-        spellCheck={false}
-        className="w-full rounded-control border border-rule p-2 font-mono text-sm"
-        placeholder="SELECT * FROM ..."
-      />
+      <SqlEditor value={sql} onChange={setSql} entities={entities} schema={schema} />
+
       {assist && (
         // icydb rejects LIMIT without an explicit ordering, and that is the
         // most-hit failure in this app. Offered as one click using the real
@@ -49,27 +43,6 @@ export function SqlConsole({
         >
           Add “{assist}” — icydb needs an ordering before LIMIT
         </button>
-      )}
-
-      {suggestions.length > 0 && (
-        // Capped at eight. A longer list is the scrolling the schema pane
-        // already offers, and stops being a suggestion.
-        <ul className="flex flex-wrap gap-1" aria-label="SQL suggestions">
-          {suggestions.map((suggestion) => (
-            <li key={`${suggestion.kind}:${suggestion.text}`}>
-              <button
-                type="button"
-                onClick={() => setSql(applySuggestion(sql, suggestion.text))}
-                title={suggestion.detail}
-                className={`rounded-control border border-rule px-2 py-0.5 font-mono text-xs hover:bg-surface-2 ${
-                  suggestion.kind === "column" ? "text-pk" : "text-text-2"
-                }`}
-              >
-                {suggestion.text}
-              </button>
-            </li>
-          ))}
-        </ul>
       )}
 
       <div className="flex items-center gap-2">
