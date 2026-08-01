@@ -83,3 +83,63 @@ test("the control reports progress and cannot be fired twice", () => {
   const control = screen.getByRole("button", { name: /counting/i });
   expect(control).toBeDisabled();
 });
+
+const many = Array.from({ length: 8 }, (_, index) => ({
+  name: index === 0 ? "UserProjects" : `Entity${index}`,
+  storePath: "",
+  storage: "stable",
+  columns: 2,
+  indexes: 0,
+  relations: 0,
+  schemaVersion: 1,
+}));
+
+/// Below a handful of tables the eye is faster than the keyboard, so the box
+/// would just be chrome.
+test("no filter box for a short list", () => {
+  render(<TableList entities={entities} selected={null} onSelect={() => {}} />);
+
+  expect(screen.queryByRole("searchbox", { name: /filter tables/i })).not.toBeInTheDocument();
+});
+
+test("a long list gets a filter box", () => {
+  render(<TableList entities={many} selected={null} onSelect={() => {}} />);
+
+  expect(screen.getByRole("searchbox", { name: /filter tables/i })).toBeInTheDocument();
+});
+
+test("filtering narrows the list and is case-insensitive", () => {
+  render(<TableList entities={many} selected={null} onSelect={() => {}} />);
+
+  fireEvent.change(screen.getByRole("searchbox", { name: /filter tables/i }), {
+    target: { value: "userproj" },
+  });
+
+  expect(screen.getByText("UserProjects")).toBeInTheDocument();
+  expect(screen.queryByText("Entity3")).not.toBeInTheDocument();
+});
+
+/// A filter that matches nothing must say what was searched for, so the reader
+/// sees their typo rather than wondering whether the canister lost its tables.
+test("a filter matching nothing names what was searched for", () => {
+  render(<TableList entities={many} selected={null} onSelect={() => {}} />);
+
+  fireEvent.change(screen.getByRole("searchbox", { name: /filter tables/i }), {
+    target: { value: "zzz" },
+  });
+
+  expect(screen.getByText(/No table matches/)).toBeInTheDocument();
+  expect(screen.getByText(/zzz/)).toBeInTheDocument();
+});
+
+/// Whitespace alone is not a search — it must not empty the pane.
+test("a whitespace-only filter shows everything", () => {
+  render(<TableList entities={many} selected={null} onSelect={() => {}} />);
+
+  fireEvent.change(screen.getByRole("searchbox", { name: /filter tables/i }), {
+    target: { value: "   " },
+  });
+
+  expect(screen.getByText("UserProjects")).toBeInTheDocument();
+  expect(screen.queryByText(/No table matches/)).not.toBeInTheDocument();
+});
