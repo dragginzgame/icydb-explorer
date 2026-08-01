@@ -1614,3 +1614,79 @@ test("a canister without sql-explain surfaces the rejection", async () => {
 
   expect(await screen.findByText(/SQL_FEATURE_OTHER/)).toBeInTheDocument();
 });
+
+/// icydb's SQL endpoints are controller-gated, and a canic project's declared
+/// default identity is routinely not one of its declared controllers. Following
+/// the default blindly opens the app onto an error the reader did not cause.
+test("switches to an identity that controls the fleet, and says so", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/toko",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    { pid: "root-id", role: "root", children: [] },
+  ]);
+  // The fleet is controlled by a second identity, not the declared default.
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/toko",
+    environments: [
+      {
+        ...environmentFixture(),
+        identities: [
+          usableIdentity,
+          { ...usableIdentity, name: "team-controller" },
+        ],
+      },
+    ],
+    error: null,
+  });
+  vi.mocked(commands.preferredIdentityFor).mockResolvedValue("team-controller");
+
+  render(<App />);
+
+  // Names both identities and the reason, so the reader can see what changed
+  // and why rather than just noticing the picker moved.
+  const note = await screen.findByText(/Switched to identity/);
+  expect(note.textContent).toMatch(/team-controller/);
+  expect(note.textContent).toMatch(/is not a controller/);
+});
+
+/// A default that already works must be left alone — this must never move an
+/// identity the user is deliberately on.
+test("a default that already controls the fleet is left alone", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/toko",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    { pid: "root-id", role: "root", children: [] },
+  ]);
+  // The backend returns the name already selected.
+  vi.mocked(commands.preferredIdentityFor).mockResolvedValue("default");
+
+  render(<App />);
+  await screen.findByText("root");
+
+  expect(screen.queryByText(/Switched to identity/)).not.toBeInTheDocument();
+});
+
+/// No identity controlling the fleet is a real answer that no switch can fix.
+/// Silently switching to something that also cannot query would be worse.
+test("no controlling identity leaves the selection untouched", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/toko",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    { pid: "root-id", role: "root", children: [] },
+  ]);
+  vi.mocked(commands.preferredIdentityFor).mockResolvedValue(null);
+
+  render(<App />);
+  await screen.findByText("root");
+
+  expect(screen.queryByText(/Switched to identity/)).not.toBeInTheDocument();
+});

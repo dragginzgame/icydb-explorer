@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   canisterTree,
   countRows,
+  preferredIdentityFor,
   explainRows,
   sqlCapabilities,
   writeExport,
@@ -136,6 +137,11 @@ function App() {
   // entity list is replaced, so a count can never be shown against a different
   // canister's table of the same name.
   const [queryable, setQueryable] = useState<QueryableMap>({});
+  // Set when this app moved off the project's declared default identity because
+  // that identity does not control the canisters. Shown rather than done
+  // silently: switching who you are acting as is not something to do behind
+  // someone's back.
+  const [identityNote, setIdentityNote] = useState<string | null>(null);
   const [rowCounts, setRowCounts] = useState<RowCounts>({});
   const [counting, setCounting] = useState(false);
 
@@ -393,6 +399,45 @@ function App() {
 
   // `loadMore` isn't tied to a `useEffect` cleanup (it's fired from a click,
   // not a selection change), so it uses a request-token equivalent instead:
+  // Prefer an identity that actually controls the fleet.
+  //
+  // icydb's SQL endpoints are controller-gated, and which identity a project
+  // declares as its default is a separate setting from which principals it
+  // declares as controllers. On a canic project those routinely disagree — the
+  // default is a per-machine development identity, the controllers are the
+  // team's — so following the default blindly opens this app onto an error the
+  // reader did not cause.
+  //
+  // Asked once the fleet is known, never during discovery: discovery is a
+  // filesystem read that has to work with no replica running.
+  useEffect(() => {
+    if (!forest || !env || !identity) return;
+    const rootNode = forest[0];
+    if (!rootNode) return;
+    let cancelled = false;
+
+    void Promise.resolve(preferredIdentityFor(env, rootNode.pid))
+      .then((preferred) => {
+        if (cancelled || !preferred || preferred === identity) return;
+        setIdentityNote(
+          `Switched to identity “${preferred}”: the project's default “${identity}” is not a ` +
+            `controller of these canisters, and icydb's SQL endpoints are controller-gated.`,
+        );
+        setIdentity(preferred);
+      })
+      .catch(() => {
+        /* leave the selection alone */
+      });
+
+    return () => {
+      cancelled = true;
+    };
+    // Deliberately not re-running on `identity`: this sets it, and depending on
+    // it would re-ask on every switch the user makes by hand — overriding a
+    // deliberate choice with this one.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [forest, env]);
+
   // Probe each canister for an icydb surface, once the fleet is known.
   //
   // Its own effect, deliberately. Probing used to run inside the handler that
@@ -624,6 +669,7 @@ function App() {
   // identical to the JSX below is what makes it obvious this flag can never
   // disagree with what actually renders.
   const hasTopLevelBanner =
+    identityNote !== null ||
     environmentsError !== null ||
     identityError !== null ||
     persistWarning !== null ||
@@ -731,6 +777,12 @@ function App() {
           string a single character. */}
       {hasTopLevelBanner && (
         <div data-banner-region className="max-h-[40vh] shrink-0 space-y-2 overflow-auto p-2">
+          {identityNote && (
+            <p className="rounded-control border border-warn-border bg-warn-bg p-3 text-sm text-warn-text">
+              {identityNote}
+            </p>
+          )}
+
           {environmentsError && <ErrorBanner error={environmentsError} />}
 
           {identityError && <ErrorBanner error={identityError} />}

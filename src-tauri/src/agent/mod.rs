@@ -10,6 +10,7 @@
 //! agent built for one project's replica must never be handed to another
 //! project's queries (see `cache_key`'s doc comment).
 
+mod controlling;
 mod export;
 mod identity;
 
@@ -19,6 +20,7 @@ mod identity;
 // bytes would widen the very boundary `export.rs`'s module doc claims to
 // hold (private key material never leaves this module except as the bytes
 // its one legitimate caller needs).
+pub use controlling::preferred_identity;
 pub use identity::load_identity;
 
 use std::collections::HashMap;

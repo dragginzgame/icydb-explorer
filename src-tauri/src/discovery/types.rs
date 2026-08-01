@@ -72,9 +72,25 @@ pub struct IdentityRef {
     /// re-implementing the rule in TypeScript. The rule lives in exactly one
     /// place in the codebase.
     pub unusable_reason: Option<String>,
+    /// The principal the identity store records for this identity, when it
+    /// records one.
+    ///
+    /// Read rather than derived: deriving it would mean loading the key, which
+    /// for a keyring identity prompts the OS. The store already knows, and this
+    /// is only used to compare against a canister's controller list — a
+    /// comparison, never a credential.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recorded_principal: Option<String>,
 }
 
 impl IdentityRef {
+    /// Records the principal the identity store lists for this identity.
+    #[must_use]
+    pub fn with_recorded_principal(mut self, principal: Option<String>) -> Self {
+        self.recorded_principal = principal;
+        self
+    }
+
     /// Builds an `IdentityRef`, deriving `unusable_reason` from the kind.
     ///
     /// icp's storage kinds are `plaintext`, `keyring`, and `password`
@@ -101,7 +117,14 @@ impl IdentityRef {
             )),
         };
 
-        Self { name, algorithm, kind, pem_path, unusable_reason }
+        Self {
+            name,
+            algorithm,
+            kind,
+            pem_path,
+            unusable_reason,
+            recorded_principal: None,
+        }
     }
 
     /// Whether this app can obtain a signing key for this identity.

@@ -131,6 +131,22 @@ export async function writeExport(path: string, contents: string): Promise<void>
   }
 }
 
+/// Which offered identity actually controls this canister, if any.
+///
+/// The declared default is considered first, so it is kept whenever it works.
+/// `null` means none of the project's identities control it — which no choice
+/// here can fix, and the caller should say so rather than switch blindly.
+export async function preferredIdentityFor(
+  env: string,
+  canister: string,
+): Promise<string | null> {
+  try {
+    return await invoke<string | null>("preferred_identity_for", { env, canister });
+  } catch (error) {
+    throw toAppErrorDto(error);
+  }
+}
+
 /// Which icydb SQL endpoints this canister exports.
 ///
 /// A certified metadata read, not a statement — cheap, and it cannot mutate

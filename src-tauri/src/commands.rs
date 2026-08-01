@@ -15,7 +15,7 @@ use candid::Principal;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
-use crate::agent::AgentPool;
+use crate::agent::{preferred_identity, AgentPool};
 use crate::discovery::{self, resolve_root, Environment, IdentityRef, Project};
 use crate::error::AppError;
 use crate::project::config::write_recorded_root;
@@ -248,6 +248,54 @@ pub async fn list_tables(
 pub fn write_export(path: String, contents: String) -> Result<(), AppError> {
     std::fs::write(&path, contents)
         .map_err(|e| AppError::Agent(format!("could not write {path}: {e}")))
+}
+
+/// Which offered identity actually controls `canister`, if any.
+///
+/// icydb's SQL endpoints are controller-gated, and which identity a project
+/// declares as its default is a separate setting from which principals it
+/// declares as controllers. On a canic project those routinely disagree — the
+/// default is a per-machine development identity, the controllers are the team's
+/// — so following the default blindly opens the app onto an error the reader did
+/// not cause.
+///
+/// Returns the declared default whenever it works, since it is offered first,
+/// and only names a different one when the default cannot query. `None` means no
+/// identity this project offers controls the canister, which no choice here can
+/// fix and the caller should say plainly.
+///
+/// Deliberately not part of discovery: discovery is a filesystem read that has
+/// to work with no replica running. This is a network question and belongs after
+/// the fleet is known.
+#[tauri::command]
+pub async fn preferred_identity_for(
+    env: String,
+    canister: String,
+    project: State<'_, ProjectState>,
+    pool: State<'_, AgentPool>,
+) -> Result<Option<String>, AppError> {
+    let project = project.snapshot().ok_or(AppError::NoProjectSelected)?;
+    let environment = find_environment(&project, &env)?;
+    let canister_id = parse_principal(&canister)?;
+
+    // Ordered so the declared default is considered first, and therefore kept
+    // whenever it works.
+    let default_name = environment.identity.as_ref().map(|i| i.name.clone());
+    let mut offered: Vec<IdentityRef> = environment.identities.clone();
+    offered.sort_by_key(|i| Some(i.name.clone()) != default_name);
+
+    // Any usable identity will do to *ask* who the controllers are — reading
+    // canister info is not controller-gated, unlike the SQL surface.
+    let asking = environment
+        .identities
+        .iter()
+        .find(|i| i.unusable_reason.is_none())
+        .ok_or_else(|| AppError::Agent("this environment offers no usable identity".into()))?;
+    let agent = pool.get(&project.root, environment, asking).await?;
+
+    Ok(preferred_identity(&agent, canister_id, &offered)
+        .await?
+        .map(|identity| identity.name))
 }
 
 /// What icydb SQL endpoints `canister` exports.

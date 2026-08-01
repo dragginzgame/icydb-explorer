@@ -484,7 +484,16 @@ fn identity_ref_from_entry(
     let pem_path =
         (kind == "pem").then(|| identity_dir.join("keys").join(format!("{name}.pem")));
 
-    Ok(IdentityRef::new(name.to_string(), algorithm, kind, pem_path))
+    // The store already lists the principal for pem identities; reading it here
+    // avoids loading a key just to learn one, which for a keyring identity
+    // would prompt the OS.
+    let recorded = entry
+        .get("principal")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    Ok(IdentityRef::new(name.to_string(), algorithm, kind, pem_path)
+        .with_recorded_principal(recorded))
 }
 
 /// Reads every identity `identity_dir/identity_list.json` declares, usable

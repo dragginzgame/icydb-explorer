@@ -61,6 +61,7 @@ pub fn run() {
             commands::list_tables,
             commands::count_rows,
             commands::sql_capabilities,
+            commands::preferred_identity_for,
             commands::write_export,
             commands::describe_table,
             commands::fetch_rows,
