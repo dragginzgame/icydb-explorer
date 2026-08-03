@@ -118,7 +118,17 @@ function PaneHandle({
       aria-orientation="vertical"
       aria-label={`Resize ${label}`}
       onPointerDown={start}
-      className="absolute inset-y-0 right-0 w-1 cursor-col-resize hover:bg-accent"
+      // On the edge the boundary actually sits. `resizeFrom` used to invert the
+      // drag direction while the handle stayed pinned right — so the rightmost
+      // pane's grip was flush against the window frame rather than on its border
+      // with the pane beside it, and effectively could not be grabbed. The sign
+      // and the position have to agree.
+      // 8px, not 4. A resize grip is aimed at rather than read, and 4px is
+      // narrow enough that hitting it is a small act of precision every time —
+      // which reads as "not draggable" long before it reads as "I missed".
+      className={`absolute inset-y-0 w-2 cursor-col-resize hover:bg-accent ${
+        resizeFrom === "leading" ? "left-0" : "right-0"
+      }`}
     />
   );
 }

@@ -106,3 +106,48 @@ test("starting a new drag replaces a still-live one rather than stacking", () =>
 
   expect(widths).toHaveLength(1);
 });
+
+/// A handle has to be where the boundary is. `resizeFrom` inverts the drag
+/// direction, and for a while that was all it did — the rightmost pane's grip
+/// stayed pinned to its right edge, flush against the window frame instead of on
+/// its border with the pane beside it, so it could not realistically be grabbed.
+/// The arithmetic tests above all passed throughout, because they dispatch
+/// events directly and never ask where the element is.
+test("a trailing-edge pane puts its handle on the right", () => {
+  render(
+    <Pane title="Fleet" width={240} onResize={() => {}}>
+      <p>content</p>
+    </Pane>,
+  );
+
+  const handle = screen.getByRole("separator", { name: /resize fleet/i });
+  expect(handle).toHaveClass("right-0");
+  expect(handle).not.toHaveClass("left-0");
+});
+
+test("a leading-edge pane puts its handle on the left", () => {
+  render(
+    <Pane title="Schema" width={320} onResize={() => {}} resizeFrom="leading">
+      <p>content</p>
+    </Pane>,
+  );
+
+  const handle = screen.getByRole("separator", { name: /resize schema/i });
+  expect(handle).toHaveClass("left-0");
+  expect(handle).not.toHaveClass("right-0");
+});
+
+/// A resize grip is aimed at, not read. 4px is narrow enough that hitting it is
+/// an act of precision every time, which reads as "not draggable" well before it
+/// reads as "I missed" — so the target is wider than the line it suggests.
+test("the handle is a big enough target to aim at", () => {
+  render(
+    <Pane title="Fleet" width={240} onResize={() => {}}>
+      <p>content</p>
+    </Pane>,
+  );
+
+  const handle = screen.getByRole("separator", { name: /resize fleet/i });
+  expect(handle).not.toHaveClass("w-1");
+  expect(handle.className).toMatch(/\bw-(2|3|1\.5)\b/);
+});
