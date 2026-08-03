@@ -19,7 +19,7 @@ const schema = {
     { name: "created_at", typeName: "Nat64", primaryKey: false, optional: false },
     { name: "__icydb_primary_key", typeName: "Unit", primaryKey: false, optional: false },
   ],
-  indexes: [],
+  indexes: [], relations: [],
 };
 
 const texts = (sql: string) => suggestSql(sql, entities, schema).map((s) => s.text);

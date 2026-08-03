@@ -486,6 +486,9 @@ test("renders SHOW CONSTRAINTS results from the console", async () => {
           validationState: "valid",
           fields: ["id"],
           semantics: "immediate",
+          relation: null,
+          targetEntity: null,
+          action: null,
         },
       ],
     },
@@ -933,7 +936,7 @@ test("a failed rows fetch is anchored inside the Rows pane", async () => {
     type: "schema",
     entity: "DemoRow",
     columns: [{ name: "id", typeName: "Ulid", primaryKey: true, optional: false }],
-    indexes: [],
+    indexes: [], relations: [],
   });
   vi.mocked(commands.fetchRows).mockRejectedValue({
     kind: "backend",
@@ -990,7 +993,7 @@ test("a pending row fetch shows skeletons at the SELECTED table's column count",
     type: "schema",
     entity: "NarrowRow",
     columns: [],
-    indexes: [],
+    indexes: [], relations: [],
   });
 
   const wide = deferred<ResultDto>();
@@ -1039,7 +1042,7 @@ test("the first fetch of a session already shows correctly sized skeletons", asy
     type: "schema",
     entity: "WideRow",
     columns: [],
-    indexes: [],
+    indexes: [], relations: [],
   });
   const first = deferred<ResultDto>();
   vi.mocked(commands.fetchRows).mockReturnValue(first.promise);
@@ -1089,7 +1092,7 @@ test("switching to a canister with no tables shows the empty state, not skeleton
     type: "schema",
     entity: "WideRow",
     columns: [],
-    indexes: [],
+    indexes: [], relations: [],
   });
   vi.mocked(commands.fetchRows).mockResolvedValue(
     rowsFixture("WideRow", ["w1", "w2", "w3", "w4", "w5", "w6"], 1),
@@ -1153,7 +1156,7 @@ test("every max-w-cell element in the app has an @container ancestor", async () 
     type: "schema",
     entity: "DemoRow",
     columns: [],
-    indexes: [],
+    indexes: [], relations: [],
   });
   vi.mocked(commands.fetchRows).mockResolvedValue(rowsFixture("DemoRow", ["a", "b"], 1));
   vi.mocked(commands.runSql).mockResolvedValue({
@@ -1211,7 +1214,7 @@ test("a failed Load more keeps the rows already on screen", async () => {
     type: "schema",
     entity: "DemoRow",
     columns: [],
-    indexes: [],
+    indexes: [], relations: [],
   });
   // A full first page (100 == the backend's DEFAULT_ROW_LIMIT) is what makes
   // "Load more" appear at all; the second page then rejects.
@@ -1267,7 +1270,7 @@ test("switching tables with a cell expanded clears the expansion", async () => {
     type: "schema",
     entity: "DemoRow",
     columns: [],
-    indexes: [],
+    indexes: [], relations: [],
   });
   vi.mocked(commands.fetchRows).mockImplementation((_env, _canister, entityName) =>
     Promise.resolve({
@@ -1410,7 +1413,7 @@ test("every scroll region can actually shrink: its column-flex ancestors carry m
     type: "schema",
     entity: "DemoRow",
     columns: [{ name: "id", typeName: "Ulid", primaryKey: true, optional: false }],
-    indexes: [],
+    indexes: [], relations: [],
   });
   vi.mocked(commands.fetchRows).mockResolvedValue(rowsFixture("DemoRow", ["a", "b"], 1));
 
@@ -1507,7 +1510,7 @@ test("exporting writes the rows on screen to the chosen path", async () => {
     type: "schema",
     entity: "User",
     columns: [],
-    indexes: [],
+    indexes: [], relations: [],
   });
   vi.mocked(commands.fetchRows).mockResolvedValue(rowsFixture("User", ["id", "handle"], 1));
   dialogSave.mockResolvedValue("/tmp/User.csv");
@@ -1546,7 +1549,7 @@ test("cancelling the save dialog writes nothing", async () => {
     type: "schema",
     entity: "User",
     columns: [],
-    indexes: [],
+    indexes: [], relations: [],
   });
   vi.mocked(commands.fetchRows).mockResolvedValue(rowsFixture("User", ["id", "handle"], 1));
   dialogSave.mockResolvedValue(null);
@@ -1581,7 +1584,7 @@ test("explaining the row view opens the SQL bar with the plan", async () => {
     type: "schema",
     entity: "User",
     columns: [],
-    indexes: [],
+    indexes: [], relations: [],
   });
   vi.mocked(commands.fetchRows).mockResolvedValue(rowsFixture("User", ["id", "handle"], 1));
   vi.mocked(commands.explainRows).mockResolvedValue({
@@ -1618,7 +1621,7 @@ test("a canister without sql-explain surfaces the rejection", async () => {
     type: "schema",
     entity: "User",
     columns: [],
-    indexes: [],
+    indexes: [], relations: [],
   });
   vi.mocked(commands.fetchRows).mockResolvedValue(rowsFixture("User", ["id", "handle"], 1));
   vi.mocked(commands.explainRows).mockRejectedValue({
@@ -1730,7 +1733,7 @@ test("a query result takes over the rows pane and names itself", async () => {
     type: "schema",
     entity: "User",
     columns: [],
-    indexes: [],
+    indexes: [], relations: [],
   });
   vi.mocked(commands.fetchRows).mockResolvedValue(rowsFixture("User", ["id", "handle"], 1));
   vi.mocked(commands.runSql).mockResolvedValue({
@@ -1771,7 +1774,7 @@ test("selecting a table clears a query result", async () => {
     type: "schema",
     entity: "User",
     columns: [],
-    indexes: [],
+    indexes: [], relations: [],
   });
   vi.mocked(commands.fetchRows).mockResolvedValue(rowsFixture("User", ["id", "handle"], 1));
   vi.mocked(commands.runSql).mockResolvedValue({

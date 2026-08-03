@@ -79,10 +79,15 @@ pub fn result_to_dto(result: SqlQueryResult) -> Result<ResultDto, AppError> {
             ResultDto::Schema(schema_description_to_dto(&description))
         }
         SqlQueryResult::ShowIndexes { entity, indexes } => ResultDto::Indexes { entity, indexes },
+        // `SHOW COLUMNS` carries columns and nothing else. Empty rather than
+        // absent: a consumer that has to branch on which statement produced a
+        // schema would be reading the wrong signal — "no relations known here"
+        // and "this entity has no relations" are the same thing to a renderer.
         SqlQueryResult::ShowColumns { entity, columns } => ResultDto::Schema(SchemaDto {
             entity,
             columns: columns.iter().map(field_to_column).collect(),
             indexes: Vec::new(),
+            relations: Vec::new(),
         }),
         SqlQueryResult::ShowEntities { entities, .. } => ResultDto::Entities {
             entities: entities.iter().map(entity_catalog_to_dto).collect(),
@@ -280,6 +285,9 @@ mod tests {
                 validation_state: "valid".into(),
                 fields: vec!["id".into()],
                 semantics: "immediate".into(),
+                relation: None,
+                target_entity: Some("ProjectInstance".into()),
+                action: Some("restrict".into()),
             }],
         };
         let json = serde_json::to_value(dto).unwrap();
@@ -288,6 +296,12 @@ mod tests {
         assert_eq!(json["constraints"][0]["name"], "demo_row_pk");
         // camelCase, not validation_state — Task 2's TypeScript depends on this
         assert_eq!(json["constraints"][0]["validationState"], "valid");
+        // The three relation fields ride the same camelCase rename, and a `None`
+        // must reach the frontend as null rather than being dropped from the
+        // object — TypeScript's `string | null` is only true if it is present.
+        assert_eq!(json["constraints"][0]["targetEntity"], "ProjectInstance");
+        assert_eq!(json["constraints"][0]["action"], "restrict");
+        assert!(json["constraints"][0]["relation"].is_null());
     }
 
     #[test]

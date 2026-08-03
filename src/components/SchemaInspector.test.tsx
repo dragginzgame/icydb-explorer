@@ -10,7 +10,7 @@ const SCHEMA = {
     { name: "id", typeName: "Ulid", optional: false, primaryKey: true },
     { name: "handle", typeName: "Text", optional: true, primaryKey: false },
   ],
-  indexes: [],
+  indexes: [], relations: [],
 };
 
 const props = {

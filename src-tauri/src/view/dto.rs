@@ -40,14 +40,36 @@ pub struct ColumnDto {
     pub optional: bool,
 }
 
-/// A `DESCRIBE`/`SHOW COLUMNS` result. `indexes` is empty for `SHOW COLUMNS`,
-/// which carries no index information.
+/// One relation the schema itself declares.
+///
+/// Always within the same canister: `target_store_path` names a store in this
+/// schema, and icydb has no notion of a remote store — it could not enforce a
+/// key across a canister boundary. Any link that *does* cross one is the
+/// explorer's own inference and is neither built nor labelled here.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelationDto {
+    /// The field on this entity that holds the relation.
+    pub field: String,
+    /// The entity it points at, by name.
+    pub target_entity: String,
+    /// The target's store, which is what makes "same canister" checkable rather
+    /// than merely asserted.
+    pub target_store_path: String,
+    /// `single`, `list`, or `set` — mapped from icydb's enum by an exhaustive
+    /// match, never by `Debug`.
+    pub cardinality: String,
+}
+
+/// A `DESCRIBE`/`SHOW COLUMNS` result. `indexes` and `relations` are both empty
+/// for `SHOW COLUMNS`, which carries neither.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SchemaDto {
     pub entity: String,
     pub columns: Vec<ColumnDto>,
     pub indexes: Vec<String>,
+    pub relations: Vec<RelationDto>,
 }
 
 /// One `SHOW ENTITIES` row.
@@ -82,11 +104,16 @@ pub struct MemoryDto {
 
 /// One constraint from `SHOW CONSTRAINTS`.
 ///
-/// icydb's `EntityConstraintDescription` exposes sixteen accessors; this
-/// carries the six the UI displays. The rest (`id`, `field_id`, `index_id`,
-/// `relation_id`, `index`, `relation`, `target_entity`, `action`,
-/// `check_sql`, `validation_progress`) are deliberately omitted — nothing
-/// renders them, and a DTO field with no consumer is a maintenance cost.
+/// icydb's `EntityConstraintDescription` exposes sixteen accessors; this carries
+/// the nine the UI displays. The remaining seven (`id`, `field_id`, `index_id`,
+/// `relation_id`, `index`, `check_sql`, `validation_progress`) are deliberately
+/// omitted — nothing renders them, and a DTO field with no consumer is a
+/// maintenance cost.
+///
+/// `relation`, `target_entity`, and `action` were three of those omissions until
+/// relation following existed to consume them. A relation constraint is how the
+/// schema says what happens to the *other* side, which the relation list itself
+/// does not carry.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConstraintDto {
@@ -96,6 +123,13 @@ pub struct ConstraintDto {
     pub validation_state: String,
     pub fields: Vec<String>,
     pub semantics: String,
+    /// The named relation this constraint governs, for a relation constraint.
+    pub relation: Option<String>,
+    /// The entity on the other side of it.
+    pub target_entity: Option<String>,
+    /// What happens to this side when the other is removed (icydb's own
+    /// spelling, passed through).
+    pub action: Option<String>,
 }
 
 /// The frontend-facing shape of a `SqlQueryResult`, internally tagged with

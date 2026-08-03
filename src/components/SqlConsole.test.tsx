@@ -13,7 +13,7 @@ const schema = {
     { name: "id", typeName: "Ulid", primaryKey: true, optional: false },
     { name: "handle", typeName: "Text", primaryKey: false, optional: true },
   ],
-  indexes: [],
+  indexes: [], relations: [],
 };
 
 /// Sets the statement the way a user typing would, through CodeMirror's own

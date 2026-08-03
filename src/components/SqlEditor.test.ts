@@ -14,7 +14,7 @@ const schema = {
     { name: "id", typeName: "Ulid", primaryKey: true, optional: false },
     { name: "handle", typeName: "Text", primaryKey: false, optional: true },
   ],
-  indexes: [],
+  indexes: [], relations: [],
 };
 
 /// Drives the completion source the way CodeMirror does: a document, a cursor,

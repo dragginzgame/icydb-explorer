@@ -22,8 +22,30 @@ export type RowsDto = {
 /** One column entry, shared by `SHOW COLUMNS` and `DESCRIBE`. */
 export type ColumnDto = { name: string; typeName: string; primaryKey: boolean; optional: boolean };
 
-/** A `DESCRIBE`/`SHOW COLUMNS` result. `indexes` is empty for `SHOW COLUMNS`. */
-export type SchemaDto = { entity: string; columns: ColumnDto[]; indexes: string[] };
+/** One relation the schema itself declares (see
+ * `src-tauri/src/view/dto.rs::RelationDto`).
+ *
+ * Always within the same canister: icydb has no remote-store concept, so it
+ * cannot declare a link across a canister boundary. A link that does cross one
+ * is the explorer's own inference and is a different type entirely — the two
+ * must never be conflated, because one is metadata and one is a guess. */
+export type RelationDto = {
+  field: string;
+  targetEntity: string;
+  targetStorePath: string;
+  /** `single`, `list`, or `set` — mapped from icydb's enum by an exhaustive
+   * Rust match, so a new variant breaks the build rather than arriving here. */
+  cardinality: string;
+};
+
+/** A `DESCRIBE`/`SHOW COLUMNS` result. `indexes` and `relations` are both empty
+ * for `SHOW COLUMNS`, which carries neither. */
+export type SchemaDto = {
+  entity: string;
+  columns: ColumnDto[];
+  indexes: string[];
+  relations: RelationDto[];
+};
 
 /** One `SHOW ENTITIES` row. */
 export type EntityDto = {
@@ -43,7 +65,7 @@ export type StoreDto = { storePath: string; storage: string };
 export type MemoryDto = { tag: string; memoryId: number; storePath: string };
 
 /** One constraint from `SHOW CONSTRAINTS` (see
- * `src-tauri/src/view/dto.rs::ConstraintDto`). Six of icydb's sixteen
+ * `src-tauri/src/view/dto.rs::ConstraintDto`). Nine of icydb's sixteen
  * `EntityConstraintDescription` accessors — the rest have no UI consumer. */
 export type ConstraintDto = {
   name: string;
@@ -52,6 +74,12 @@ export type ConstraintDto = {
   validationState: string;
   fields: string[];
   semantics: string;
+  /** The named relation this constraint governs; null unless it is a relation
+   * constraint. A relation constraint is how the schema says what happens to
+   * the other side, which the relation list itself does not carry. */
+  relation: string | null;
+  targetEntity: string | null;
+  action: string | null;
 };
 
 /** The frontend-facing shape of a SQL query result, internally tagged on
