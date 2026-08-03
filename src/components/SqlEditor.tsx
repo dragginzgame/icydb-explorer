@@ -34,12 +34,18 @@ const highlight = HighlightStyle.define([
 const theme = EditorView.theme({
   "&": {
     fontSize: "0.875rem",
+    // The bar is content-height and sits above the panes, so an unbounded editor
+    // would push them down as a statement grew. Bounded here rather than on the
+    // bar, because only the editor knows how to scroll its own content without
+    // stranding the cursor.
+    maxHeight: "12rem",
     border: "1px solid var(--rule)",
     borderRadius: "var(--r-control)",
     backgroundColor: "var(--surface-0)",
     color: "var(--text-1)",
   },
   "&.cm-focused": { outline: "2px solid var(--accent)", outlineOffset: "-1px" },
+  ".cm-scroller": { overflow: "auto" },
   ".cm-content": { fontFamily: "var(--mono-font)", padding: "0.5rem" },
   ".cm-cursor": { borderLeftColor: "var(--text-1)" },
   ".cm-placeholder": { color: "var(--text-3)" },

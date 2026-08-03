@@ -1441,7 +1441,11 @@ test("every scroll region can actually shrink: its column-flex ancestors carry m
   // number keeps meaning "every pane mounted its scroll region". The walk below
   // still covers it.
   const paneScrollers = scrollers.filter((node) => !node.matches("[data-banner-region]"));
-  expect(paneScrollers.length).toBe(5);
+  // Four: one per pane. The SQL bar deliberately owns none — its result grid
+  // moved to the rows pane, and the editor scrolls its own content, so the bar is
+  // content-height chrome rather than a scrollport. This was five while the bar
+  // held a grid, and the change is the point rather than an accident.
+  expect(paneScrollers.length).toBe(4);
 
   expect(unshrinkableAncestors()).toEqual([]);
 });
@@ -1787,4 +1791,47 @@ test("selecting a table clears a query result", async () => {
   fireEvent.click(screen.getByText("Address"));
 
   expect(await screen.findByRole("region", { name: "Rows" })).toBeInTheDocument();
+});
+
+/// The bar sits above the panes now, not below them — it is chrome next to the
+/// banners rather than a share of the working area. Asserted by document order,
+/// since that is the part of "at the top" a test can see.
+test("the SQL bar sits above the panes", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/toko",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    { pid: "root-id", role: "root", children: [] },
+  ]);
+
+  render(<App />);
+  const bar = await screen.findByRole("button", { name: "SQL" });
+  const canisters = await screen.findByRole("region", { name: "Canisters" });
+
+  // Node.DOCUMENT_POSITION_FOLLOWING: the panes come after the bar.
+  expect(bar.compareDocumentPosition(canisters) & 4).toBeTruthy();
+});
+
+/// A bar that reserves a share of the window for four lines of text is taking
+/// space from the rows it exists to query. It is content-height now, so it must
+/// not claim a fraction of the shell.
+test("the open bar claims no share of the shell's height", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/toko",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    { pid: "root-id", role: "root", children: [] },
+  ]);
+
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "SQL" }));
+  const heading = await screen.findByRole("heading", { name: "SQL" });
+  const bar = heading.closest("div")?.parentElement;
+
+  expect(bar?.className).toMatch(/\bshrink-0\b/);
+  expect(bar?.className).not.toMatch(/basis-|flex-1/);
 });

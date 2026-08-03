@@ -899,6 +899,22 @@ function App() {
           page scrollWidth 1520 vs clientWidth 1280). Clipped here, the rightmost
           pane is cut off instead — local, visible, and undone by dragging back. */}
       {root !== null && (
+        <>
+        <SqlBar
+            entities={entities}
+            schema={schema}
+            target={
+              canister
+                ? { canister: roleOf(forest, canister) ?? canister, entity }
+                : null
+            }
+            expanded={layout.sqlExpanded}
+            onExpandedChange={setSqlExpanded}
+            onRun={handleRunSql}
+            error={sqlError}
+            limitAppended={sqlLimitAppended}
+            orderByMissing={sqlOrderByMissing}
+          />
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="flex min-h-0 flex-1 overflow-hidden">
             <Pane
@@ -1051,22 +1067,8 @@ function App() {
             />
           </div>
 
-          <SqlBar
-            entities={entities}
-            schema={schema}
-            target={
-              canister
-                ? { canister: roleOf(forest, canister) ?? canister, entity }
-                : null
-            }
-            expanded={layout.sqlExpanded}
-            onExpandedChange={setSqlExpanded}
-            onRun={handleRunSql}
-            error={sqlError}
-            limitAppended={sqlLimitAppended}
-            orderByMissing={sqlOrderByMissing}
-          />
         </div>
+        </>
       )}
     </main>
   );
@@ -1083,14 +1085,16 @@ function App() {
  *  Opens on click and closes on the close button. No keyboard shortcut: the
  *  keyboard map is phase 3, and half a map is worse than none.
  *
- *  Two layout details that jsdom cannot see. `basis-1/3` gives the open bar a
- *  third of the shell's height, and `min-h-0` is what makes that a ceiling
- *  rather than a floor: `min-height: auto` on a column flex item resolves to a
- *  content-based minimum, so a tall result would otherwise push the bar past a
- *  third and squeeze the panes above it. And the console and its result share
- *  ONE scroll region — the same rule `Pane` follows, and for the same reason:
- *  the result's own sticky header only works if the nearest scrollport is the
- *  one that actually scrolls. */
+ *  Sits at the top, below the banners and above the panes, and is only as tall
+ *  as the editor. It used to sit at the bottom with a third of the shell's
+ *  height, which was sized for a result grid — that grid now lives in the rows
+ *  pane, so the bar was reserving a third of the window for four lines of text,
+ *  taken from the rows it exists to query.
+ *
+ *  The editor bounds its own height and scrolls internally, so a long statement
+ *  cannot push the panes down. That is the one layout property jsdom cannot see
+ *  here, and it belongs to `SqlEditor` rather than to this chrome.
+ */
 function SqlBar({
   expanded,
   onExpandedChange,
@@ -1116,7 +1120,7 @@ function SqlBar({
 }) {
   if (!expanded) {
     return (
-      <div className="flex shrink-0 items-center border-t border-rule bg-surface-1 px-2 py-1">
+      <div className="flex shrink-0 items-center border-b border-rule bg-surface-1 px-2 py-1">
         <button
           type="button"
           onClick={() => onExpandedChange(true)}
@@ -1130,7 +1134,15 @@ function SqlBar({
   }
 
   return (
-    <div className="flex min-h-0 basis-1/3 flex-col border-t border-rule bg-surface-1">
+    // `shrink-0` and content-height, not a share of the shell. It used to take a
+    // third, which was sized for a result grid that now lives in the rows pane —
+    // all this holds is an editor and its hints, and a bar that reserves a third
+    // of the window for four lines of text is taking space from the rows it
+    // exists to query.
+    //
+    // The editor bounds itself (see `SqlEditor`'s `max-height`) and scrolls
+    // internally, so a long statement cannot push the panes down.
+    <div className="shrink-0 border-b border-rule bg-surface-1">
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-rule px-2 py-1">
         <h2 className="text-xs font-semibold uppercase tracking-wide text-text-2">SQL</h2>
         <button
@@ -1143,16 +1155,7 @@ function SqlBar({
           ×
         </button>
       </div>
-      {/* `@container` gives this scroll region its own query container, so a
-          "rows" result rendered through `RowGrid` below (specifically
-          `SqlResultView`'s call site) has an ancestor for `max-w-cell`'s `cqw`
-          half to resolve against — the Rows pane's `@container` (see its own
-          comment) only covers *that* call site, not this one. Without it
-          `cqw` here resolves against no container at all: Chromium measured
-          that as a collapse to zero width, and the CSS container-query spec's
-          documented fallback is the small viewport size instead — different
-          failures, but both wrong, and this is the fix for either reading. */}
-      <div className="min-h-0 flex-1 overflow-auto p-2 @container">
+      <div className="p-2">
         <SqlConsole
           onRun={onRun}
           error={error}
@@ -1162,17 +1165,11 @@ function SqlBar({
           schema={schema}
           target={target ?? undefined}
         />
-
       </div>
     </div>
   );
 }
 
-// Renders whichever of the nine `ResultDto` variants a console statement
-// produced. Only "rows" reuses `RowGrid` (a one-off query has no paging
-// state of its own, so `hasMore` is always false here); the rest get a
-// small dedicated rendering since reusing `TableList`/`CanisterTree` here
-// would require selection callbacks that don't apply to a static result.
 function SqlResultView({
   result,
   onExport,
