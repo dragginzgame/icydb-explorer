@@ -6,8 +6,17 @@
 // let this file drift into inventing its own shapes.
 
 /** One rendered cell: a `kind` for styling/type-aware rendering plus a
- * ready-to-display `display` string. */
-export type ValueDto = { kind: string; display: string };
+ * ready-to-display `display` string.
+ *
+ * `items` is present only for a list, and is not for display — `display` already
+ * carries the rendered `[a, b, c]`. It exists because a relation field of
+ * `list`/`set` cardinality holds the target's keys, and following it means
+ * building `WHERE key IN (…)` from them. Recovering those by parsing `display`
+ * here would decode an icydb-internal format outside `src-tauri/src/view/`,
+ * which is the coupling that module exists to prevent — and a mis-parse would
+ * query for the wrong row rather than merely look odd. Absent (not null) on a
+ * scalar, because `ValueDto` is the most numerous shape on the wire. */
+export type ValueDto = { kind: string; display: string; items?: ValueDto[] };
 
 /** A page of rows, whether from a plain projection or a grouped query.
  * `nextCursor` is only ever populated for grouped results. */

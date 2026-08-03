@@ -30,7 +30,7 @@ pub fn read_count(result: &ResultDto, entity: &str) -> Result<u64, AppError> {
     };
 
     match rows.rows.first().and_then(|row| row.first()) {
-        Some(ValueDto { kind, display }) if kind == "nat" || kind == "int" => {
+        Some(ValueDto { kind, display, .. }) if kind == "nat" || kind == "int" => {
             display.parse::<u64>().map_err(|_| {
                 AppError::Parse(format!("counting {entity} returned an unreadable {kind}"))
             })
@@ -57,6 +57,7 @@ mod tests {
             rows: vec![vec![ValueDto {
                 kind: kind.into(),
                 display: display.into(),
+                items: None,
             }]],
             row_count: 1,
             next_cursor: None,

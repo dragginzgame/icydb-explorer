@@ -21,7 +21,19 @@ pub fn value_to_dto(value: &OutputValue) -> ValueDto {
         OutputValue::Blob(bytes) => format!("{} bytes", bytes.len()),
         other => render_output_value_text(other),
     };
-    ValueDto { kind, display }
+    // Only a list carries elements. A map has pairs rather than keys and nothing
+    // follows a map, so flattening one here would invent a shape with no
+    // consumer; a scalar has no elements at all.
+    let items = match value {
+        OutputValue::List(elements) => Some(elements.iter().map(value_to_dto).collect()),
+        _ => None,
+    };
+
+    ValueDto {
+        kind,
+        display,
+        items,
+    }
 }
 
 /// The stable `kind` string for each `OutputValue` variant. Matches
@@ -63,6 +75,9 @@ pub(super) fn rendered_text_to_dto(text: String) -> ValueDto {
     ValueDto {
         kind: "text".to_string(),
         display: text,
+        // icydb already flattened this cell to a string, so there is no list
+        // structure left to carry — not even for a cell that was one.
+        items: None,
     }
 }
 
@@ -109,6 +124,84 @@ mod tests {
         let dto = value_to_dto(&map);
         assert_eq!(dto.kind, "map");
         assert!(dto.display.contains('k') && dto.display.contains('9'));
+    }
+
+    /// A list relation holds the target's keys, and following it means building
+    /// `WHERE key IN (…)` from them. They arrive structured so the frontend never
+    /// has to parse `[a, b]` back apart — that would decode an icydb-internal
+    /// format outside this module, and a mis-parse would query the wrong row.
+    #[test]
+    fn a_list_carries_its_elements_as_well_as_its_text() {
+        let dto = value_to_dto(&OutputValue::List(vec![
+            OutputValue::Text("first".into()),
+            OutputValue::Text("second".into()),
+        ]));
+
+        let items = dto.items.expect("a list carries its elements");
+        assert_eq!(items.len(), 2);
+        // Each element is a full `ValueDto`, so a caller reads `display` the same
+        // way it does for a scalar cell rather than special-casing elements.
+        assert_eq!(items[0].display, "first");
+        assert_eq!(items[1].display, "second");
+        assert_eq!(items[0].kind, "text");
+    }
+
+    /// An empty list is a real state — a relation field with nothing in it — and
+    /// must be `Some(vec![])`, not `None`. "No elements" and "not a list" are
+    /// different answers, and only the first one means there is nothing to follow.
+    #[test]
+    fn an_empty_list_carries_an_empty_element_list_not_none() {
+        let dto = value_to_dto(&OutputValue::List(vec![]));
+
+        let items = dto.items.expect("an empty list is still a list");
+        assert_eq!(items.len(), 0);
+    }
+
+    /// Nothing follows a scalar or a map, so neither invents an element list. A
+    /// map's pairs are not keys, and flattening them would produce a shape with
+    /// no consumer that a caller could mistake for one.
+    #[test]
+    fn scalars_and_maps_carry_no_elements() {
+        assert!(value_to_dto(&OutputValue::Nat64(1)).items.is_none());
+        assert!(value_to_dto(&OutputValue::Text("x".into())).items.is_none());
+        assert!(value_to_dto(&OutputValue::Null).items.is_none());
+        assert!(
+            value_to_dto(&OutputValue::Map(vec![(
+                OutputValue::Text("k".into()),
+                OutputValue::Nat64(9)
+            )]))
+            .items
+            .is_none()
+        );
+    }
+
+    /// A nested list nests, rather than being flattened into one level: the
+    /// element of a list of lists is itself a list with its own elements.
+    #[test]
+    fn nested_lists_nest() {
+        let dto = value_to_dto(&OutputValue::List(vec![OutputValue::List(vec![
+            OutputValue::Nat64(1),
+        ])]));
+
+        let outer = dto.items.expect("outer elements");
+        assert_eq!(outer.len(), 1);
+        assert_eq!(outer[0].kind, "list");
+        assert_eq!(outer[0].items.as_ref().expect("inner elements").len(), 1);
+    }
+
+    /// `items` is skipped rather than serialised as null. `ValueDto` is the most
+    /// numerous shape on the wire, and a null on every scalar cell of every row
+    /// would be pure overhead.
+    #[test]
+    fn a_scalar_omits_items_from_the_wire_entirely() {
+        let scalar = serde_json::to_value(value_to_dto(&OutputValue::Nat64(7))).unwrap();
+        assert!(scalar.get("items").is_none());
+
+        let list = serde_json::to_value(value_to_dto(&OutputValue::List(vec![
+            OutputValue::Nat64(7),
+        ])))
+        .unwrap();
+        assert!(list["items"].is_array());
     }
 
     /// The spec's testing table mandates every `OutputValue` variant be

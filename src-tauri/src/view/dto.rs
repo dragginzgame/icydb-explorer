@@ -9,11 +9,26 @@ use serde::Serialize;
 
 /// One rendered cell: a `kind` for styling/type-aware rendering plus a
 /// ready-to-display `display` string.
+///
+/// `items` carries a list's elements separately from its rendered text. The
+/// text is already complete — icydb renders a list as `[a, b, c]` — so this is
+/// not for display. It exists because a *relation* field of `list`/`set`
+/// cardinality holds the target's keys, and following it means building a
+/// `WHERE key IN (…)` predicate from them. Recovering those keys by parsing
+/// `display` in TypeScript would decode an icydb-internal format outside this
+/// module, which is the one thing `view` exists to prevent; being wrong there
+/// would mean querying for the wrong row rather than merely looking odd.
+///
+/// Skipped when absent rather than serialised as null. `ValueDto` is the most
+/// numerous shape on the wire — a hundred rows of ten columns is a thousand
+/// cells — and a null on every scalar would be pure overhead.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ValueDto {
     pub kind: String,
     pub display: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub items: Option<Vec<ValueDto>>,
 }
 
 /// A page of rows, whether from a plain projection or a grouped query.
