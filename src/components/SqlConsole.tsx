@@ -51,27 +51,43 @@ export function SqlConsole({
         </div>
       )}
 
-      <SqlEditor
-        value={sql}
-        onChange={setSql}
-        entities={entities}
-        schema={schema}
-        onRun={() => onRun(sql)}
-        onTakeAssist={() => {
-          if (!assist) return false;
-          setSql(applyOrderByAssist(sql, assist));
-          return true;
-        }}
-      />
+      {/* Run sits beside the input, not under it. The editor is usually one line,
+          so a button on its own row below reads as a second, separate thing —
+          where next to the input it reads as what you do with what you typed.
+          `items-start` keeps it level with the first line as the editor grows. */}
+      <div className="flex items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <SqlEditor
+            value={sql}
+            onChange={setSql}
+            entities={entities}
+            schema={schema}
+            onRun={() => onRun(sql)}
+            onTakeAssist={() => {
+              if (!assist) return false;
+              setSql(applyOrderByAssist(sql, assist));
+              return true;
+            }}
+          />
+        </div>
+        {/* One control, not a button beside a hint about a shortcut: the shortcut
+            is a property of the button, so it lives on it. */}
+        <button
+          type="button"
+          onClick={() => onRun(sql)}
+          className="flex shrink-0 items-center gap-1.5 rounded-control border border-rule px-2 py-1 text-xs text-text-1 hover:bg-surface-2"
+        >
+          Run
+          <kbd className="rounded-row border border-rule px-1 font-mono text-text-3">⌘⏎</kbd>
+        </button>
+      </div>
 
-      {/* One row under the editor, not three. Run used to sit on a line of its
-          own with the keyboard hint on another and the suggestion on a third —
-          three rows of chrome for an editor four lines tall, in a bar whose whole
-          point is to be small.
+      {/* Whatever the statement needs next, and nothing else. Run moved up beside
+          the input, so this row exists only when there is something to say — it
+          is empty and takes no space otherwise.
 
-          Left is whatever the statement needs next; right is how to run it. The
-          hint is short and carries its reasoning on hover, because the rule is
-          worth reading once and the keystroke is worth seeing every time. */}
+          The hint is short and carries its reasoning on hover: the rule is worth
+          reading once, the keystroke is worth seeing every time. */}
       <div className="flex items-center gap-2 text-xs">
         {assist ? (
           <button
@@ -121,16 +137,6 @@ export function SqlConsole({
           </span>
         ) : null}
 
-        {/* One control, not a button beside a hint about a shortcut. The
-            shortcut is a property of the button, so it lives on it. */}
-        <button
-          type="button"
-          onClick={() => onRun(sql)}
-          className="ml-auto flex shrink-0 items-center gap-1.5 rounded-control border border-rule px-2 py-0.5 text-text-1 hover:bg-surface-2"
-        >
-          Run
-          <kbd className="rounded-row border border-rule px-1 font-mono text-text-3">⌘⏎</kbd>
-        </button>
       </div>
 
       {error && (

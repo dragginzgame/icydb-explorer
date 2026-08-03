@@ -229,19 +229,31 @@ test("with no schema the prose fallback is what is left", () => {
   expect(screen.getByText(/Needs an ORDER BY before icydb/)).toBeInTheDocument();
 });
 
-/// Run used to sit on a line of its own, with the keyboard hint on another and
-/// the suggestion on a third — three rows of chrome for a four-line editor, in a
-/// bar whose whole point is to be small. One row now: what the statement needs
-/// next on the left, how to run it on the right.
-test("everything under the editor sits on one row", () => {
+/// Run sits beside the input, not under it. The editor is usually one line, so a
+/// button on its own row below reads as a second, separate thing — where next to
+/// the input it reads as what you do with what you typed.
+test("run sits beside the input, on the same row", () => {
+  render(<SqlConsole onRun={() => {}} entities={entities} schema={schema} target={target} />);
+
+  const run = screen.getByRole("button", { name: /^run/i });
+  const editorWrapper = document.querySelector("[data-sql-editor]")?.parentElement;
+
+  // The same *immediate* parent, so they are genuinely siblings on one row.
+  // `contains` was the first version of this and it passed with the button moved
+  // anywhere inside the console — every ancestor contains the editor.
+  expect(editorWrapper?.parentElement).toBe(run.parentElement);
+});
+
+/// And the row below carries only what the statement needs next, so it costs
+/// nothing when there is nothing to say.
+test("the row below the input holds the hint and not the run control", () => {
   render(<SqlConsole onRun={() => {}} entities={entities} schema={schema} target={target} />);
   typeSql("SELECT * FROM User LIMIT 100");
 
+  const assist = screen.getByText("ORDER BY required").closest("button");
   const run = screen.getByRole("button", { name: /^run/i });
-  const assist = screen.getByText("ORDER BY required");
 
-  // Same row means the same parent.
-  expect(run.parentElement).toBe(assist.closest("button")?.parentElement);
+  expect(assist?.parentElement?.contains(run)).toBe(false);
 });
 
 /// The shortcut is a property of the button, so it belongs on it rather than in a
@@ -253,11 +265,17 @@ test("the run control carries its own shortcut", () => {
   expect(run.textContent).toMatch(/⌘⏎/);
 });
 
-/// Right-aligned: the reader's eye ends at the action.
-test("run sits at the end of the row", () => {
+/// The editor takes the room and the button takes only what it needs, so a long
+/// statement widens the input rather than squeezing the control.
+test("the input takes the space and run takes only what it needs", () => {
   render(<SqlConsole onRun={() => {}} entities={entities} schema={schema} target={target} />);
 
-  expect(screen.getByRole("button", { name: /^run/i }).className).toMatch(/\bml-auto\b/);
+  const run = screen.getByRole("button", { name: /^run/i });
+  const editorWrapper = document.querySelector("[data-sql-editor]")?.parentElement;
+
+  expect(run.className).toMatch(/\bshrink-0\b/);
+  expect(editorWrapper?.className).toMatch(/\bflex-1\b/);
+  expect(editorWrapper?.className).toMatch(/\bmin-w-0\b/);
 });
 
 /// Only one thing is offered at a time. A starter query and an ORDER BY assist
