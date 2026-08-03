@@ -1,4 +1,10 @@
-import { applyOrderByAssist, applySuggestion, orderByAssist, suggestSql } from "./suggestSql";
+import {
+  applyOrderByAssist,
+  applySuggestion,
+  orderByAssist,
+  starterQuery,
+  suggestSql,
+} from "./suggestSql";
 
 const entities = [
   { name: "User", storePath: "", storage: "stable", columns: 5, indexes: 1, relations: 0, schemaVersion: 1 },
@@ -81,10 +87,23 @@ test("taking a suggestion replaces the partial word", () => {
 
 // --- the ORDER BY assist ---
 
-/// The single most-hit failure in this app: icydb rejects LIMIT without an
-/// explicit ordering. This turns reading an error into taking an offer.
+/// icydb rejects LIMIT without an ordering, so the ordering alone is the fix.
 test("a LIMIT with no ORDER BY is offered the primary key", () => {
-  expect(orderByAssist("SELECT * FROM User LIMIT 100", schema)).toBe("ORDER BY id");
+  const assist = orderByAssist("SELECT * FROM User LIMIT 100", schema);
+
+  expect(assist?.insertion).toBe("ORDER BY id");
+  expect(assist?.withLimit).toBeNull();
+});
+
+/// The case that produced the unhelpful prose. A bare SELECT needs *both* a
+/// bound and an ordering — this app will not send an unbounded read, and icydb
+/// will not take the bound without the ordering — so the offer covers both
+/// rather than fixing half and leaving the reader to find the rest.
+test("a statement with neither bound nor ordering is offered both", () => {
+  const assist = orderByAssist("SELECT * FROM User", schema);
+
+  expect(assist?.insertion).toBe("ORDER BY id LIMIT 100");
+  expect(assist?.withLimit).toBe(100);
 });
 
 test("a composite key orders by every part", () => {
@@ -96,20 +115,31 @@ test("a composite key orders by every part", () => {
     ],
   };
 
-  expect(orderByAssist("SELECT * FROM User LIMIT 10", composite)).toBe("ORDER BY tenant, id");
+  expect(orderByAssist("SELECT * FROM User LIMIT 10", composite)?.clause).toBe(
+    "ORDER BY tenant, id",
+  );
 });
 
 test("a statement that already orders is left alone", () => {
   expect(orderByAssist("SELECT * FROM User ORDER BY handle LIMIT 100", schema)).toBeNull();
 });
 
-test("a statement with no LIMIT needs no assist", () => {
-  expect(orderByAssist("SELECT * FROM User", schema)).toBeNull();
+/// Offering a clause while the reader is still typing the table name is noise,
+/// and the table is what makes this key the right key to offer.
+test("an incomplete statement is not second-guessed", () => {
+  expect(orderByAssist("SELECT * FROM", schema)).toBeNull();
+  expect(orderByAssist("SELECT ", schema)).toBeNull();
+});
+
+/// Only SELECT paginates. SHOW and DESCRIBE need none of this.
+test("a non-SELECT is left alone", () => {
+  expect(orderByAssist("SHOW ENTITIES", schema)).toBeNull();
+  expect(orderByAssist("DESCRIBE User", schema)).toBeNull();
 });
 
 /// OFFSET requires an ordering for the same reason LIMIT does.
 test("OFFSET alone also triggers the assist", () => {
-  expect(orderByAssist("SELECT * FROM User OFFSET 20", schema)).toBe("ORDER BY id");
+  expect(orderByAssist("SELECT * FROM User OFFSET 20", schema)?.insertion).toBe("ORDER BY id");
 });
 
 /// Nothing honest to propose without a known key.
@@ -120,13 +150,30 @@ test("no known primary key means no assist", () => {
 /// Appending would produce `LIMIT 100 ORDER BY id`, which is not valid SQL —
 /// the ordering has to precede the window it orders.
 test("the assist is inserted before LIMIT, not appended", () => {
-  expect(applyOrderByAssist("SELECT * FROM User LIMIT 100", "ORDER BY id")).toBe(
+  const assist = orderByAssist("SELECT * FROM User LIMIT 100", schema)!;
+
+  expect(applyOrderByAssist("SELECT * FROM User LIMIT 100", assist)).toBe(
     "SELECT * FROM User ORDER BY id LIMIT 100",
   );
 });
 
-test("the assist is inserted before OFFSET too", () => {
-  expect(applyOrderByAssist("SELECT * FROM User OFFSET 20", "ORDER BY id")).toBe(
-    "SELECT * FROM User ORDER BY id OFFSET 20",
+test("with no window yet, the whole clause goes on the end", () => {
+  const assist = orderByAssist("SELECT * FROM User", schema)!;
+
+  expect(applyOrderByAssist("SELECT * FROM User", assist)).toBe(
+    "SELECT * FROM User ORDER BY id LIMIT 100",
   );
+});
+
+// --- the starter query ---
+
+/// The shortest correct statement is longer than a newcomer would guess: the
+/// bound is required by this app, the ordering by icydb. So it is offered whole
+/// rather than described.
+test("the starter query is complete and runnable", () => {
+  expect(starterQuery("User", schema)).toBe("SELECT * FROM User ORDER BY id LIMIT 100");
+});
+
+test("the starter query still bounds itself with no known key", () => {
+  expect(starterQuery("User", null)).toBe("SELECT * FROM User LIMIT 100");
 });

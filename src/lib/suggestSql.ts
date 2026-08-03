@@ -64,40 +64,92 @@ export function suggestSql(
   return filterByPrefix(pool, word);
 }
 
-/** The `ORDER BY` this statement needs but does not have, if any.
+/** What a statement is missing before icydb will run it, if anything.
  *
- *  icydb rejects `LIMIT`/`OFFSET` without an explicit ordering, and that is the
- *  single most-hit failure in this app — so this turns reading an error into
- *  taking an offer. Uses the real primary key, and every column of a composite
- *  one, rather than guessing a name.
+ *  icydb rejects `LIMIT`/`OFFSET` without an explicit ordering, and this app
+ *  refuses to send an unbounded `SELECT`. So a bare `SELECT * FROM User` needs
+ *  *both* a bound and an ordering, and a `SELECT ... LIMIT 100` needs only the
+ *  ordering. Both used to be reported, in different places and different words:
+ *  the first as prose from the backend telling the reader to "add an ORDER BY
+ *  (e.g. by any column)", which names the rule and then leaves them to it.
  *
- *  `null` when the statement already orders, has no `LIMIT` to justify one, or
- *  when no primary key is known — in which case there is nothing honest to
- *  propose.
+ *  Both are now one offer with a real clause in it, built from the entity's
+ *  actual primary key. Naming the rule is worth something; doing the thing is
+ *  worth more, and it is the difference between this being usable by someone who
+ *  does not write SQL and not.
+ *
+ *  `null` when there is nothing to fix, when the statement is too incomplete to
+ *  judge, or when no primary key is known — in which case there is nothing
+ *  honest to propose.
  */
-export function orderByAssist(sql: string, schema: SchemaDto | null): string | null {
+export function orderByAssist(sql: string, schema: SchemaDto | null): OrderByAssist | null {
   const upper = sql.toUpperCase();
-  if (!/\bLIMIT\b|\bOFFSET\b/.test(upper)) return null;
+
+  // Only a SELECT that has actually named a table. Offering a clause while the
+  // reader is still typing `SELECT * FROM Us` is noise, and the table name is
+  // what makes the primary key the right key to offer.
+  if (!/^\s*SELECT\b/.test(upper)) return null;
+  if (!/\bFROM\s+[A-Za-z_][A-Za-z0-9_]*/.test(sql)) return null;
   if (/\bORDER\s+BY\b/.test(upper)) return null;
 
   const keys = (schema?.columns ?? []).filter((column) => column.primaryKey);
   if (keys.length === 0) return null;
 
-  return `ORDER BY ${keys.map((column) => column.name).join(", ")}`;
+  const clause = `ORDER BY ${keys.map((column) => column.name).join(", ")}`;
+  const bounded = /\bLIMIT\b|\bOFFSET\b/.test(upper);
+
+  return {
+    clause,
+    // A statement with no bound needs one too, and this app will not send an
+    // unbounded read — so offer the whole thing rather than fixing half and
+    // leaving the reader to discover the other half.
+    withLimit: bounded ? null : DEFAULT_LIMIT,
+    insertion: bounded ? clause : `${clause} LIMIT ${DEFAULT_LIMIT}`,
+  };
 }
 
-/** Inserts the assist before the `LIMIT`/`OFFSET` that requires it.
+/** Matches `DEFAULT_ROW_LIMIT` in the Rust `commands.rs`, so the offer and what
+ *  the backend would have appended agree. */
+const DEFAULT_LIMIT = 100;
+
+export type OrderByAssist = {
+  /** The ordering clause alone. */
+  clause: string;
+  /** The bound to add alongside it, or null if the statement already has one. */
+  withLimit: number | null;
+  /** What pressing the key actually inserts. */
+  insertion: string;
+};
+
+/** Inserts the assist where it belongs.
  *
- *  Appending would produce `... LIMIT 100 ORDER BY id`, which is not valid SQL —
- *  the ordering has to precede the window it orders. */
-export function applyOrderByAssist(sql: string, assist: string): string {
+ *  Before the `LIMIT`/`OFFSET` when there is one, because the ordering has to
+ *  precede the window it orders — appending would give `LIMIT 100 ORDER BY id`,
+ *  which is not valid SQL. At the end otherwise, since there is no window yet.
+ */
+export function applyOrderByAssist(sql: string, assist: OrderByAssist): string {
   const match = /\b(LIMIT|OFFSET)\b/i.exec(sql);
-  if (!match) return `${sql.trimEnd()} ${assist}`;
+  if (!match) return `${sql.trimEnd()} ${assist.insertion}`;
 
   const head = sql.slice(0, match.index).trimEnd();
   const tail = sql.slice(match.index);
 
-  return `${head} ${assist} ${tail}`;
+  return `${head} ${assist.clause} ${tail}`;
+}
+
+/** A complete, runnable statement for a table — the thing to offer someone
+ *  looking at an empty editor.
+ *
+ *  Every part of it is required: this app will not send an unbounded read, and
+ *  icydb will not accept the bound without an ordering. So the shortest correct
+ *  starting point is longer than a newcomer would guess, which is exactly why it
+ *  should be offered rather than described.
+ */
+export function starterQuery(entity: string, schema: SchemaDto | null): string {
+  const keys = (schema?.columns ?? []).filter((column) => column.primaryKey);
+  const ordering = keys.length > 0 ? ` ORDER BY ${keys.map((c) => c.name).join(", ")}` : "";
+
+  return `SELECT * FROM ${entity}${ordering} LIMIT ${DEFAULT_LIMIT}`;
 }
 
 /** The partial word the cursor sits in, which suggestions filter against. */

@@ -90,6 +90,12 @@ function noUsableIdentitySummary(environment: Environment): string {
   return `No usable identity is available for this environment. ${reasons}`;
 }
 
+/// The role a canister is known by, which is what a reader recognises — the
+/// principal is an identifier, not a name.
+function roleOf(trees: TreeNode[] | null, pid: string): string | null {
+  return flattenForest(trees ?? []).find((node) => node.pid === pid)?.role ?? null;
+}
+
 /// Every canister in the forest, roots and descendants alike.
 ///
 /// The tree is arbitrarily deep — a canic fleet nests shards under hubs under
@@ -989,6 +995,11 @@ function App() {
           <SqlBar
             entities={entities}
             schema={schema}
+            target={
+              canister
+                ? { canister: roleOf(forest, canister) ?? canister, entity }
+                : null
+            }
             expanded={layout.sqlExpanded}
             onExpandedChange={setSqlExpanded}
             onRun={handleRunSql}
@@ -1032,6 +1043,7 @@ function SqlBar({
   result,
   entities,
   schema,
+  target,
 }: {
   expanded: boolean;
   onExpandedChange: (expanded: boolean) => void;
@@ -1044,6 +1056,7 @@ function SqlBar({
    *  table's schema for its columns and its real primary key. */
   entities: EntityDto[] | null;
   schema: SchemaDto | null;
+  target: { canister: string; entity: string | null } | null;
 }) {
   if (!expanded) {
     return (
@@ -1091,6 +1104,7 @@ function SqlBar({
           orderByMissing={orderByMissing}
           entities={entities}
           schema={schema}
+          target={target ?? undefined}
         />
         {result && (
           <div className="mt-2">

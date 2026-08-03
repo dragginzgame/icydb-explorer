@@ -147,3 +147,82 @@ test("SQL is tokenised, which is what highlighting needs", () => {
   const marked = document.querySelectorAll("[data-sql-editor] .cm-line span");
   expect(marked.length).toBeGreaterThan(0);
 });
+
+const target = { canister: "user_shard", entity: "User" };
+
+/// Every statement here reaches one canister — each is its own icydb database —
+/// and nothing else on screen said which.
+test("the console names what it is querying", () => {
+  render(<SqlConsole onRun={() => {}} entities={entities} schema={schema} target={target} />);
+
+  expect(screen.getByText("user_shard")).toBeInTheDocument();
+  expect(screen.getByText("User")).toBeInTheDocument();
+  expect(screen.getByText(/separate database/)).toBeInTheDocument();
+});
+
+/// An empty editor is where someone who does not write SQL gives up. The
+/// shortest correct statement needs a bound and an ordering — longer than a
+/// newcomer would guess — so it is offered whole rather than described.
+test("an empty editor offers a complete runnable statement", () => {
+  const ran: string[] = [];
+  render(
+    <SqlConsole onRun={(sql) => ran.push(sql)} entities={entities} schema={schema} target={target} />,
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: /Start with/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+  expect(ran).toEqual(["SELECT * FROM User ORDER BY id LIMIT 100"]);
+});
+
+test("the starter offer disappears once something is typed", () => {
+  render(<SqlConsole onRun={() => {}} entities={entities} schema={schema} target={target} />);
+  typeSql("SELECT 1");
+
+  expect(screen.queryByRole("button", { name: /Start with/ })).not.toBeInTheDocument();
+});
+
+/// The case that produced the unhelpful prose: no bound and no ordering. It is
+/// now the same one-keystroke offer as the LIMIT case, with a real clause in it.
+test("a bare SELECT offers both the order and the limit", () => {
+  const ran: string[] = [];
+  render(
+    <SqlConsole onRun={(sql) => ran.push(sql)} entities={entities} schema={schema} target={target} />,
+  );
+  typeSql("SELECT * FROM User");
+
+  expect(screen.getByText("Needs a limit and an order")).toBeInTheDocument();
+  expect(screen.getByText("ORDER BY id LIMIT 100")).toBeInTheDocument();
+
+  pressKey("Tab");
+  fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+  expect(ran).toEqual(["SELECT * FROM User ORDER BY id LIMIT 100"]);
+});
+
+/// The old prose is a fallback for when no key is known, never the plan — and it
+/// must not appear alongside an offer that already does the job.
+test("the prose fallback never competes with the offer", () => {
+  render(
+    <SqlConsole
+      onRun={() => {}}
+      entities={entities}
+      schema={schema}
+      target={target}
+      orderByMissing
+    />,
+  );
+  typeSql("SELECT * FROM User");
+
+  expect(screen.queryByText(/needs an ORDER BY before icydb/)).not.toBeInTheDocument();
+  expect(screen.getByText("Needs a limit and an order")).toBeInTheDocument();
+});
+
+test("with no schema the prose fallback is what is left", () => {
+  render(
+    <SqlConsole onRun={() => {}} entities={entities} schema={null} target={target} orderByMissing />,
+  );
+  typeSql("SELECT * FROM User");
+
+  expect(screen.getByText(/needs an ORDER BY before icydb/)).toBeInTheDocument();
+});
