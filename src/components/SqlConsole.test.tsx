@@ -33,6 +33,16 @@ function typeSql(text: string) {
   });
 }
 
+/// CodeMirror binds keys on its content element, so events go there rather than
+/// to the host div.
+function pressKey(key: string, modifiers: Record<string, boolean> = {}) {
+  const content = document.querySelector<HTMLElement>("[data-sql-editor] .cm-content");
+  if (!content) throw new Error("no editor content element");
+  act(() => {
+    fireEvent.keyDown(content, { key, ...modifiers });
+  });
+}
+
 test("the editor mounts and holds the statement", () => {
   render(<SqlConsole onRun={() => {}} entities={entities} schema={schema} />);
   typeSql("SELECT * FROM User");
@@ -50,33 +60,67 @@ test("running sends what the editor holds", () => {
 });
 
 /// The most-hit failure in this app: icydb rejects LIMIT without an explicit
-/// ordering. Offered as one click, using the real primary key.
-test("a LIMIT with no ORDER BY offers the fix", () => {
+/// ordering. The hint names the rule, says why, and offers the keystroke — in
+/// that order, because a reader who has understood the rule needs the key, not
+/// the prose, next time.
+test("a LIMIT with no ORDER BY states the rule and offers the keystroke", () => {
   render(<SqlConsole onRun={() => {}} entities={entities} schema={schema} />);
   typeSql("SELECT * FROM User LIMIT 100");
 
-  expect(screen.getByRole("button", { name: /ORDER BY id/ })).toBeInTheDocument();
+  expect(screen.getByText("ORDER BY required")).toBeInTheDocument();
+  expect(screen.getByText(/rejects LIMIT without one/)).toBeInTheDocument();
+  // Names the actual clause it would insert, derived from the real primary key.
+  expect(screen.getByText("ORDER BY id")).toBeInTheDocument();
 });
 
 /// Appending would give `LIMIT 100 ORDER BY id`, which is not valid SQL. This
 /// also proves the assist reaches the editor: it rewrites the statement from
 /// outside, which a one-way editor would swallow.
-test("taking the assist rewrites the statement into a runnable one", () => {
+test("pressing Tab takes the assist and produces a runnable statement", () => {
   const ran: string[] = [];
   render(<SqlConsole onRun={(sql) => ran.push(sql)} entities={entities} schema={schema} />);
   typeSql("SELECT * FROM User LIMIT 100");
 
-  fireEvent.click(screen.getByRole("button", { name: /ORDER BY id/ }));
+  pressKey("Tab");
   fireEvent.click(screen.getByRole("button", { name: "Run" }));
 
   expect(ran).toEqual(["SELECT * FROM User ORDER BY id LIMIT 100"]);
+});
+
+/// Tab must not swallow itself when there is nothing to insert, or the editor
+/// loses ordinary indentation and focus movement.
+test("Tab does nothing when no assist is pending", () => {
+  render(<SqlConsole onRun={() => {}} entities={entities} schema={schema} />);
+  typeSql("SELECT * FROM User ORDER BY id LIMIT 100");
+
+  pressKey("Tab");
+
+  expect(document.querySelector("[data-sql-editor]")?.textContent).toContain(
+    "SELECT * FROM User ORDER BY id LIMIT 100",
+  );
+});
+
+/// The design puts run on Mod-Enter, so the reader never has to leave the
+/// keyboard to execute what they just typed.
+test("Mod-Enter runs the statement", () => {
+  const ran: string[] = [];
+  render(<SqlConsole onRun={(sql) => ran.push(sql)} entities={entities} schema={schema} />);
+  typeSql("SELECT 1");
+
+  // CodeMirror's `Mod-` is Cmd on macOS and Ctrl elsewhere, resolved by its own
+  // platform detection — which under jsdom reports the non-Mac branch. Firing
+  // both keeps this test about the binding rather than about the host.
+  pressKey("Enter", { metaKey: true });
+  if (ran.length === 0) pressKey("Enter", { ctrlKey: true });
+
+  expect(ran).toEqual(["SELECT 1"]);
 });
 
 test("a statement that already orders is offered no assist", () => {
   render(<SqlConsole onRun={() => {}} entities={entities} schema={schema} />);
   typeSql("SELECT * FROM User ORDER BY handle LIMIT 100");
 
-  expect(screen.queryByRole("button", { name: /Add/ })).not.toBeInTheDocument();
+  expect(screen.queryByText("ORDER BY required")).not.toBeInTheDocument();
 });
 
 /// Without a schema there is no honest primary key to propose.
@@ -84,7 +128,7 @@ test("no schema means no assist", () => {
   render(<SqlConsole onRun={() => {}} entities={entities} schema={null} />);
   typeSql("SELECT * FROM User LIMIT 100");
 
-  expect(screen.queryByRole("button", { name: /Add/ })).not.toBeInTheDocument();
+  expect(screen.queryByText("ORDER BY required")).not.toBeInTheDocument();
 });
 
 test("the console works with no schema or entities at all", () => {

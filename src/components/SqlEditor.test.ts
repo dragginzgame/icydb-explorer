@@ -84,3 +84,41 @@ test("a schema that arrives after construction is still used", () => {
   const after = source(new CompletionContext(EditorState.create({ doc: "SELECT * FROM " }), 14, false));
   expect(after?.options.map((o) => o.label)).toContain("User");
 });
+
+/// The popup is grouped, not a flat list: "Columns · User" then "Tables". A bare
+/// name cannot tell you whether an entry is a column of the table you are
+/// querying or a different table entirely, and those are easy to confuse.
+test("completions are grouped, and columns name their table", () => {
+  const result = complete("SELECT * FROM User WHERE ");
+  const sections = new Set(result?.options.map((o) => o.section));
+
+  expect(sections).toContain("Columns · User");
+  const handle = result?.options.find((o) => o.label === "handle");
+  expect(handle?.section).toBe("Columns · User");
+});
+
+test("tables are grouped under their own heading", () => {
+  const result = complete("SELECT * FROM ");
+  const user = result?.options.find((o) => o.label === "User");
+
+  expect(user?.section).toBe("Tables");
+});
+
+test("clause keywords are grouped separately from schema", () => {
+  const result = complete("SELECT * FROM User WHERE ");
+  const where = result?.options.find((o) => o.label === "ORDER BY");
+
+  expect(where?.section).toBe("Keywords");
+});
+
+/// With no schema there is no table name to qualify the heading with, and
+/// inventing one would be worse than a plain label.
+test("columns fall back to a plain heading with no schema", () => {
+  const source = sqlCompletionSource(() => ({ entities, schema: null }));
+  const state = EditorState.create({ doc: "SELECT " });
+  const result = source(new CompletionContext(state, 7, true));
+
+  for (const option of result?.options ?? []) {
+    expect(option.section).not.toMatch(/·\s*$/);
+  }
+});

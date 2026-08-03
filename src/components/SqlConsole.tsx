@@ -30,20 +30,43 @@ export function SqlConsole({
 
   return (
     <div className="flex flex-col gap-2">
-      <SqlEditor value={sql} onChange={setSql} entities={entities} schema={schema} />
+      <SqlEditor
+        value={sql}
+        onChange={setSql}
+        entities={entities}
+        schema={schema}
+        onRun={() => onRun(sql)}
+        onTakeAssist={() => {
+          if (!assist) return false;
+          setSql(applyOrderByAssist(sql, assist));
+          return true;
+        }}
+      />
 
-      {assist && (
-        // icydb rejects LIMIT without an explicit ordering, and that is the
-        // most-hit failure in this app. Offered as one click using the real
-        // primary key, rather than left as an error to read afterwards.
-        <button
-          type="button"
-          onClick={() => setSql(applyOrderByAssist(sql, assist))}
-          className="self-start rounded-control border border-warn-border bg-warn-bg px-2 py-0.5 text-xs text-warn-text"
-        >
-          Add “{assist}” — icydb needs an ordering before LIMIT
-        </button>
-      )}
+      {/* A hint strip, not a button. icydb rejects LIMIT without an explicit
+          ordering — the most-hit failure in this app — so this names the rule,
+          says why, and offers the keystroke, in that order. A reader who
+          understands the rule after reading it once does not need the button
+          again; they need the key. */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+        {assist ? (
+          <>
+            <b className="font-semibold text-warn-text">ORDER BY required</b>
+            <span className="text-text-3">
+              icydb rejects LIMIT without one. Press{" "}
+              <kbd className="rounded-row border border-rule px-1 font-mono">⇥</kbd> to insert{" "}
+              <code className="font-mono text-accent">{assist}</code>.
+            </span>
+          </>
+        ) : (
+          <span className="text-text-3">
+            {limitAppended ? "A default LIMIT was added to this query." : ""}
+          </span>
+        )}
+        <span className="ml-auto text-text-3">
+          <kbd className="rounded-row border border-rule px-1 font-mono">⌘⏎</kbd> run
+        </span>
+      </div>
 
       <div className="flex items-center gap-2">
         <button
@@ -53,9 +76,6 @@ export function SqlConsole({
         >
           Run
         </button>
-        {limitAppended && (
-          <span className="text-sm text-text-2">A default LIMIT was added to this query.</span>
-        )}
         {orderByMissing && (
           <span className="text-sm text-text-2">
             No LIMIT was added: this SELECT has no ORDER BY, and icydb requires one before it will

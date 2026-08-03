@@ -61,6 +61,18 @@ const theme = EditorView.theme({
   ".cm-completionDetail": { color: "var(--text-3)", fontStyle: "normal", marginLeft: "0.5rem" },
 });
 
+/** The popup heading a suggestion belongs under.
+ *
+ *  Columns name their table, because "is this a column of what I am querying or
+ *  a different table?" is the question a bare name cannot answer. Sections are
+ *  ordered by CodeMirror in the order first seen, which follows `suggestSql`'s
+ *  own ordering — columns before tables before keywords. */
+function sectionFor(kind: "column" | "table" | "keyword", entity?: string): string {
+  if (kind === "column") return entity ? `Columns · ${entity}` : "Columns";
+
+  return kind === "table" ? "Tables" : "Keywords";
+}
+
 /** Adapts `suggestSql` to CodeMirror's completion protocol.
  *
  *  Exported and given the sources through a getter rather than captured, so the
@@ -88,10 +100,15 @@ export function sqlCompletionSource(
       // Replace the partial word, not insert beside it — otherwise completing
       // `us` to `User` leaves `usUser`.
       from: word ? context.pos - word[0].length : context.pos,
+      // Grouped, not a flat list. "Columns · User" first, then "Tables", so the
+      // reader can see at a glance whether an entry is a column of the table
+      // they are querying or a different table entirely — the two are easy to
+      // confuse by name alone, and the design called for the distinction.
       options: suggestions.map((suggestion) => ({
         label: suggestion.text,
         type: suggestion.kind === "keyword" ? "keyword" : suggestion.kind,
         detail: suggestion.detail,
+        section: sectionFor(suggestion.kind, schema?.entity),
       })),
     };
   };
@@ -109,11 +126,19 @@ export function SqlEditor({
   onChange,
   entities,
   schema,
+  onRun,
+  onTakeAssist,
 }: {
   value: string;
   onChange: (value: string) => void;
   entities?: EntityDto[] | null;
   schema?: SchemaDto | null;
+  /** Run the statement. Bound to Mod-Enter. */
+  onRun?: () => void;
+  /** Insert the pending `ORDER BY` assist, if there is one. Bound to Tab, and
+   *  reports whether it did anything so Tab can fall through when there is
+   *  nothing to insert. */
+  onTakeAssist?: () => boolean;
 }) {
   const host = useRef<HTMLDivElement | null>(null);
   const view = useRef<EditorView | null>(null);
@@ -124,6 +149,12 @@ export function SqlEditor({
   sources.current = { entities, schema };
   const notify = useRef(onChange);
   notify.current = onChange;
+  // Handlers through refs for the same reason as the sources: the keymap is
+  // installed once, at construction.
+  const run = useRef(onRun);
+  run.current = onRun;
+  const takeAssist = useRef(onTakeAssist);
+  takeAssist.current = onTakeAssist;
 
   useEffect(() => {
     if (!host.current || view.current) return;
@@ -134,6 +165,23 @@ export function SqlEditor({
         doc: value,
         extensions: [
           history(),
+          // Before `defaultKeymap`, so these win. Tab is deliberately *after*
+          // `autocompletion`'s own binding in precedence terms — that is why it
+          // reports whether it consumed the key: with the popup open Tab must
+          // accept the completion, and only otherwise take the assist.
+          keymap.of([
+            {
+              key: "Mod-Enter",
+              run: () => {
+                run.current?.();
+                return true;
+              },
+            },
+            {
+              key: "Tab",
+              run: () => takeAssist.current?.() ?? false,
+            },
+          ]),
           keymap.of([...defaultKeymap, ...historyKeymap]),
           sql(),
           syntaxHighlighting(highlight),
