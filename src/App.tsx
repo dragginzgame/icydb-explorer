@@ -366,7 +366,17 @@ function App() {
     setRowsError(null);
     setOffset(0);
     setLastPageRowCount(0);
-    if (!env || !canister || !entity || !identity) return;
+    // A query result and a table's rows now share one pane, so a result must not
+    // outlive the selection it was taken under. Asking for a table and still
+    // being shown a statement's output is the failure that sharing the pane
+    // makes possible, and this is where it is prevented.
+    //
+    // Safe here specifically because this effect depends on the selection alone
+    // — env, canister, entity, identity — and not on `offset`, so paging cannot
+    // trip it and discard a result the reader just asked for.
+    setSqlResult(null);
+    if (!env || !canister || !identity) return;
+    if (!entity) return;
     let cancelled = false;
 
     describeTable(env, canister, entity, identity)
@@ -490,6 +500,23 @@ function App() {
   useEffect(() => {
     selectionRef.current = { env, canister, entity, identity };
   }, [env, canister, entity, identity]);
+
+  // A query result that happens to be rows is still a page of rows, so it saves
+  // the same way. Sharing one serialiser rather than a second path means CSV
+  // quoting cannot be right in one place and wrong in the other.
+  const exportResultRows = useCallback(
+    async (format: ExportFormat) => {
+      if (sqlResult?.type !== "rows") return;
+      const path = await save({ defaultPath: exportFilename(sqlResult, format) });
+      if (!path) return;
+      try {
+        await writeExport(path, exportRows(sqlResult, format));
+      } catch (error) {
+        setSqlError(error as AppErrorDto);
+      }
+    },
+    [sqlResult],
+  );
 
   // Explains the statement the grid is running.
   //
@@ -964,20 +991,52 @@ function App() {
                 size of its own: this section's width already comes from
                 `flex-1` in the row above, not from its content, so containment
                 changes nothing about how it's sized. */}
-            <Pane title="Rows" className="@container">
-              {rowsError && <ErrorBanner error={rowsError} />}
-              {entity === null ? (
-                <PaneEmpty title="No table selected">Select a table to see its rows.</PaneEmpty>
+            {/* One pane for results, whether they came from selecting a table or
+                from a statement. The SQL bar used to render its own grid in a
+                fixed third of the height — a second copy of this grid, in a third
+                of the room, missing nothing except the space that makes wide rows
+                readable. A hundred rows had nowhere to go.
+
+                The title says which of the two you are looking at, and a query
+                result carries a way back, because a pane that silently swapped
+                its source would have you reading a statement's output as though
+                it were the table's contents. */}
+            <Pane
+              title={sqlResult ? "Query result" : "Rows"}
+              className="@container"
+              trailing={
+                sqlResult && (
+                  <button
+                    type="button"
+                    onClick={() => setSqlResult(null)}
+                    className="rounded-control px-1 text-xs text-text-3 hover:bg-surface-2"
+                  >
+                    {entity ? `back to ${entity}` : "clear"}
+                  </button>
+                )
+              }
+            >
+              {sqlResult ? (
+                <SqlResultView result={sqlResult} onExport={exportResultRows} />
               ) : (
-                <RowGrid
-                  rows={rows}
-                  hasMore={hasMore}
-                  onLoadMore={loadMore}
-                  loading={rowsPending}
-                  skeletonColumns={skeletonColumns}
-                  onExport={(format) => void exportCurrentRows(format)}
-                  onExplain={() => void explainCurrentRows()}
-                />
+                <>
+                  {rowsError && <ErrorBanner error={rowsError} />}
+                  {entity === null ? (
+                    <PaneEmpty title="No table selected">
+                      Select a table to see its rows.
+                    </PaneEmpty>
+                  ) : (
+                    <RowGrid
+                      rows={rows}
+                      hasMore={hasMore}
+                      onLoadMore={loadMore}
+                      loading={rowsPending}
+                      skeletonColumns={skeletonColumns}
+                      onExport={(format) => void exportCurrentRows(format)}
+                      onExplain={() => void explainCurrentRows()}
+                    />
+                  )}
+                </>
               )}
             </Pane>
 
@@ -1006,7 +1065,6 @@ function App() {
             error={sqlError}
             limitAppended={sqlLimitAppended}
             orderByMissing={sqlOrderByMissing}
-            result={sqlResult}
           />
         </div>
       )}
@@ -1040,7 +1098,6 @@ function SqlBar({
   error,
   limitAppended,
   orderByMissing,
-  result,
   entities,
   schema,
   target,
@@ -1051,7 +1108,6 @@ function SqlBar({
   error?: AppErrorDto;
   limitAppended: boolean;
   orderByMissing: boolean;
-  result: ResultDto | null;
   /** Passed through for completion: the canister's tables, and the selected
    *  table's schema for its columns and its real primary key. */
   entities: EntityDto[] | null;
@@ -1106,11 +1162,7 @@ function SqlBar({
           schema={schema}
           target={target ?? undefined}
         />
-        {result && (
-          <div className="mt-2">
-            <SqlResultView result={result} />
-          </div>
-        )}
+
       </div>
     </div>
   );
@@ -1121,9 +1173,22 @@ function SqlBar({
 // state of its own, so `hasMore` is always false here); the rest get a
 // small dedicated rendering since reusing `TableList`/`CanisterTree` here
 // would require selection callbacks that don't apply to a static result.
-function SqlResultView({ result }: { result: ResultDto }) {
+function SqlResultView({
+  result,
+  onExport,
+}: {
+  result: ResultDto;
+  onExport?: (format: ExportFormat) => void;
+}) {
   if (result.type === "rows") {
-    return <RowGrid rows={result} hasMore={false} onLoadMore={() => {}} />;
+    return (
+      <RowGrid
+        rows={result}
+        hasMore={false}
+        onLoadMore={() => {}}
+        onExport={onExport && ((format) => onExport(format))}
+      />
+    );
   }
   if (result.type === "schema") {
     return <SchemaPanel schema={result} />;

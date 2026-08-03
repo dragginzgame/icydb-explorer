@@ -1705,3 +1705,86 @@ test("no controlling identity leaves the selection untouched", async () => {
 
   expect(screen.queryByText(/Switched to identity/)).not.toBeInTheDocument();
 });
+
+/// A query result and a table's rows now share one pane, so the pane has to say
+/// which of the two it is showing. Silently swapping the source would have a
+/// reader taking a statement's output for the table's contents.
+test("a query result takes over the rows pane and names itself", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/toko",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    { pid: "root-id", role: "root", children: [{ pid: "aaaaa-aa", role: "hub", children: [] }] },
+  ]);
+  vi.mocked(commands.listTables).mockResolvedValue({
+    type: "entities",
+    entities: [entity("User", 2)],
+  });
+  vi.mocked(commands.describeTable).mockResolvedValue({
+    type: "schema",
+    entity: "User",
+    columns: [],
+    indexes: [],
+  });
+  vi.mocked(commands.fetchRows).mockResolvedValue(rowsFixture("User", ["id", "handle"], 1));
+  vi.mocked(commands.runSql).mockResolvedValue({
+    result: rowsFixture("Other", ["x"], 1),
+    limitAppended: false,
+    orderByMissing: false,
+  });
+
+  render(<App />);
+  fireEvent.click(await screen.findByText("hub"));
+  fireEvent.click(await screen.findByText("User"));
+  await screen.findByRole("region", { name: "Rows" });
+
+  fireEvent.click(screen.getByRole("button", { name: "SQL" }));
+  typeSql("SELECT * FROM Other ORDER BY x LIMIT 100");
+  fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+  // The pane is renamed, so it cannot be mistaken for the table's rows.
+  expect(await screen.findByRole("region", { name: "Query result" })).toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "Rows" })).not.toBeInTheDocument();
+});
+
+/// A result must not outlive the selection it was taken under.
+test("selecting a table clears a query result", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/Users/me/projects/toko",
+    environments: [environmentFixture()],
+    error: null,
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    { pid: "root-id", role: "root", children: [{ pid: "aaaaa-aa", role: "hub", children: [] }] },
+  ]);
+  vi.mocked(commands.listTables).mockResolvedValue({
+    type: "entities",
+    entities: [entity("User", 2), entity("Address", 2)],
+  });
+  vi.mocked(commands.describeTable).mockResolvedValue({
+    type: "schema",
+    entity: "User",
+    columns: [],
+    indexes: [],
+  });
+  vi.mocked(commands.fetchRows).mockResolvedValue(rowsFixture("User", ["id", "handle"], 1));
+  vi.mocked(commands.runSql).mockResolvedValue({
+    result: rowsFixture("Other", ["x"], 1),
+    limitAppended: false,
+    orderByMissing: false,
+  });
+
+  render(<App />);
+  fireEvent.click(await screen.findByText("hub"));
+  fireEvent.click(await screen.findByText("User"));
+  fireEvent.click(screen.getByRole("button", { name: "SQL" }));
+  typeSql("SELECT * FROM Other ORDER BY x LIMIT 100");
+  fireEvent.click(screen.getByRole("button", { name: "Run" }));
+  await screen.findByRole("region", { name: "Query result" });
+
+  fireEvent.click(screen.getByText("Address"));
+
+  expect(await screen.findByRole("region", { name: "Rows" })).toBeInTheDocument();
+});
