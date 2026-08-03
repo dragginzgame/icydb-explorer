@@ -33,29 +33,99 @@ export function SqlConsole({
   const [sql, setSql] = useState("");
   const assist = orderByAssist(sql, schema ?? null);
 
+  // Whatever the statement needs next, and only ever one of them: two would be
+  // two answers to "what do I do now". Built here rather than inline so it can
+  // sit on the header row *and* decide whether that row is worth drawing.
+  //
+  // Each is short and carries its reasoning on hover: the rule is worth reading
+  // once, the keystroke is worth seeing every time.
+  const hint = assist ? (
+    <button
+      type="button"
+      onClick={() => setSql(applyOrderByAssist(sql, assist))}
+      title={
+        assist.withLimit === null
+          ? "icydb rejects LIMIT without an explicit ordering, so this statement cannot run as written. Inserts the primary key ordering."
+          : "This explorer never reads a whole table, and icydb needs an ordering before it will page. Inserts both."
+      }
+      className="rounded-control border border-warn-border bg-warn-bg px-2 py-0.5 text-warn-text"
+    >
+      <b className="font-semibold">
+        {assist.withLimit === null ? "ORDER BY required" : "Needs a limit and an order"}
+      </b>{" "}
+      <span className="opacity-80">
+        <kbd className="font-mono">⇥</kbd> {assist.insertion}
+      </span>
+    </button>
+  ) : sql.trim() === "" && target?.entity ? (
+    <button
+      type="button"
+      onClick={() => setSql(starterQuery(target.entity!, schema ?? null))}
+      title="Fills the editor with a complete, runnable statement for the selected table — bounded and ordered, both of which are required."
+      className="rounded-control border border-rule px-2 py-0.5 text-text-2 hover:bg-surface-2"
+    >
+      Start with{" "}
+      <code className="font-mono text-accent">{starterQuery(target.entity, schema ?? null)}</code>
+    </button>
+  ) : limitAppended ? (
+    <span className="text-text-3" title="This explorer never reads a whole table.">
+      A default LIMIT was added.
+    </span>
+  ) : orderByMissing ? (
+    // Only reachable when no assist could be built — no schema, so no real
+    // primary key to offer. Prose is the fallback, never the plan.
+    <span
+      className="text-text-2"
+      title="Select a table in the Tables pane and this console can fill in the ordering for you."
+    >
+      Needs an ORDER BY before icydb will page it.
+    </span>
+  ) : null;
+
   return (
     <div className="flex flex-col gap-2">
-      {target && (
-        <div className="flex flex-wrap items-center gap-x-2 text-xs">
-          <span className="text-text-3">Querying</span>
-          <span className="font-mono text-text-1">{target.canister}</span>
-          {target.entity && (
+      {/* One header line: what this queries on the left, what the statement needs
+          next on the right. The hint had a row of its own under the input, which
+          spent a third row of a bar whose whole point is to be small — and put
+          the advice below the thing it was advising about. Drawn only when it
+          would hold something, so an empty one never costs a gap. */}
+      {(target || hint) && (
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+          {target && (
             <>
-              <span className="text-text-3">·</span>
-              <span className="font-mono text-pk">{target.entity}</span>
+              <span className="text-text-3">Querying</span>
+              <span className="font-mono text-text-1">{target.canister}</span>
+              {target.entity && (
+                <>
+                  <span className="text-text-3">·</span>
+                  <span className="font-mono text-pk">{target.entity}</span>
+                </>
+              )}
+              {/* Short inline, reason on hover. Sharing the row with the hint
+                  leaves no space for the sentence, and it is a thing worth
+                  learning once rather than reading every session. */}
+              <span
+                className="text-text-3"
+                title="Each canister carries its own icydb database, so a statement here reaches one and only one of them."
+              >
+                — one canister only
+              </span>
             </>
           )}
-          <span className="text-text-3">
-            — each canister is a separate database, so a statement here reaches only this one.
-          </span>
+
+          {/* The row's trailing end, so the target reads left and the advice
+              right rather than the two running together as one sentence. */}
+          <div className="ml-auto flex items-center gap-2">{hint}</div>
         </div>
       )}
 
       {/* Run sits beside the input, not under it. The editor is usually one line,
           so a button on its own row below reads as a second, separate thing —
           where next to the input it reads as what you do with what you typed.
-          `items-start` keeps it level with the first line as the editor grows. */}
-      <div className="flex items-start gap-2">
+          `items-stretch` makes it exactly as tall as the input, whatever height
+          the input has, rather than guessing at a matching padding that would
+          drift the moment the editor's line-height or padding changed. */}
+      <div className="flex items-stretch gap-2">
         <div className="min-w-0 flex-1">
           <SqlEditor
             value={sql}
@@ -75,68 +145,13 @@ export function SqlConsole({
         <button
           type="button"
           onClick={() => onRun(sql)}
-          className="flex shrink-0 items-center gap-1.5 rounded-control border border-rule px-2 py-1 text-xs text-text-1 hover:bg-surface-2"
+          // No vertical padding of its own: the row's height comes from the
+          // editor, and padding here would fight `items-stretch` for it.
+          className="flex shrink-0 items-center gap-1.5 rounded-control border border-rule px-3 text-xs text-text-1 hover:bg-surface-2"
         >
           Run
           <kbd className="rounded-row border border-rule px-1 font-mono text-text-3">⌘⏎</kbd>
         </button>
-      </div>
-
-      {/* Whatever the statement needs next, and nothing else. Run moved up beside
-          the input, so this row exists only when there is something to say — it
-          is empty and takes no space otherwise.
-
-          The hint is short and carries its reasoning on hover: the rule is worth
-          reading once, the keystroke is worth seeing every time. */}
-      <div className="flex items-center gap-2 text-xs">
-        {assist ? (
-          <button
-            type="button"
-            onClick={() => setSql(applyOrderByAssist(sql, assist))}
-            title={
-              assist.withLimit === null
-                ? "icydb rejects LIMIT without an explicit ordering, so this statement cannot run as written. Inserts the primary key ordering."
-                : "This explorer never reads a whole table, and icydb needs an ordering before it will page. Inserts both."
-            }
-            className="rounded-control border border-warn-border bg-warn-bg px-2 py-0.5 text-warn-text"
-          >
-            <b className="font-semibold">
-              {assist.withLimit === null ? "ORDER BY required" : "Needs a limit and an order"}
-            </b>{" "}
-            <span className="opacity-80">
-              <kbd className="font-mono">⇥</kbd> {assist.insertion}
-            </span>
-          </button>
-        ) : sql.trim() === "" && target?.entity ? (
-          // An empty editor is where someone who does not write SQL gives up, so
-          // the offer belongs here rather than above the input: this row is where
-          // the reader already looks for what to do next.
-          <button
-            type="button"
-            onClick={() => setSql(starterQuery(target.entity!, schema ?? null))}
-            title="Fills the editor with a complete, runnable statement for the selected table — bounded and ordered, both of which are required."
-            className="rounded-control border border-rule px-2 py-0.5 text-text-2 hover:bg-surface-2"
-          >
-            Start with{" "}
-            <code className="font-mono text-accent">
-              {starterQuery(target.entity, schema ?? null)}
-            </code>
-          </button>
-        ) : limitAppended ? (
-          <span className="text-text-3" title="This explorer never reads a whole table.">
-            A default LIMIT was added.
-          </span>
-        ) : orderByMissing ? (
-          // Only reachable when no assist could be built — no schema, so no real
-          // primary key to offer. Prose is the fallback, never the plan.
-          <span
-            className="text-text-2"
-            title="Select a table in the Tables pane and this console can fill in the ordering for you."
-          >
-            Needs an ORDER BY before icydb will page it.
-          </span>
-        ) : null}
-
       </div>
 
       {error && (

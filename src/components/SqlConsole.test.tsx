@@ -159,7 +159,11 @@ test("the console names what it is querying", () => {
 
   expect(screen.getByText("user_shard")).toBeInTheDocument();
   expect(screen.getByText("User")).toBeInTheDocument();
-  expect(screen.getByText(/separate database/)).toBeInTheDocument();
+  // Stated inline, briefly — this line is one row of a bar and now shares it
+  // with the hint. The *reason* one canister is all a statement reaches is on
+  // hover, because it is worth learning once and not worth reading every session.
+  const scope = screen.getByText(/one canister only/);
+  expect(scope.title).toMatch(/its own icydb database/);
 });
 
 /// An empty editor is where someone who does not write SQL gives up. The
@@ -244,16 +248,48 @@ test("run sits beside the input, on the same row", () => {
   expect(editorWrapper?.parentElement).toBe(run.parentElement);
 });
 
-/// And the row below carries only what the statement needs next, so it costs
-/// nothing when there is nothing to say.
-test("the row below the input holds the hint and not the run control", () => {
+/// The hint shares the header row rather than owning one. A bar whose point is to
+/// be small cannot spend a third row on advice, and the advice reads better
+/// beside what it is about than under it.
+test("the hint sits on the header row, beside what is being queried", () => {
   render(<SqlConsole onRun={() => {}} entities={entities} schema={schema} target={target} />);
   typeSql("SELECT * FROM User LIMIT 100");
 
-  const assist = screen.getByText("ORDER BY required").closest("button");
+  const assist = screen.getByText("ORDER BY required").closest("button")!;
+  // The header row specifically — not just some ancestor of the assist — so this
+  // fails if the hint moves back to a row of its own.
+  const header = screen.getByText("Querying").parentElement;
+
+  expect(header?.contains(assist)).toBe(true);
+  // At the row's trailing end, so the target reads left and the advice right
+  // rather than the two running together as one sentence.
+  expect(assist.parentElement?.className).toMatch(/\bml-auto\b/);
+});
+
+/// And not on the input's row: that row is the input and the control that runs
+/// it, and a third thing there would compete with both.
+test("the hint is not on the input's row", () => {
+  render(<SqlConsole onRun={() => {}} entities={entities} schema={schema} target={target} />);
+  typeSql("SELECT * FROM User LIMIT 100");
+
+  const assist = screen.getByText("ORDER BY required").closest("button")!;
+  const editorRow = document.querySelector("[data-sql-editor]")?.parentElement?.parentElement;
+
+  expect(editorRow?.contains(assist)).toBe(false);
+});
+
+/// The button is exactly as tall as the input. Two controls on one row at
+/// different heights read as unrelated things; matched, they read as one.
+test("run matches the input's height", () => {
+  render(<SqlConsole onRun={() => {}} entities={entities} schema={schema} target={target} />);
+
   const run = screen.getByRole("button", { name: /^run/i });
 
-  expect(assist?.parentElement?.contains(run)).toBe(false);
+  // jsdom has no layout, so the mechanism is what is checkable: `items-stretch`
+  // gives the button the row's height, which the editor sets.
+  expect(run.parentElement?.className).toMatch(/\bitems-stretch\b/);
+  // And no vertical padding of its own to fight that height.
+  expect(run.className).not.toMatch(/\bpy-/);
 });
 
 /// The shortcut is a property of the button, so it belongs on it rather than in a
