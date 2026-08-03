@@ -55,7 +55,7 @@ test("running sends what the editor holds", () => {
   render(<SqlConsole onRun={(sql) => ran.push(sql)} entities={entities} schema={schema} />);
   typeSql("SELECT * FROM User");
 
-  fireEvent.click(screen.getByRole("button", { name: "Run" }));
+  fireEvent.click(screen.getByRole("button", { name: /^run/i }));
   expect(ran).toEqual(["SELECT * FROM User"]);
 });
 
@@ -68,9 +68,11 @@ test("a LIMIT with no ORDER BY states the rule and offers the keystroke", () => 
   typeSql("SELECT * FROM User LIMIT 100");
 
   expect(screen.getByText("ORDER BY required")).toBeInTheDocument();
-  expect(screen.getByText(/rejects LIMIT without one/)).toBeInTheDocument();
   // Names the actual clause it would insert, derived from the real primary key.
-  expect(screen.getByText("ORDER BY id")).toBeInTheDocument();
+  expect(screen.getByText(/ORDER BY id/)).toBeInTheDocument();
+  // The reasoning is on hover: worth reading once, not worth a line of the bar
+  // every time. It still has to exist somewhere.
+  expect(screen.getByTitle(/icydb rejects LIMIT without an explicit ordering/)).toBeInTheDocument();
 });
 
 /// Appending would give `LIMIT 100 ORDER BY id`, which is not valid SQL. This
@@ -82,7 +84,7 @@ test("pressing Tab takes the assist and produces a runnable statement", () => {
   typeSql("SELECT * FROM User LIMIT 100");
 
   pressKey("Tab");
-  fireEvent.click(screen.getByRole("button", { name: "Run" }));
+  fireEvent.click(screen.getByRole("button", { name: /^run/i }));
 
   expect(ran).toEqual(["SELECT * FROM User ORDER BY id LIMIT 100"]);
 });
@@ -170,7 +172,7 @@ test("an empty editor offers a complete runnable statement", () => {
   );
 
   fireEvent.click(screen.getByRole("button", { name: /Start with/ }));
-  fireEvent.click(screen.getByRole("button", { name: "Run" }));
+  fireEvent.click(screen.getByRole("button", { name: /^run/i }));
 
   expect(ran).toEqual(["SELECT * FROM User ORDER BY id LIMIT 100"]);
 });
@@ -195,7 +197,7 @@ test("a bare SELECT offers both the order and the limit", () => {
   expect(screen.getByText("ORDER BY id LIMIT 100")).toBeInTheDocument();
 
   pressKey("Tab");
-  fireEvent.click(screen.getByRole("button", { name: "Run" }));
+  fireEvent.click(screen.getByRole("button", { name: /^run/i }));
 
   expect(ran).toEqual(["SELECT * FROM User ORDER BY id LIMIT 100"]);
 });
@@ -214,7 +216,7 @@ test("the prose fallback never competes with the offer", () => {
   );
   typeSql("SELECT * FROM User");
 
-  expect(screen.queryByText(/needs an ORDER BY before icydb/)).not.toBeInTheDocument();
+  expect(screen.queryByText(/Needs an ORDER BY before icydb/)).not.toBeInTheDocument();
   expect(screen.getByText("Needs a limit and an order")).toBeInTheDocument();
 });
 
@@ -224,5 +226,46 @@ test("with no schema the prose fallback is what is left", () => {
   );
   typeSql("SELECT * FROM User");
 
-  expect(screen.getByText(/needs an ORDER BY before icydb/)).toBeInTheDocument();
+  expect(screen.getByText(/Needs an ORDER BY before icydb/)).toBeInTheDocument();
+});
+
+/// Run used to sit on a line of its own, with the keyboard hint on another and
+/// the suggestion on a third — three rows of chrome for a four-line editor, in a
+/// bar whose whole point is to be small. One row now: what the statement needs
+/// next on the left, how to run it on the right.
+test("everything under the editor sits on one row", () => {
+  render(<SqlConsole onRun={() => {}} entities={entities} schema={schema} target={target} />);
+  typeSql("SELECT * FROM User LIMIT 100");
+
+  const run = screen.getByRole("button", { name: /^run/i });
+  const assist = screen.getByText("ORDER BY required");
+
+  // Same row means the same parent.
+  expect(run.parentElement).toBe(assist.closest("button")?.parentElement);
+});
+
+/// The shortcut is a property of the button, so it belongs on it rather than in a
+/// separate hint about a control elsewhere.
+test("the run control carries its own shortcut", () => {
+  render(<SqlConsole onRun={() => {}} entities={entities} schema={schema} target={target} />);
+
+  const run = screen.getByRole("button", { name: /^run/i });
+  expect(run.textContent).toMatch(/⌘⏎/);
+});
+
+/// Right-aligned: the reader's eye ends at the action.
+test("run sits at the end of the row", () => {
+  render(<SqlConsole onRun={() => {}} entities={entities} schema={schema} target={target} />);
+
+  expect(screen.getByRole("button", { name: /^run/i }).className).toMatch(/\bml-auto\b/);
+});
+
+/// Only one thing is offered at a time. A starter query and an ORDER BY assist
+/// both competing for the same row would be two answers to "what do I do next".
+test("the starter offer yields to the assist", () => {
+  render(<SqlConsole onRun={() => {}} entities={entities} schema={schema} target={target} />);
+  typeSql("SELECT * FROM User");
+
+  expect(screen.getByText("Needs a limit and an order")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Start with/ })).not.toBeInTheDocument();
 });

@@ -322,11 +322,11 @@ test("a stale SQL console run never overwrites a newer canister's result", async
   // expanded state is layout, not selection.)
   fireEvent.click(screen.getByRole("button", { name: "SQL" }));
   typeSql("SELECT 1");
-  fireEvent.click(screen.getByRole("button", { name: /run/i }));
+  fireEvent.click(screen.getByRole("button", { name: /^run/i }));
 
   // Switch canisters and re-run before A's runSql resolves.
   fireEvent.click(screen.getByText("canister-b"));
-  fireEvent.click(screen.getByRole("button", { name: /run/i }));
+  fireEvent.click(screen.getByRole("button", { name: /^run/i }));
 
   forB.resolve({ result: { type: "count", entity: "b_row", rowCount: 2 }, limitAppended: false, orderByMissing: false });
   await screen.findByText(/b_row/);
@@ -500,7 +500,7 @@ test("renders SHOW CONSTRAINTS results from the console", async () => {
   // The console lives in the SQL bar, which starts collapsed.
   fireEvent.click(screen.getByRole("button", { name: "SQL" }));
   typeSql("SHOW CONSTRAINTS FROM demo_row");
-  fireEvent.click(screen.getByRole("button", { name: /run/i }));
+  fireEvent.click(screen.getByRole("button", { name: /^run/i }));
 
   expect(await screen.findByText("demo_row_pk")).toBeDefined();
   expect(screen.getByText(/primary_key/)).toBeDefined();
@@ -788,7 +788,7 @@ test("switching projects clears the stale 'default LIMIT was added' note", async
   // across the project switch below, so the stale note is still on screen to
   // be absent from.
   fireEvent.click(await screen.findByRole("button", { name: "SQL" }));
-  fireEvent.click(await screen.findByRole("button", { name: "Run" }));
+  fireEvent.click(await screen.findByRole("button", { name: /^run/i }));
 
   expect(await screen.findByText(/A default LIMIT was added/)).toBeInTheDocument();
 
@@ -1171,7 +1171,7 @@ test("every max-w-cell element in the app has an @container ancestor", async () 
   // bar, which starts collapsed.
   fireEvent.click(screen.getByRole("button", { name: "SQL" }));
   typeSql("SELECT x, y FROM DemoRow");
-  fireEvent.click(screen.getByRole("button", { name: "Run" }));
+  fireEvent.click(screen.getByRole("button", { name: /^run/i }));
   expect(await screen.findByText("x-0")).toBeInTheDocument();
 
   const cells = document.querySelectorAll('[class*="max-w-cell"]');
@@ -1746,7 +1746,7 @@ test("a query result takes over the rows pane and names itself", async () => {
 
   fireEvent.click(screen.getByRole("button", { name: "SQL" }));
   typeSql("SELECT * FROM Other ORDER BY x LIMIT 100");
-  fireEvent.click(screen.getByRole("button", { name: "Run" }));
+  fireEvent.click(screen.getByRole("button", { name: /^run/i }));
 
   // The pane is renamed, so it cannot be mistaken for the table's rows.
   expect(await screen.findByRole("region", { name: "Query result" })).toBeInTheDocument();
@@ -1785,7 +1785,7 @@ test("selecting a table clears a query result", async () => {
   fireEvent.click(await screen.findByText("User"));
   fireEvent.click(screen.getByRole("button", { name: "SQL" }));
   typeSql("SELECT * FROM Other ORDER BY x LIMIT 100");
-  fireEvent.click(screen.getByRole("button", { name: "Run" }));
+  fireEvent.click(screen.getByRole("button", { name: /^run/i }));
   await screen.findByRole("region", { name: "Query result" });
 
   fireEvent.click(screen.getByText("Address"));
