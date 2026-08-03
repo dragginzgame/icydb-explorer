@@ -20,13 +20,16 @@ import type {
   EntityDto,
   Environment,
   Project,
+  RelationDto,
   ResultDto,
   RowsDto,
   SchemaDto,
   TreeNode,
+  ValueDto,
 } from "./api/types";
 import { CanisterTree, type QueryableMap } from "./components/CanisterTree";
 import { exportFilename, exportRows, type ExportFormat } from "./lib/exportRows";
+import { followPlan, followStatement, primaryKeyOf } from "./lib/followRelation";
 import { ErrorBanner } from "./components/ErrorBanner";
 import { IdentitySelector } from "./components/IdentitySelector";
 import { Pane } from "./components/Pane";
@@ -49,6 +52,19 @@ import { useTheme } from "./theme/useTheme";
 const DEFAULT_ROW_LIMIT = 100;
 
 const genericError = (explanation: string): AppErrorDto => ({ kind: "unknown", explanation });
+
+/// What a result is *of*, for a trail step's label.
+///
+/// Every variant this app can reach carries an entity except the three catalogue
+/// listings, which are about the canister rather than any one table — so those
+/// get their own word instead of a borrowed entity name that would be a lie.
+function resultLabel(result: ResultDto): string {
+  if (result.type === "entities") return "tables";
+  if (result.type === "stores") return "stores";
+  if (result.type === "memory") return "memory";
+
+  return result.entity;
+}
 
 // The initial-selection rule: the configured default wins if it's usable,
 // otherwise fall back to the first usable entry in `identities` rather
@@ -163,6 +179,26 @@ function App() {
   const [sqlLimitAppended, setSqlLimitAppended] = useState(false);
   const [sqlOrderByMissing, setSqlOrderByMissing] = useState(false);
   const [sqlResult, setSqlResult] = useState<ResultDto | null>(null);
+  // Where following relations has been. Each step is a view the pane was showing
+  // before a follow replaced it, so going back restores it exactly rather than
+  // re-running anything. `result: null` is the selected table's own rows, which
+  // is what the pane shows when nothing has overlaid it.
+  //
+  // A stack rather than a single "back": following a relation can land two or
+  // three entities away from where you started, and one undo would leave the
+  // reader stranded in the middle with no way to the beginning.
+  const [trail, setTrail] = useState<
+    { label: string; result: ResultDto | null; schema: SchemaDto | null }[]
+  >([]);
+  // The schema of the entity the current *result* is about, when it is known —
+  // which it is exactly when the result came from following a relation, because
+  // that path describes the target anyway to learn its primary key.
+  //
+  // Without this a follow is a dead end: a statement's output would carry no
+  // relation affordances, so the reader could go one step and no further, and a
+  // trail that can never hold more than one step is not a trail. Keeping the
+  // schema we already fetched costs nothing and makes following chain.
+  const [resultSchema, setResultSchema] = useState<SchemaDto | null>(null);
 
   // Incremented by every `adoptProject` call. The canister tree effect
   // depends on it so that adopting a project ALWAYS refetches the tree —
@@ -212,6 +248,8 @@ function App() {
     setCanister(null);
     setEntity(null);
     setSqlResult(null);
+    setResultSchema(null);
+    setTrail([]);
     setSqlError(undefined);
     setSqlLimitAppended(false);
     setSqlOrderByMissing(false);
@@ -375,6 +413,12 @@ function App() {
     // — env, canister, entity, identity — and not on `offset`, so paging cannot
     // trip it and discard a result the reader just asked for.
     setSqlResult(null);
+    // And the trail with it. Its steps hold views taken under the outgoing
+    // selection, so a surviving trail would offer a way "back" to a different
+    // table's rows from inside this one — the same failure as a stale result,
+    // one indirection further away.
+    setTrail([]);
+    setResultSchema(null);
     if (!env || !canister || !identity) return;
     if (!entity) return;
     let cancelled = false;
@@ -537,6 +581,85 @@ function App() {
       setSqlError(error as AppErrorDto);
     }
   }, [env, canister, entity, identity, offset, setSqlExpanded]);
+
+  // Follows a declared relation from the cell holding the target's keys.
+  //
+  // Two calls, in this order, because the statement cannot be written until the
+  // target is described: the keys come from the clicked row, but the column to
+  // match them against is the *target's* primary key, and this app holds a
+  // schema only for the selected entity. Assuming `id` would fail as a confusing
+  // SQL error on any entity naming its key otherwise.
+  //
+  // Same canister throughout. A declared relation is always intra-canister —
+  // `targetStorePath` names a store in this schema — so there is no boundary
+  // being crossed here and no identity to re-resolve.
+  const followRelationFrom = useCallback(
+    async (relation: RelationDto, cell: ValueDto) => {
+      if (!env || !canister || !identity) return;
+      const plan = followPlan(relation, cell);
+      // The affordance is not drawn without a plan, so this is a guard rather
+      // than a path — but a no-op beats a statement built from no keys.
+      if (!plan) return;
+
+      const from = sqlResult ? resultLabel(sqlResult) : (entity ?? "rows");
+      const fromSchema = resultSchema;
+      setSqlExpanded(true);
+      try {
+        const described = await describeTable(env, canister, plan.targetEntity, identity);
+        if (described.type !== "schema") {
+          throw genericError(
+            `Describing ${plan.targetEntity} returned a ${described.type}, not a schema, ` +
+              "so its primary key is unknown and there is nothing to match these keys against.",
+          );
+        }
+        const primaryKey = primaryKeyOf(described);
+        if (primaryKey === null) {
+          // Both reasons are worth distinguishing: no key at all, versus a
+          // composite one this app cannot match with a single value per key.
+          const keys = described.columns.filter((column) => column.primaryKey).length;
+          throw genericError(
+            keys === 0
+              ? `${plan.targetEntity} declares no primary key, so there is no column to match ` +
+                  `${relation.field} against.`
+              : `${plan.targetEntity} has a primary key of ${keys} columns. A relation carries ` +
+                  "one value per key, so this explorer cannot follow it without matching part " +
+                  "of the key and over-reporting.",
+          );
+        }
+
+        const run = await runSql(env, canister, followStatement(plan, primaryKey), identity);
+        setTrail((steps) => [...steps, { label: from, result: sqlResult, schema: fromSchema }]);
+        setSqlResult(run.result);
+        // The target's own schema, so the result it produced can be followed on
+        // in turn. Set only alongside the result it describes — a schema that
+        // outlived its result would offer to follow a column of another entity.
+        setResultSchema(described);
+        setSqlError(undefined);
+        setSqlLimitAppended(run.limitAppended);
+        setSqlOrderByMissing(run.orderByMissing);
+      } catch (error) {
+        // The trail is deliberately untouched on failure: a follow that did not
+        // happen must not add a step, or "back" would return to where the reader
+        // already is.
+        setSqlError(error as AppErrorDto);
+      }
+    },
+    [env, canister, identity, entity, sqlResult, resultSchema, setSqlExpanded],
+  );
+
+  // Returns to a step, discarding everything after it. Restores the view rather
+  // than re-running it: the rows are already in hand, and re-querying would show
+  // a reader different data than the one they are stepping back to.
+  const backTo = useCallback((index: number) => {
+    setTrail((steps) => {
+      setSqlResult(steps[index].result);
+      // Restored together: the schema describes that step's result, and pairing
+      // them is what keeps a restored view followable without re-describing.
+      setResultSchema(steps[index].schema);
+      return steps.slice(0, index);
+    });
+    setSqlError(undefined);
+  }, []);
 
   // Saves the page on screen. The rows are already here, so this serialises
   // locally and asks Rust only to write — no extra query, and nothing fetched
@@ -1021,19 +1144,64 @@ function App() {
               title={sqlResult ? "Query result" : "Rows"}
               className="@container"
               trailing={
-                sqlResult && (
-                  <button
-                    type="button"
-                    onClick={() => setSqlResult(null)}
-                    className="rounded-control px-1 text-xs text-text-3 hover:bg-surface-2"
-                  >
-                    {entity ? `back to ${entity}` : "clear"}
-                  </button>
+                /* A trail rather than one "back": following relations can land
+                   two or three entities from where you started, and a single undo
+                   would strand the reader in the middle. Each step restores the
+                   view it captured rather than re-running it — the rows are
+                   already in hand, and re-querying could show different data than
+                   the one being stepped back to.
+
+                   With no trail, a bare result still gets a way out, because a
+                   pane that silently swapped its source would have you reading a
+                   statement's output as though it were the table's contents. */
+                trail.length > 0 ? (
+                  <span className="flex flex-wrap items-center gap-1 text-xs">
+                    {trail.map((step, index) => (
+                      <span key={`${step.label}-${index}`} className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => backTo(index)}
+                          className="rounded-control px-1 font-mono text-accent hover:bg-surface-2"
+                        >
+                          {step.label}
+                        </button>
+                        <span className="text-text-3">›</span>
+                      </span>
+                    ))}
+                    <span className="font-mono text-text-2">
+                      {sqlResult ? resultLabel(sqlResult) : (entity ?? "rows")}
+                    </span>
+                  </span>
+                ) : (
+                  sqlResult && (
+                    <button
+                      type="button"
+                      onClick={() => setSqlResult(null)}
+                      className="rounded-control px-1 text-xs text-text-3 hover:bg-surface-2"
+                    >
+                      {entity ? `back to ${entity}` : "clear"}
+                    </button>
+                  )
                 )
               }
             >
               {sqlResult ? (
-                <SqlResultView result={sqlResult} onExport={exportResultRows} />
+                <SqlResultView
+                result={sqlResult}
+                onExport={exportResultRows}
+                /* Only when this schema is actually about the result on screen.
+                   A statement the reader typed has no known schema, and matching
+                   another entity's relations by column name would offer to follow
+                   a column that merely shares a name with a relation field. */
+                schema={
+                  sqlResult.type === "rows" && resultSchema?.entity === sqlResult.entity
+                    ? resultSchema
+                    : null
+                }
+                onFollow={(relation: RelationDto, cell: ValueDto) =>
+                  void followRelationFrom(relation, cell)
+                }
+              />
               ) : (
                 <>
                   {rowsError && <ErrorBanner error={rowsError} />}
@@ -1050,6 +1218,15 @@ function App() {
                       skeletonColumns={skeletonColumns}
                       onExport={(format) => void exportCurrentRows(format)}
                       onExplain={() => void explainCurrentRows()}
+                      /* Only the selected table's own grid gets relation
+                         affordances. A statement's output need not have this
+                         entity's columns at all, so matching relations by column
+                         name there could offer to follow a column that merely
+                         shares a name with a relation field. */
+                      relations={schema?.relations}
+                      onFollow={(relation: RelationDto, cell: ValueDto) =>
+                        void followRelationFrom(relation, cell)
+                      }
                     />
                   )}
                 </>
@@ -1173,9 +1350,17 @@ function SqlBar({
 function SqlResultView({
   result,
   onExport,
+  schema,
+  onFollow,
 }: {
   result: ResultDto;
   onExport?: (format: ExportFormat) => void;
+  /** The schema of the entity this result is about, when it is known — which is
+   *  the case when the result came from following a relation. Null for a
+   *  statement the reader typed, whose columns need not belong to any one
+   *  entity. */
+  schema?: SchemaDto | null;
+  onFollow?: (relation: RelationDto, cell: ValueDto) => void;
 }) {
   if (result.type === "rows") {
     return (
@@ -1184,6 +1369,8 @@ function SqlResultView({
         hasMore={false}
         onLoadMore={() => {}}
         onExport={onExport && ((format) => onExport(format))}
+        relations={schema?.relations}
+        onFollow={schema ? onFollow : undefined}
       />
     );
   }

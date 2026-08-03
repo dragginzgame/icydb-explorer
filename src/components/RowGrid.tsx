@@ -1,6 +1,7 @@
 import { useState } from "react";
 
-import type { RowsDto } from "../api/types";
+import type { RelationDto, RowsDto, ValueDto } from "../api/types";
+import { followPlan } from "../lib/followRelation";
 
 import { PaneEmpty } from "./PaneStates";
 import { ValueCell, formatExpanded, isExpandable } from "./ValueCell";
@@ -24,6 +25,8 @@ export function RowGrid({
   skeletonColumns,
   onExport,
   onExplain,
+  relations,
+  onFollow,
 }: {
   /** The page to render, or `null` when there is no page: a fetch is in flight
    *  (with `loading`) or one failed (without it). Nullable rather than a
@@ -44,6 +47,15 @@ export function RowGrid({
   onExport?: (format: "csv" | "json") => void;
   /** Explain the statement this grid is running. Absent means no control. */
   onExplain?: () => void;
+  /** The relations the rendered entity declares, so a cell holding a target's
+   *  key can offer to follow it. Absent (or empty) means no cell does — which is
+   *  also the right state for a grid showing a statement's output, since the
+   *  columns there need not be the entity's own. */
+  relations?: RelationDto[];
+  /** Follow one. Absent means the affordance is never drawn, however many
+   *  relations are declared: an affordance with nothing behind it is worse than
+   *  none. */
+  onFollow?: (relation: RelationDto, cell: ValueDto) => void;
 }) {
   const [expanded, setExpanded] = useState<Expanded>(null);
 
@@ -134,6 +146,8 @@ export function RowGrid({
                   columns={rows.columns}
                   openColumn={openColumn}
                   onToggle={toggle}
+                  relations={relations}
+                  onFollow={onFollow}
                 />
               );
             })}
@@ -258,6 +272,55 @@ function RowSkeletons({
   );
 }
 
+/** The control that follows a relation from the cell holding its keys.
+ *
+ *  `--accent` deliberately, the same colour a primary key gets: this is metadata
+ *  the schema declares, and the reader is entitled to trust it. An inferred
+ *  cross-canister link is a guess and must never render this way — that
+ *  distinction only means something if the declared case claims the colour.
+ *
+ *  No popover. For a declared relation there is exactly one target and it is in
+ *  this same canister, so there is nothing to choose: a dialog whose only content
+ *  is "here is the statement, press OK" is a speed bump, and the statement lands
+ *  in the SQL bar the moment it runs, which is already where this app says what
+ *  it ran. An inferred link does need one, because picking among candidates is a
+ *  real decision.
+ */
+function FollowButton({
+  relation,
+  cell,
+  onFollow,
+}: {
+  relation: RelationDto;
+  cell: ValueDto;
+  onFollow: (relation: RelationDto, cell: ValueDto) => void;
+}) {
+  const plan = followPlan(relation, cell);
+  // Never rendered without a plan — the caller checks — but reading the count
+  // from the plan rather than re-deriving it keeps one source for "how many".
+  const count = plan?.keys.length ?? 0;
+  const many = plan?.many ?? false;
+
+  return (
+    <button
+      type="button"
+      onClick={() => onFollow(relation, cell)}
+      aria-label={`Follow ${relation.field} to ${relation.targetEntity}`}
+      title={
+        `Declared by the schema. Reads ${many ? `${count} ` : ""}` +
+        `${relation.targetEntity}${many && count !== 1 ? " rows" : " row"} ` +
+        `from this canister — the target store is ${relation.targetStorePath}.`
+      }
+      // `hover:text-sel-text` is not decoration: in Terminal `--accent` and
+      // `--sel-bg` are the same green, so accent-on-selection would be invisible
+      // exactly when hovered. `tokens-only.test.ts` caught this and is right to.
+      className="shrink-0 rounded-row px-1 font-mono text-xs leading-tight text-accent hover:bg-sel-bg hover:text-sel-text"
+    >
+      →
+    </button>
+  );
+}
+
 /** One data row plus, when a cell is expanded, the sub-row beneath it.
  *
  *  Split out because a row renders as two sibling `<tr>`s, which a `.map` in the
@@ -269,12 +332,16 @@ function ExpandableRow({
   columns,
   openColumn,
   onToggle,
+  relations,
+  onFollow,
 }: {
   row: RowsDto["rows"][number];
   rowIndex: number;
   columns: string[];
   openColumn: number | null;
   onToggle: (row: number, column: number) => void;
+  relations?: RelationDto[];
+  onFollow?: (relation: RelationDto, cell: ValueDto) => void;
 }) {
   // Stripe by the row's position in the *data*, not in the DOM. The sub-row
   // rendered below (when this row's cell is open) is itself a sibling `<tr>`
@@ -305,20 +372,42 @@ function ExpandableRow({
           `surface-inset`, so zebra there would make every other data row the
           same colour as the header and defeat both cues at once. */}
       <tr className={["border-b border-rule", striped && "bg-surface-1"].filter(Boolean).join(" ")}>
-        {row.map((cell, columnIndex) => (
-          // eslint-disable-next-line react/no-array-index-key
-          <td key={columnIndex} className="px-2 py-1 align-top">
+        {row.map((cell, columnIndex) => {
+          const column = columns[columnIndex];
+          // A relation is matched by column name, which is what the DTO gives:
+          // `RelationDto.field` names the field on this entity.
+          const relation = relations?.find((candidate) => candidate.field === column);
+          // No plan means nothing to follow — a null single relation, or a list
+          // relation holding an empty list. Both are ordinary states of a row, so
+          // the cell gets no affordance rather than one that would fail.
+          const followable = relation && onFollow && followPlan(relation, cell) !== null;
+          const valueCell = (
             <ValueCell
               value={cell}
-              column={columns[columnIndex]}
+              column={column}
               expanded={openColumn === columnIndex}
               subRowId={openColumn === columnIndex ? subRowId : undefined}
-              onToggle={
-                isExpandable(cell) ? () => onToggle(rowIndex, columnIndex) : undefined
-              }
+              onToggle={isExpandable(cell) ? () => onToggle(rowIndex, columnIndex) : undefined}
             />
-          </td>
-        ))}
+          );
+
+          return (
+            // eslint-disable-next-line react/no-array-index-key
+            <td key={columnIndex} className="px-2 py-1 align-top">
+              {/* Wrapped only when there is something to wrap. Every cell in the
+                  app would otherwise gain a flex container for the sake of the
+                  few that hold a relation key. */}
+              {followable ? (
+                <div className="flex items-start gap-1">
+                  {valueCell}
+                  <FollowButton relation={relation} cell={cell} onFollow={onFollow} />
+                </div>
+              ) : (
+                valueCell
+              )}
+            </td>
+          );
+        })}
       </tr>
       {openCell && (
         <tr id={subRowId} className="border-b border-rule">

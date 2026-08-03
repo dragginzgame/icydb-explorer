@@ -407,3 +407,202 @@ test("explaining is user-initiated", () => {
   fireEvent.click(screen.getByRole("button", { name: /explain query/i }));
   expect(clicks).toHaveLength(1);
 });
+
+// ── Following a declared relation ────────────────────────────────────────────
+
+const ownerRelation = {
+  field: "owner",
+  targetEntity: "User",
+  targetStorePath: "toko::user::store::UserStore",
+  cardinality: "single",
+};
+
+const assetsRelation = {
+  field: "assets",
+  targetEntity: "ProjectAsset",
+  targetStorePath: "toko::project::store::AssetStore",
+  cardinality: "list",
+};
+
+const KEY = "01JB8Z4KQ7Y3M2XV9P0N5RK2M";
+
+const relationRows = {
+  entity: "ProjectInstance",
+  columns: ["id", "owner", "assets"],
+  rows: [
+    [
+      { kind: "ulid", display: "01JBQPZ" },
+      { kind: "ulid", display: KEY },
+      { kind: "list", display: `[${KEY}]`, items: [{ kind: "ulid", display: KEY }] },
+    ],
+  ],
+  rowCount: 1,
+  nextCursor: null,
+};
+
+/// The affordance is matched by column name against `RelationDto.field`, so only
+/// the cells actually holding a target's keys get one.
+test("a cell holding a relation's key offers to follow it", () => {
+  render(
+    <RowGrid
+      rows={relationRows}
+      hasMore={false}
+      onLoadMore={() => {}}
+      relations={[ownerRelation]}
+      onFollow={() => {}}
+    />,
+  );
+
+  expect(screen.getByRole("button", { name: "Follow owner to User" })).toBeInTheDocument();
+  // `id` is not a relation field, so it gets nothing.
+  expect(screen.queryByRole("button", { name: /Follow id/ })).not.toBeInTheDocument();
+});
+
+/// An affordance with nothing behind it is worse than none, so the handler — not
+/// the metadata alone — is what makes one appear.
+test("no handler means no affordance, however many relations are declared", () => {
+  render(
+    <RowGrid
+      rows={relationRows}
+      hasMore={false}
+      onLoadMore={() => {}}
+      relations={[ownerRelation, assetsRelation]}
+    />,
+  );
+
+  expect(screen.queryByRole("button", { name: /^Follow/ })).not.toBeInTheDocument();
+});
+
+/// Following hands back the relation and the cell, which together are everything
+/// the caller needs to build a statement — it deliberately does not build one
+/// here, because the target's primary key is not known to this component.
+test("following reports the relation and the cell that was clicked", () => {
+  const followed: { field: string; display: string }[] = [];
+  render(
+    <RowGrid
+      rows={relationRows}
+      hasMore={false}
+      onLoadMore={() => {}}
+      relations={[ownerRelation]}
+      onFollow={(relation, cell) => followed.push({ field: relation.field, display: cell.display })}
+    />,
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: "Follow owner to User" }));
+  expect(followed).toEqual([{ field: "owner", display: KEY }]);
+});
+
+/// A null single relation and an empty list are ordinary states of a row. The
+/// cell gets no affordance rather than one that would build a statement from no
+/// keys.
+test("a relation cell with no keys offers nothing", () => {
+  render(
+    <RowGrid
+      rows={{
+        ...relationRows,
+        rows: [
+          [
+            { kind: "ulid", display: "01JBQPZ" },
+            { kind: "null", display: "" },
+            { kind: "list", display: "[]", items: [] },
+          ],
+        ],
+      }}
+      hasMore={false}
+      onLoadMore={() => {}}
+      relations={[ownerRelation, assetsRelation]}
+      onFollow={() => {}}
+    />,
+  );
+
+  expect(screen.queryByRole("button", { name: /^Follow/ })).not.toBeInTheDocument();
+});
+
+/// A list relation is followable from its own cell, and says how many rows it
+/// will read — which the reader can only know from the keys in hand.
+test("a list relation says how many rows following it reads", () => {
+  render(
+    <RowGrid
+      rows={{
+        ...relationRows,
+        rows: [
+          [
+            { kind: "ulid", display: "01JBQPZ" },
+            { kind: "ulid", display: KEY },
+            {
+              kind: "list",
+              display: "[a, b]",
+              items: [
+                { kind: "ulid", display: "a" },
+                { kind: "ulid", display: "b" },
+              ],
+            },
+          ],
+        ],
+      }}
+      hasMore={false}
+      onLoadMore={() => {}}
+      relations={[assetsRelation]}
+      onFollow={() => {}}
+    />,
+  );
+
+  const button = screen.getByRole("button", { name: "Follow assets to ProjectAsset" });
+  expect(button.title).toMatch(/2 ProjectAsset rows/);
+  // Whose claim this is, and where the target lives — the two things that make
+  // the accent colour honest rather than decorative.
+  expect(button.title).toMatch(/Declared by the schema/);
+  expect(button.title).toMatch(/toko::project::store::AssetStore/);
+});
+
+/// Declared metadata takes the primary key's colour. An inferred cross-canister
+/// link must never render this way, and that only means something if the declared
+/// case actually claims it.
+test("the follow control is accent-coloured, marking it as declared", () => {
+  render(
+    <RowGrid
+      rows={relationRows}
+      hasMore={false}
+      onLoadMore={() => {}}
+      relations={[ownerRelation]}
+      onFollow={() => {}}
+    />,
+  );
+
+  expect(screen.getByRole("button", { name: "Follow owner to User" }).className).toMatch(
+    /\btext-accent\b/,
+  );
+});
+
+/// A cell with no relation must keep the exact DOM it had before this feature
+/// existed — every cell in the app would otherwise gain a flex wrapper for the
+/// sake of the few that hold a relation key.
+test("cells without a relation gain no wrapper", () => {
+  render(
+    <RowGrid
+      rows={relationRows}
+      hasMore={false}
+      onLoadMore={() => {}}
+      relations={[ownerRelation]}
+      onFollow={() => {}}
+    />,
+  );
+
+  const cells = screen.getAllByRole("cell");
+  const follow = screen.getByRole("button", { name: "Follow owner to User" });
+
+  // Structure, not class strings: several value kinds render their own flex
+  // container (`Identifier` is `inline-flex`), so matching on class names here
+  // asserts nothing about the wrapper this feature adds. What is true of a
+  // non-relation cell is that its td holds exactly one element and no control.
+  // Follow controls specifically — an identifier cell has a copy button of its
+  // own, so counting all buttons would assert the wrong thing.
+  expect(cells[0].children).toHaveLength(1);
+  expect(cells[0].querySelectorAll('[aria-label^="Follow "]')).toHaveLength(0);
+
+  // The `owner` cell's td also holds one element — the wrapper — but that wrapper
+  // holds two: the value and the control, side by side.
+  expect(cells[1].children).toHaveLength(1);
+  expect(cells[1].firstElementChild?.children).toHaveLength(2);
+  expect(cells[1].firstElementChild?.contains(follow)).toBe(true);
+});

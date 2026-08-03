@@ -1838,3 +1838,339 @@ test("the open bar claims no share of the shell's height", async () => {
   expect(bar?.className).toMatch(/\bshrink-0\b/);
   expect(bar?.className).not.toMatch(/basis-|flex-1/);
 });
+
+// ── Following a declared relation ────────────────────────────────────────────
+
+/** A fleet with one canister holding `ProjectInstance`, whose `owner` column is a
+ *  declared relation to `User`. */
+function relationFleet() {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/project",
+    error: null,
+    environments: [environmentFixture()],
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    { pid: "root-id", role: "root", children: [{ pid: "aaaaa-aa", role: "shard", children: [] }] },
+  ]);
+  vi.mocked(commands.listTables).mockResolvedValue({
+    type: "entities",
+    entities: [entity("ProjectInstance", 2)],
+  });
+  vi.mocked(commands.fetchRows).mockResolvedValue({
+    type: "rows",
+    entity: "ProjectInstance",
+    columns: ["id", "owner"],
+    rows: [
+      [
+        { kind: "ulid", display: "01JBQPZ" },
+        { kind: "ulid", display: "01JBOWNER" },
+      ],
+    ],
+    rowCount: 1,
+    nextCursor: null,
+  });
+}
+
+const projectInstanceSchema: ResultDto = {
+  type: "schema",
+  entity: "ProjectInstance",
+  columns: [
+    { name: "id", typeName: "ulid", primaryKey: true, optional: false },
+    { name: "owner", typeName: "ulid", primaryKey: false, optional: false },
+  ],
+  indexes: [],
+  relations: [
+    {
+      field: "owner",
+      targetEntity: "User",
+      targetStorePath: "toko::user::store::UserStore",
+      cardinality: "single",
+    },
+  ],
+};
+
+/** `describeTable` answers for whichever entity was asked about: the selected one
+ *  for the schema pane, and the target when a follow describes it. `user_id` is
+ *  deliberately not `id`, which is the whole point of describing the target. */
+function describeBoth() {
+  vi.mocked(commands.describeTable).mockImplementation(async (_env, _canister, entityName) => {
+    if (entityName === "ProjectInstance") return projectInstanceSchema;
+    if (entityName === "User") {
+      return {
+        type: "schema",
+        entity: "User",
+        columns: [
+          { name: "user_id", typeName: "ulid", primaryKey: true, optional: false },
+          { name: "handle", typeName: "text", primaryKey: false, optional: true },
+        ],
+        indexes: [],
+        relations: [],
+      };
+    }
+    throw new Error(`unexpected describe of ${entityName}`);
+  });
+}
+
+async function selectRelationTable() {
+  // Mock call history is per-file, not per-test (`beforeEach` clears only
+  // localStorage), so without this a follow assertion could read a statement
+  // another test issued. Cleared here rather than globally: every other test in
+  // this file was written against the accumulating mocks.
+  vi.mocked(commands.runSql).mockClear();
+  vi.mocked(commands.describeTable).mockClear();
+  render(<App />);
+  fireEvent.click(await screen.findByText("shard"));
+  fireEvent.click(await screen.findByText("ProjectInstance"));
+  return screen.findByRole("button", { name: "Follow owner to User" });
+}
+
+/// The statement matches the *target's* primary key, read from describing it —
+/// not `id`, which this target does not have. Assuming `id` would fail as a
+/// confusing SQL error rather than as a missing piece of information.
+test("following a relation queries the target's own primary key", async () => {
+  relationFleet();
+  describeBoth();
+  vi.mocked(commands.runSql).mockResolvedValue({
+    result: {
+      type: "rows",
+      entity: "User",
+      columns: ["user_id", "handle"],
+      rows: [[{ kind: "ulid", display: "01JBOWNER" }, { kind: "text", display: "remco" }]],
+      rowCount: 1,
+      nextCursor: null,
+    },
+    limitAppended: false,
+    orderByMissing: false,
+  });
+
+  fireEvent.click(await selectRelationTable());
+
+  await waitFor(() => expect(commands.runSql).toHaveBeenCalled());
+  const statement = vi.mocked(commands.runSql).mock.calls[0][2];
+  expect(statement).toBe(
+    "SELECT * FROM User WHERE user_id = '01JBOWNER' ORDER BY user_id LIMIT 100",
+  );
+  // Same canister: a declared relation is always intra-canister, so no boundary
+  // is crossed and no identity is re-resolved.
+  expect(vi.mocked(commands.runSql).mock.calls[0][1]).toBe("aaaaa-aa");
+});
+
+/// The result replaces the pane, and the trail names where the reader came from
+/// so they can get back — a pane that silently swapped its source would have you
+/// reading one table's rows as though they were another's.
+test("following leaves a trail step back to where it started", async () => {
+  relationFleet();
+  describeBoth();
+  vi.mocked(commands.runSql).mockResolvedValue({
+    result: {
+      type: "rows",
+      entity: "User",
+      columns: ["user_id"],
+      rows: [[{ kind: "ulid", display: "01JBOWNER" }]],
+      rowCount: 1,
+      nextCursor: null,
+    },
+    limitAppended: false,
+    orderByMissing: false,
+  });
+
+  fireEvent.click(await selectRelationTable());
+
+  const back = await screen.findByRole("button", { name: "ProjectInstance" });
+  // Restores the view rather than re-running it: nothing new is queried.
+  const before = vi.mocked(commands.runSql).mock.calls.length;
+  fireEvent.click(back);
+
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Follow owner to User" })).toBeInTheDocument(),
+  );
+  expect(vi.mocked(commands.runSql).mock.calls).toHaveLength(before);
+});
+
+/// A target this app cannot follow must say why. A composite key cannot be
+/// matched by a relation carrying one value per key, and matching part of it
+/// would silently over-report.
+test("a target with a composite primary key reports why it cannot be followed", async () => {
+  relationFleet();
+  vi.mocked(commands.describeTable).mockImplementation(async (_env, _canister, entityName) => {
+    if (entityName === "ProjectInstance") return projectInstanceSchema;
+    return {
+      type: "schema",
+      entity: "User",
+      columns: [
+        { name: "shard", typeName: "nat", primaryKey: true, optional: false },
+        { name: "seq", typeName: "nat", primaryKey: true, optional: false },
+      ],
+      indexes: [],
+      relations: [],
+    };
+  });
+
+  fireEvent.click(await selectRelationTable());
+
+  expect(await screen.findByText(/primary key of 2 columns/)).toBeInTheDocument();
+  // Nothing was run, and no trail step was added for a follow that did not
+  // happen — "back" must never return to where the reader already is.
+  expect(commands.runSql).not.toHaveBeenCalled();
+  expect(screen.queryByRole("button", { name: "ProjectInstance" })).not.toBeInTheDocument();
+});
+
+/// A failed follow leaves the reader where they were, with the reason.
+test("a failed follow adds no trail step", async () => {
+  relationFleet();
+  describeBoth();
+  vi.mocked(commands.runSql).mockRejectedValue({
+    kind: "agent",
+    explanation: "the replica refused the call",
+  });
+
+  fireEvent.click(await selectRelationTable());
+
+  expect(await screen.findByText(/replica refused/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "ProjectInstance" })).not.toBeInTheDocument();
+});
+
+/// Two follows deep is where "restores the view" stops being the same thing as
+/// "clears the result": stepping back to the middle must show the intermediate
+/// result, not the table the reader started from. A one-step trail cannot tell
+/// those apart, which is why this test exists alongside the one above.
+test("stepping back to a middle step restores that result, not the table", async () => {
+  relationFleet();
+  // `User` itself declares a relation, so the reader can follow twice.
+  vi.mocked(commands.describeTable).mockImplementation(async (_env, _canister, entityName) => {
+    if (entityName === "ProjectInstance") return projectInstanceSchema;
+    if (entityName === "User") {
+      return {
+        type: "schema",
+        entity: "User",
+        columns: [{ name: "user_id", typeName: "ulid", primaryKey: true, optional: false }],
+        indexes: [],
+        relations: [
+          {
+            field: "user_id",
+            targetEntity: "Profile",
+            targetStorePath: "toko::user::store::ProfileStore",
+            cardinality: "single",
+          },
+        ],
+      };
+    }
+    return {
+      type: "schema",
+      entity: "Profile",
+      columns: [{ name: "profile_id", typeName: "ulid", primaryKey: true, optional: false }],
+      indexes: [],
+      relations: [],
+    };
+  });
+
+  // Each statement answers for its own target, so what is on screen names which
+  // step the pane is showing.
+  vi.mocked(commands.runSql).mockImplementation(async (_env, _canister, sql) => ({
+    result: sql.includes("FROM User")
+      ? {
+          type: "rows",
+          entity: "User",
+          columns: ["user_id"],
+          rows: [[{ kind: "text", display: "the-user-row" }]],
+          rowCount: 1,
+          nextCursor: null,
+        }
+      : {
+          type: "rows",
+          entity: "Profile",
+          columns: ["profile_id"],
+          rows: [[{ kind: "text", display: "the-profile-row" }]],
+          rowCount: 1,
+          nextCursor: null,
+        },
+    limitAppended: false,
+    orderByMissing: false,
+  }));
+
+  fireEvent.click(await selectRelationTable());
+  await screen.findByText("the-user-row");
+
+  // The second follow comes off the *result* grid. That only works because a
+  // follow keeps the schema it already fetched to learn the target's primary key
+  // — without it a follow is a dead end, and a trail that can never hold more
+  // than one step is not a trail.
+  fireEvent.click(await screen.findByRole("button", { name: "Follow user_id to Profile" }));
+  await screen.findByText("the-profile-row");
+
+  // Two steps now: ProjectInstance › User › Profile.
+  fireEvent.click(screen.getByRole("button", { name: "User" }));
+
+  // Back to the middle: the User result, not ProjectInstance's rows.
+  expect(await screen.findByText("the-user-row")).toBeInTheDocument();
+  expect(screen.queryByText("the-profile-row")).not.toBeInTheDocument();
+
+  // And still followable. A step restores its schema along with its result, so
+  // stepping back does not strand the reader on a view they can no longer move
+  // from — which would make the trail one-way.
+  expect(
+    screen.getByRole("button", { name: "Follow user_id to Profile" }),
+  ).toBeInTheDocument();
+});
+
+/// A statement the reader typed is not a follow, so the schema left over from one
+/// must not be applied to its output. Column names collide across entities, and
+/// borrowing another entity's relations would offer to follow a column that
+/// merely shares a name with a relation field.
+test("a typed statement's result gets no relation affordances", async () => {
+  relationFleet();
+  // `User` must declare a relation on `user_id` for this test to mean anything:
+  // the collision being guarded against is another entity having a column of the
+  // same name. With `relations: []` the guard could be deleted and nothing would
+  // change, which is how the first version of this test passed vacuously.
+  vi.mocked(commands.describeTable).mockImplementation(async (_env, _canister, entityName) => {
+    if (entityName === "ProjectInstance") return projectInstanceSchema;
+    return {
+      type: "schema",
+      entity: "User",
+      columns: [{ name: "user_id", typeName: "ulid", primaryKey: true, optional: false }],
+      indexes: [],
+      relations: [
+        {
+          field: "user_id",
+          targetEntity: "Profile",
+          targetStorePath: "toko::user::store::ProfileStore",
+          cardinality: "single",
+        },
+      ],
+    };
+  });
+  vi.mocked(commands.runSql).mockImplementation(async (_env, _canister, sql) => ({
+    result: sql.includes("FROM User")
+      ? {
+          type: "rows",
+          entity: "User",
+          columns: ["user_id"],
+          rows: [[{ kind: "text", display: "the-user-row" }]],
+          rowCount: 1,
+          nextCursor: null,
+        }
+      : {
+          // A different entity that happens to have a column named `user_id` —
+          // exactly the collision the guard exists for.
+          type: "rows",
+          entity: "AuditLog",
+          columns: ["user_id"],
+          rows: [[{ kind: "text", display: "the-audit-row" }]],
+          rowCount: 1,
+          nextCursor: null,
+        },
+    limitAppended: false,
+    orderByMissing: false,
+  }));
+
+  fireEvent.click(await selectRelationTable());
+  await screen.findByText("the-user-row");
+
+  // Now run something of the reader's own, which lands in the same pane.
+  typeSql("SELECT * FROM AuditLog ORDER BY user_id LIMIT 100");
+  fireEvent.click(screen.getByRole("button", { name: /^run/i }));
+  await screen.findByText("the-audit-row");
+
+  expect(screen.queryByRole("button", { name: /^Follow / })).not.toBeInTheDocument();
+});
