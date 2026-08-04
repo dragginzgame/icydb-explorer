@@ -6,7 +6,14 @@ export const THEME_STORAGE_KEY = "icydb-explorer.theme";
  *  the two cannot drift. Declaring them separately type-checks an unlisted
  *  string *in* the array but not a union member *missing* from it — which would
  *  silently omit a newly added theme from the settings menu that iterates this. */
-export const THEME_CHOICES = ["system", "console", "terminal", "instrument"] as const;
+export const THEME_CHOICES = [
+  "system",
+  "console",
+  "terminal",
+  "instrument",
+  "neotokyo",
+  "synthwave",
+] as const;
 
 /** `system` sets no `data-theme`, letting the media query in tokens.css pick
  *  between the Instrument (light) and Console (dark) values. */

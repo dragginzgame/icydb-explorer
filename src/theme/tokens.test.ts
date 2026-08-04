@@ -4,6 +4,7 @@
 // `?raw` is declared by `vite/client` (referenced from `src/vite-env.d.ts`),
 // needs no dependency, and resolves relative to this file rather than the cwd.
 import css from "./tokens.css?raw";
+import { THEME_CHOICES } from "./useTheme";
 
 /** Every `--token: value;` declared inside the given selector's block. */
 function tokensIn(selector: string): string[] {
@@ -33,6 +34,8 @@ const THEMES = [
   ':root[data-theme="console"]',
   ':root[data-theme="terminal"]',
   ':root[data-theme="instrument"]',
+  ':root[data-theme="neotokyo"]',
+  ':root[data-theme="synthwave"]',
 ];
 const SYSTEM_LIGHT = ":root:not([data-theme])";
 
@@ -162,13 +165,38 @@ test.each(ALL_BLOCKS)("%s zebra stripe clears the perceptual floor over the pane
   expect(separation).toBeGreaterThanOrEqual(STRIPE_LSTAR_FLOOR);
 });
 
+/// Every theme selector this file checks must be a theme the app can actually
+/// choose, and every choice must have a block here. Either half missing is silent:
+/// a block with no choice is dead CSS, and a choice with no block sets a
+/// `data-theme` matching nothing and leaves the app on :root's values while the
+/// menu says otherwise — which is the failure `storedChoice` guards against for
+/// *unrecognised* values and cannot guard against for recognised ones.
+///
+/// This is also what makes the tests above meaningful for a new theme. They are
+/// driven by the `THEMES` array, so a theme added to the CSS and not to that array
+/// gets no parity check, no surface-distinctness check and no stripe floor — it
+/// simply is not tested, while the suite stays green.
+test("the choosable themes and the CSS blocks are the same set", () => {
+  const inCss = [...css.matchAll(/:root\[data-theme="([a-z]+)"\]/g)].map((m) => m[1]);
+  const checked = THEMES.map((selector) => /"([a-z]+)"/.exec(selector)![1]);
+  // `system` sets no attribute and so has no block, by design.
+  const choosable = THEME_CHOICES.filter((choice) => choice !== "system");
+
+  expect([...new Set(inCss)].sort()).toEqual([...choosable].sort());
+  expect(checked.sort()).toEqual([...choosable].sort());
+});
+
 /// Terminal is near-black, so it has almost no headroom above the ground: the
 /// header has to recede rather than lift, and hover has to stay above the
 /// stripe. Pinned as an ordering rather than as ratios so a future retune can
 /// move the values without rewriting the test, while still failing if the
 /// header and the stripe ever cross.
-test("terminal orders its surfaces inset < 0 < 1 < 2 by luminance", () => {
-  const declared = declarationsIn(':root[data-theme="terminal"]');
+test.each([
+  ':root[data-theme="terminal"]',
+  ':root[data-theme="neotokyo"]',
+  ':root[data-theme="synthwave"]',
+])("%s orders its surfaces inset < 0 < 1 < 2 by luminance", (selector) => {
+  const declared = declarationsIn(selector);
   const ordered = ["--surface-inset", "--surface-0", "--surface-1", "--surface-2"].map((token) =>
     luminance(declared[token]),
   );

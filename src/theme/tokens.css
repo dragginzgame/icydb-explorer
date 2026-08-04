@@ -162,6 +162,86 @@
   --r-row: 5px;
 }
 
+/* Neo Tokyo: neon on wet asphalt. A blue-black ground with cyan as the primary
+   and magenta as the key colour, which is the first theme here to give `--accent`
+   and `--pk` genuinely different hues — Console, Terminal and Instrument all set
+   them to the same value, which is why `SqlEditor` gives strings and numbers one
+   colour. Here they diverge, so identifiers read as distinct from keywords for
+   free.
+
+   Sharp corners (3px/2px) rather than the 7px/5px default: hard-edged signage
+   against soft light is the look, and radius is the cheapest way to give a theme
+   a feel that survives being described in words.
+
+   Measured against this file's own floors — surfaces ordered inset < 0 < 1 < 2,
+   stripe separation ΔL* 4.72 (floor 1.5), and on `--surface-0`: text-1 14.28,
+   text-2 7.91, text-3 3.82, accent 12.05, pk 6.93. text-3 is the dimmest token
+   and clears AA-large, ahead of both Terminal (3.27) and Instrument (3.40). */
+:root[data-theme="neotokyo"] {
+  --surface-0: #0e1020;
+  --surface-1: #161a2e;
+  --surface-2: #1e2440;
+  --surface-inset: #0a0c18;
+  --text-1: #d8e0f5;
+  --text-2: #9aa8c8;
+  --text-3: #64708f;
+  --rule: #2a3252;
+  --rule-strong: #3d4770;
+  --accent: #56e1f0;
+  --sel-bg: #2a2050;
+  --sel-text: #f0e6ff;
+  --pk: #f56ac2;
+  --danger-text: #ff8fa3;
+  --danger-bg: #2a1424;
+  --danger-border: #5c2d45;
+  --warn-text: #ffd166;
+  --warn-bg: #2a2314;
+  --warn-border: #5c4c2d;
+  --ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --mono-font: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --prose-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --r-control: 3px;
+  --r-row: 2px;
+}
+
+/* Synthwave: sunset over a purple grid. Violet ground, hot pink primary, cyan as
+   the key colour — the inverse assignment to Neo Tokyo's, so the two read as
+   different places rather than as one palette with the hues swapped.
+
+   Rounder than the default (8px/6px), because the era's chrome is curved; the
+   pairing with Neo Tokyo's 3px is deliberate, so switching between the two
+   changes the shape of the app and not only its colour.
+
+   Measured: surfaces ordered inset < 0 < 1 < 2, stripe ΔL* 3.86 (floor 1.5), and
+   on `--surface-0`: text-1 13.95, text-2 8.25, text-3 4.16, accent 7.23, pk
+   12.52. The danger token is the tightest at 6.13, still comfortably AA. */
+:root[data-theme="synthwave"] {
+  --surface-0: #241b34;
+  --surface-1: #2d2240;
+  --surface-2: #372a4d;
+  --surface-inset: #1b1428;
+  --text-1: #f2e9ff;
+  --text-2: #c3b0dd;
+  --text-3: #8a78a8;
+  --rule: #46345f;
+  --rule-strong: #614a80;
+  --accent: #ff7edb;
+  --sel-bg: #45305c;
+  --sel-text: #fff0fb;
+  --pk: #36f9f6;
+  --danger-text: #ff6e8a;
+  --danger-bg: #33162a;
+  --danger-border: #6b2f4a;
+  --warn-text: #ffcc66;
+  --warn-bg: #332a16;
+  --warn-border: #6b5a2f;
+  --ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --mono-font: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --prose-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --r-control: 8px;
+  --r-row: 6px;
+}
+
 /* Keyboard focus. One global rule rather than per-component classes, so no
    component can forget it and every theme gets it from --accent. */
 :focus-visible {

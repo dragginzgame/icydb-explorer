@@ -10,6 +10,8 @@ const LABELS: Record<ThemeChoice, { name: string; hint: string }> = {
   console: { name: "Console", hint: "dark" },
   terminal: { name: "Terminal", hint: "dark · mono" },
   instrument: { name: "Instrument", hint: "light" },
+  neotokyo: { name: "Neo Tokyo", hint: "dark · cyan" },
+  synthwave: { name: "Synthwave", hint: "dark · violet" },
 };
 
 /** The gear popover. Controlled: it owns only open/closed, never the theme —
