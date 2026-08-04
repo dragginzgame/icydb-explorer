@@ -1,0 +1,194 @@
+# Standalone builds for macOS, Windows and Linux.
+#
+# Runs on a `v*` tag, and on manual dispatch for a dry run that produces the same
+# artifacts without creating a release — so the workflow itself can be tested
+# without cutting a version.
+#
+# The release is left as a **draft**. Publishing is a person's decision: these
+# artifacts are unsigned (see the note in `build`), and someone should read that
+# before the download link is public.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+# Only what is needed: creating the release and uploading to it.
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Everything cheap and deterministic, once, before three platforms spend twenty
+  # minutes each. A release that fails its own test suite is worse than no release,
+  # and finding out on the third platform wastes the first two.
+  verify:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # The Rust crate links against webkit2gtk even to compile its tests.
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
+            libxdo-dev libssl-dev patchelf build-essential file
+
+      - uses: actions/setup-node@v4
+        with:
+          # Vite 7 needs 20.19+/22.12+; 22 is the current LTS.
+          node-version: 22
+          cache: npm
+
+      # `rust-toolchain.toml` pins the channel, so clippy and its lint set are
+      # pinned too — which is why `-D warnings` below cannot break a release on
+      # somebody else's schedule.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      # The tag and the version inside the bundle have to agree. Without this a
+      # `v0.2.0` release can contain an app that reports 0.1.0 in its About box and
+      # its .deb metadata, which is the kind of wrong that is discovered months
+      # later by someone debugging the wrong version.
+      - name: Check the tag matches the app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tagged="${GITHUB_REF_NAME#v}"
+          declared=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          if [ "$tagged" != "$declared" ]; then
+            echo "::error::tag $GITHUB_REF_NAME implies $tagged, but src-tauri/tauri.conf.json declares $declared"
+            exit 1
+          fi
+          echo "version $declared matches tag $GITHUB_REF_NAME"
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Frontend tests
+        run: npm test
+
+      # `--manifest-path` rather than a bare `cargo test`: the workspace also holds
+      # the `fixture` canister crates, which are built for wasm and are not part of
+      # what ships here.
+      - name: Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  build:
+    needs: verify
+    strategy:
+      # One platform failing should not deny the other two. A partial draft release
+      # is still useful, and the gap is visible in it.
+      fail-fast: false
+      matrix:
+        include:
+          # One universal binary rather than two Mac downloads: a reader should not
+          # have to know which chip they have.
+          - platform: macos-latest
+            args: --target universal-apple-darwin
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            label: macos
+          # Deliberately not `ubuntu-latest`. The binary links the glibc of the
+          # runner it was built on, so building on the newest Ubuntu produces
+          # something that refuses to start on any older distro. 22.04 is the
+          # oldest image with webkit2gtk-4.1, which Tauri 2 requires.
+          - platform: ubuntu-22.04
+            args: ""
+            rust-targets: ""
+            label: linux
+          - platform: windows-latest
+            args: ""
+            rust-targets: ""
+            label: windows
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
+            libxdo-dev libssl-dev patchelf build-essential file
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.label }}
+
+      - run: npm ci
+
+      # `tauri-action` runs `beforeBuildCommand` from tauri.conf.json, so the
+      # frontend is built here rather than in a step of its own.
+      #
+      # The Apple variables are passed unconditionally and are empty until the
+      # secrets exist. Tauri skips signing when they are unset, so this is wired
+      # ahead of time rather than being a later edit to a working workflow — but
+      # until they are set, every artifact here is UNSIGNED: macOS Gatekeeper will
+      # refuse to open the .dmg without an explicit right-click → Open, and Windows
+      # will show a SmartScreen warning. That is a property of these builds, not a
+      # bug in them, and the draft release below is where it should be written down.
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          # Empty on a manual run, which is what stops a dry run from creating a
+          # release. The artifacts still get uploaded by the step below.
+          tagName: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+          releaseName: icydb Explorer ${{ github.ref_name }}
+          releaseBody: |
+            Standalone builds of icydb Explorer, a read-only browser for the icydb
+            databases inside Internet Computer canisters.
+
+            **These builds are not code-signed.** On macOS, right-click the app and
+            choose Open the first time — Gatekeeper will otherwise refuse it. On
+            Windows, SmartScreen will warn before running it.
+
+            The app reads a project's `.icp/` directory and queries canisters
+            through icydb's read-only SQL endpoint. It never issues an update call.
+            Requirements, including the icydb version it is built against, are on
+            its first screen.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+
+      # So a manual dispatch is a real rehearsal: the same builds, downloadable,
+      # without a release existing. Without this a dry run would prove the build
+      # compiles and then throw the result away.
+      - name: Upload artifacts for a dry run
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: icydb-explorer-${{ matrix.label }}
+          if-no-files-found: error
+          path: |
+            src-tauri/target/release/bundle/**/*
+            src-tauri/target/universal-apple-darwin/release/bundle/**/*
