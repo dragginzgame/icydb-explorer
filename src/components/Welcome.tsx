@@ -24,7 +24,9 @@ const LOCAL: Requirement[] = [
     how: (
       <>
         Canister ids come from <code>.icp/cache/mappings/&lt;network&gt;.ids.json</code>, which
-        deploying writes. A project that has never been deployed has no environments to show.
+        deploying writes — for example <code>icp network start</code>,{" "}
+        <code>icp canister create</code>, <code>icp canister install</code>. A project that has
+        never been deployed has no environments to show.
       </>
     ),
   },
@@ -90,14 +92,27 @@ const CANISTER: Requirement[] = [
  */
 export function Welcome({
   error,
-  root,
+  triedRoot,
+  projectRoot = null,
+  undeployed = false,
   busy,
   onSelect,
 }: {
   /** Why the chosen folder could not be read, if one was chosen and rejected. */
   error: AppErrorDto | null;
-  /** The folder that was tried, so a rejection names what it was about. */
-  root: string | null;
+  /** A directory that was picked and rejected. Drives both "Tried X" and the
+   *  advice to try another — neither of which is true of a directory nobody
+   *  picked, which is why this is not the same prop as `projectRoot`. */
+  triedRoot: string | null;
+  /** The adopted project's own root, when one opened. Used by the undeployed note,
+   *  where the path is context rather than a complaint. Passing one prop for both
+   *  meanings made the undeployed case either nameless or falsely accused of being
+   *  the wrong directory. */
+  projectRoot?: string | null;
+  /** The project read fine and has nothing deployed. Its own situation, not a
+   *  wrong directory, and worth saying — otherwise the reader is left to work out
+   *  which of six cards applies to them. */
+  undeployed?: boolean;
   busy: boolean;
   onSelect: (path: string) => void;
 }) {
@@ -120,11 +135,24 @@ export function Welcome({
             general case. Rendered through `ErrorBanner` like every other failure,
             rather than reworded here — the backend's explanations are written to be
             read, and a second phrasing would be a second thing to keep true. */}
+        {undeployed && !error && (
+          <p className="mt-6 rounded-control border border-warn-border bg-warn-bg p-3 text-sm text-warn-text">
+            This project has an <code>.icp/</code> layout but no deployed environments
+            {projectRoot ? (
+              <>
+                {" at "}
+                <code className="font-mono">{projectRoot}</code>
+              </>
+            ) : null}
+            . Deploy it and refresh.
+          </p>
+        )}
+
         {error && (
           <div className="mt-6">
-            {root && (
+            {triedRoot && (
               <p className="mb-2 text-xs text-text-3">
-                Tried <code className="font-mono text-text-2">{root}</code>
+                Tried <code className="font-mono text-text-2">{triedRoot}</code>
               </p>
             )}
             <ErrorBanner error={error} />
@@ -139,7 +167,9 @@ export function Welcome({
               advises against a choice the reader never made. Seen on screen before
               it was seen in a test. */}
           <span className="text-xs text-text-3">
-            {root ? "Try a different directory." : "Nothing is read until you choose one."}
+            {triedRoot
+              ? "Try a different directory."
+              : "Nothing is read until you choose one."}
           </span>
         </div>
 

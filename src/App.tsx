@@ -1102,6 +1102,21 @@ function App() {
   // which is the ONE place that decision is made. Do not restate it here: two
   // gates for one rule means either can be removed with every test still green,
   // which is how the perpetual-skeleton bug survived review the first time.
+  // Whether there is anything to explore. This is the line between the welcome
+  // screen and the panes, and `root !== null` was the wrong test for it: picking a
+  // directory that is not a project *succeeds* at the command level and returns a
+  // Project whose `root` is that directory and whose `error` says why it could not
+  // be read. So root was set, the welcome screen never appeared, and the reader got
+  // the bare banner this screen exists to replace.
+  //
+  // Keyed on there being environments rather than on the error, so it covers all
+  // three ways to arrive with nothing: no project chosen, a directory that is not
+  // one, and a real project never deployed. And *not* on the error alone, because a
+  // failed pick while a working project is open leaves that project's environments
+  // in place — the old session stays, with a banner, rather than being replaced by
+  // an onboarding screen.
+  const explorable = environmentsLoaded && environments.length > 0;
+
   const rowsPending = rows === null && rowsError === null;
 
   // How many of this canister's tables have a count. Counting is sequential — N
@@ -1127,10 +1142,10 @@ function App() {
     // guards would be two mechanisms for one rule, and the first version of this
     // had both — deleting the inner one changed no test, which is how the
     // redundancy showed up.
-    (environmentsError !== null && root !== null) ||
+    (environmentsError !== null && explorable) ||
     identityError !== null ||
     persistWarning !== null ||
-    (environmentsLoaded && root !== null && environments.length === 0 && !environmentsError) ||
+
     (environmentsLoaded && currentEnvironment !== null && identity === null);
 
   // `selectIdentity` performs an eager export (see its doc comment in
@@ -1290,14 +1305,6 @@ function App() {
               layout this app doesn't understand) must be visible, not
               indistinguishable from a project that simply hasn't been
               deployed yet. */}
-          {environmentsLoaded && root !== null && environments.length === 0 && !environmentsError && (
-            <p className="rounded-control border border-warn-border bg-warn-bg p-3 text-sm text-warn-text">
-              No environments were found in this project&apos;s <code>.icp/</code> layout. Deploy
-              it (e.g. <code>icp network start</code>, <code>icp canister create</code>,{" "}
-              <code>icp canister install</code>) and relaunch this app.
-            </p>
-          )}
-
           {/* Another explicit empty state, of the same class as the one
               above: `identity === null` means `initialIdentityFor` found
               nothing selectable for `currentEnvironment` (a store holding
@@ -1332,10 +1339,16 @@ function App() {
           The banner used to render in the shell above an otherwise empty window,
           so the failure and the instructions for avoiding it were never on screen
           together. */}
-      {environmentsLoaded && root === null && (
+      {environmentsLoaded && !explorable && (
         <Welcome
           error={environmentsError}
-          root={rejectedRoot}
+          triedRoot={rejectedRoot}
+          projectRoot={root}
+          /* A real project with an `.icp/` layout and nothing deployed is its own
+             situation, not a wrong directory — the old warn banner said so and
+             became unreachable when this screen took over the state, so its words
+             moved here rather than being dropped. */
+          undeployed={root !== null && environmentsError === null}
           busy={projectBusy}
           onSelect={handleSelectProject}
         />
@@ -1365,7 +1378,7 @@ function App() {
           full-width header out of alignment with the panes (measured at 1280px:
           page scrollWidth 1520 vs clientWidth 1280). Clipped here, the rightmost
           pane is cut off instead — local, visible, and undone by dragging back. */}
-      {root !== null && (
+      {explorable && (
         <>
         <SqlBar
             entities={entities}

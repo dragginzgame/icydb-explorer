@@ -193,7 +193,11 @@ test("a stale canister's tables never overwrite a newer selection", async () => 
   expect(screen.queryByText("table_a")).toBeNull();
 });
 
-test("shows an explicit empty state when discovery finds no environments and no error", async () => {
+/// A real project with an `.icp/` layout and nothing deployed is its own
+/// situation, not a wrong directory. It used to be a warn banner over an empty
+/// shell; it is now the welcome screen, which says the same thing and has the
+/// requirements beside it — including the deploy commands that banner carried.
+test("a project with nothing deployed says so, with the requirements", async () => {
   vi.mocked(commands.listEnvironments).mockResolvedValue({
     root: "/project",
     error: null,
@@ -202,7 +206,13 @@ test("shows an explicit empty state when discovery finds no environments and no 
 
   render(<App />);
 
-  await screen.findByText(/no environments were found/i);
+  expect(await screen.findByText(/no deployed environments/i)).toBeInTheDocument();
+  expect(screen.getByText("/project")).toBeInTheDocument();
+  expect(screen.getByText(/icp canister install/)).toBeInTheDocument();
+  // Not a wrong-directory story: no error, and no advice to pick something else.
+  expect(screen.queryByText(/Try a different directory/)).not.toBeInTheDocument();
+  // Nor four empty panes for a project with nothing in them.
+  expect(screen.queryByRole("region", { name: "Rows" })).not.toBeInTheDocument();
 });
 
 test("shows an explicit banner when no identity is usable, rather than a silently blank app", async () => {
@@ -281,15 +291,37 @@ test("shows the discovery error rather than a silent blank pane", async () => {
 /// that still carries the whole string, plus a pane still mounted alongside it.
 test("a very long error explanation scrolls in its own region instead of squeezing the panes", async () => {
   const explanation = "SQL surface disabled. ".repeat(400);
+  // A *no-usable-identity* failure rather than a discovery one. A discovery error
+  // now means there is nothing to explore, so it lands on the welcome screen and
+  // this region is never mounted — and this test is about the region's own
+  // behaviour, so it needs a failure that happens with a working project open.
+  // The summary is built from `unusableReason`, so the fixture controls its length.
   vi.mocked(commands.listEnvironments).mockResolvedValue({
     root: "/project",
-    error: { kind: "unknown", explanation },
-    environments: [],
+    error: null,
+    environments: [
+      {
+        ...environmentFixture(),
+        identity: null,
+        identities: [
+          {
+            name: "anonymous",
+            algorithm: "secp256k1",
+            kind: "anonymous",
+            pemPath: null,
+            unusableReason: explanation,
+          },
+        ],
+      },
+    ],
   });
 
   render(<App />);
 
-  expect(await screen.findByText(new RegExp(explanation.slice(0, 40)))).toBeInTheDocument();
+  // Plural: the reason also appears in the identity selector's disabled option, so
+  // the same text is legitimately on screen twice. What this test is about is the
+  // region that holds the banner.
+  expect(await screen.findAllByText(new RegExp(explanation.slice(0, 40)))).not.toHaveLength(0);
   const region = document.querySelector("[data-banner-region]");
   expect(region).not.toBeNull();
   expect(region!.className).toMatch(/overflow-(?:auto|y-auto)/);
@@ -2821,6 +2853,13 @@ test("a rejected folder shows what went wrong and what a project needs", async (
   expect(screen.getByText("/Users/me/not-a-project")).toBeInTheDocument();
   expect(screen.getByText(/A project with an \.icp\/ directory/)).toBeInTheDocument();
   expect(screen.getByText(/Try a different directory/)).toBeInTheDocument();
+
+  // And no panes behind it. Picking a directory that is not a project *succeeds* at
+  // the command level — it returns a Project whose root is that directory — so a
+  // gate on "is a root set" renders four empty panes underneath this screen.
+  for (const name of ["Canisters", "Tables", "Rows", "Schema"]) {
+    expect(screen.queryByRole("region", { name })).not.toBeInTheDocument();
+  }
 });
 
 /// Split by who can act. Being told to check something you do not control, without
