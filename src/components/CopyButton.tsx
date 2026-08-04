@@ -33,7 +33,14 @@ export function CopyButton({
   return (
     <button
       type="button"
-      onClick={() => {
+      onClick={(event) => {
+        // Release focus after a *pointer* copy. WebKit focuses a button on click,
+        // and a focused control stays revealed — so the icon lingered on a cell the
+        // mouse had long left, which reads as a rendering fault rather than as
+        // focus. `detail` is 0 for a keyboard activation (Enter or Space on a
+        // button) and non-zero for a real click, so a keyboard user keeps the focus
+        // they need to carry on tabbing.
+        if (event.detail > 0) event.currentTarget.blur();
         void copyText(value).then((ok) => {
           if (!ok) return;
           window.clearTimeout(hideTimer.current);

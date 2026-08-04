@@ -516,7 +516,12 @@ function ExpandableRow({
                     <CopyButton
                       value={cell.display}
                       label={`Copy ${columns[columnIndex] ?? "value"}`}
-                      className="px-1 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                      /* Both triggers hang off the wrapper, so visibility is one
+                         symmetric condition: the cell is hovered, or something in
+                         it has focus. `focus-visible` on the button itself was the
+                         other half of the lingering icon — it kept the control lit
+                         after a click, with nothing on screen explaining why. */
+                      className="px-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
                     />
                   )}
                 </div>

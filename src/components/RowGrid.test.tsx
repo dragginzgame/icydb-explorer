@@ -939,15 +939,21 @@ test("an empty cell offers no copy control", () => {
 /// Revealed on hover so a hundred rows are not a hundred visible controls — but
 /// hidden with `opacity`, not `display`, so it keeps its place in the tab order,
 /// and revealed on focus too or it would be unreachable by keyboard.
+///
+/// Both triggers hang off the *wrapper*, so visibility is one symmetric condition.
+/// `focus-visible` on the button itself was half of a lingering-icon bug: it kept
+/// the control lit after a click, on a cell the mouse had already left.
 test("the copy control is hover-revealed but still keyboard-reachable", () => {
   render(<RowGrid rows={longCell} hasMore={false} onLoadMore={() => {}} />);
 
   const copy = screen.getByRole("button", { name: "Copy bio" });
   expect(copy.className).toMatch(/\bopacity-0\b/);
   expect(copy.className).toMatch(/group-hover:opacity-100/);
-  // The half that makes it usable without a mouse.
-  expect(copy.className).toMatch(/focus-visible:opacity-100/);
-  // And the wrapper it reacts to.
+  // The half that makes it usable without a mouse — driven by the wrapper, not by
+  // the button's own focus state.
+  expect(copy.className).toMatch(/group-focus-within:opacity-100/);
+  expect(copy.className).not.toMatch(/focus-visible:opacity-100/);
+  // And the wrapper both triggers hang off.
   expect(copy.parentElement?.className).toMatch(/\bgroup\b/);
 });
 
