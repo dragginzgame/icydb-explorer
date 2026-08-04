@@ -86,3 +86,41 @@ test("a pool spans the fleet rather than one parent's children", () => {
 test("an empty fleet has no pools", () => {
   expect(pools([])).toEqual([]);
 });
+
+/// canic's children listing can report the same canister under more than one
+/// parent — walking toko's live fleet yielded 16 entries for 10 canisters. A
+/// repeated principal would make a false pool that sweeps one canister several
+/// times and counts its rows once per appearance: a wrong answer, not a slow one.
+test("a canister appearing twice does not become a pool of itself", () => {
+  const duplicated: TreeNode[] = [
+    {
+      pid: "hub",
+      role: "hub",
+      children: [
+        { pid: "same", role: "ledger", children: [] },
+        { pid: "same", role: "ledger", children: [] },
+      ],
+    },
+  ];
+
+  expect(pools(duplicated)).toEqual([]);
+  expect(poolOf(duplicated, "same")).toBeNull();
+});
+
+/// And a genuine pool that happens to contain a duplicate still reports each
+/// member once.
+test("a real pool with a duplicated member lists it once", () => {
+  const forest: TreeNode[] = [
+    {
+      pid: "hub",
+      role: "hub",
+      children: [
+        { pid: "a", role: "shard", children: [] },
+        { pid: "b", role: "shard", children: [] },
+        { pid: "a", role: "shard", children: [] },
+      ],
+    },
+  ];
+
+  expect(pools(forest)).toEqual([{ role: "shard", members: ["a", "b"] }]);
+});

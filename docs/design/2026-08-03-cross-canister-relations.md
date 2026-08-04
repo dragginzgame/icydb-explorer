@@ -53,17 +53,48 @@ a primary key, so it takes the primary key's colour); inferred uses `--warn-*`
 (a guess the reader must distinguish at a glance, and `--warn` already means
 "you need to know this"). No new tokens.
 
-## What makes inference defensible here
+## Inference was dropped. What replaced it, and why
 
-toko's schema is newtype-heavy. `UserId`, `LedgerId`, and `AssetId` are distinct
-types, so "this column's type is the primary-key type of that entity" is a
-strong signal. The same rule over bare `Ulid` columns would produce far more
-candidates than signal, so the inference is explicitly **type-name based, not
-column-name based**, and a column whose type is a bare primitive yields no
-candidates at all.
+**Superseded 2026-08-04, by reading toko's live schema rather than assuming it.**
 
-The fleet-wide catalog (`SHOW ENTITIES` per canister, one cheap query each) is
-what turns a candidate type into a candidate location.
+The plan was type-name inference: a `UserId` column matching `User`'s
+primary-key type is a strong signal. Two facts killed it.
+
+**toko declares zero icydb relations.** Not one, across all ten schema
+canisters — confirmed by describing every entity on the running replica. toko's
+own source says why: *"IcyDB 0.215.7 cannot bind accepted list relations
+(E24)"*. So the declared-relation work (phases 1 and 2) is correct but dormant
+against this fleet.
+
+**toko's primary keys are bare `ulid`, not newtypes.** The premise that
+`UserId` would distinguish itself came from a mockup, not the schema. Over bare
+`ulid` keys, every ulid column matches every entity: all noise.
+
+What is actually there is better, because it is not inference at all.
+Thirty-odd columns are typed `principal`, and a principal either *is* a canister
+in this fleet or it is not — exact set membership against the fleet's own ids.
+Measured on toko's data: 2 resolved (`UserProjects.projects` → the
+`project_instance` canister), 9 unresolved (user principals), **zero false
+positives**.
+
+So a resolved principal shows the canister's **role** inline and navigates
+there. `jzyzi-fd777-77774-qaafq-cai` tells a reader nothing;
+`jzyzi-fd777-77774-qaafq-cai ↳ project_ledger` is immediately meaningful.
+
+This gets its own visual language rather than declared's `--accent` or an
+inference's `--warn`. It is neither: certain, because the value literally is the
+canister's id, but a jump to a *canister* rather than a relation to rows. Putting
+it on the same confidence scale as those would say it is a weaker version of one
+of them.
+
+One inversion worth recording. Relation keys are deliberately *not* recovered by
+parsing rendered text (see `ValueDto.items`), because a mis-parse there builds a
+statement for the wrong row. Principals *are* found by scanning text, because a
+token is only ever used as a lookup into the fleet: something this over-matches
+fails to equal any canister id and disappears. Same technique, opposite risk.
+Scanning text is also what reaches principals nested inside shapes this app does
+not decode — `UserProjects.projects` is a `map<principal, record{pid:principal,
+…}>`, and its canister ids live inside the rendered map.
 
 ## Honesty requirements
 
@@ -116,4 +147,5 @@ Each phase is independently useful and shippable.
    own primary key matched against the target's column — so the generated
    statement must name that column, not `id`.
 3. **Fan-out over a pool** with per-canister outcomes.
-4. **Inferred cross-canister links**, built on the fleet catalog from (3).
+4. **Resolve principals against the fleet** — see above. No catalog needed; the
+   fleet is already in hand.

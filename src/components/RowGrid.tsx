@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import type { RelationDto, RowsDto, ValueDto } from "../api/types";
 import { followPlan } from "../lib/followRelation";
+import { type FleetIndex, fleetLinks } from "../lib/fleetLinks";
 
 import { PaneEmpty } from "./PaneStates";
 import { ValueCell, formatExpanded, isExpandable } from "./ValueCell";
@@ -27,6 +28,8 @@ export function RowGrid({
   onExplain,
   relations,
   onFollow,
+  fleet,
+  onGoToCanister,
 }: {
   /** The page to render, or `null` when there is no page: a fetch is in flight
    *  (with `loading`) or one failed (without it). Nullable rather than a
@@ -56,6 +59,14 @@ export function RowGrid({
    *  relations are declared: an affordance with nothing behind it is worse than
    *  none. */
   onFollow?: (relation: RelationDto, cell: ValueDto) => void;
+  /** Principal → role for the fleet, so a cell holding a canister's id can say
+   *  which canister it is. Absent means no resolution is offered — which is right
+   *  while the fleet is still loading, since a principal with no name attached is
+   *  what the reader already has. */
+  fleet?: FleetIndex;
+  /** Go to a canister named by a cell. Absent leaves the role visible but inert:
+   *  knowing `jzyzi-…` is `project_ledger` is worth something on its own. */
+  onGoToCanister?: (pid: string) => void;
 }) {
   const [expanded, setExpanded] = useState<Expanded>(null);
 
@@ -148,6 +159,8 @@ export function RowGrid({
                   onToggle={toggle}
                   relations={relations}
                   onFollow={onFollow}
+                  fleet={fleet}
+                  onGoToCanister={onGoToCanister}
                 />
               );
             })}
@@ -321,6 +334,60 @@ function FollowButton({
   );
 }
 
+/** Names the canister a cell's principal points at.
+ *
+ *  The role, not an arrow: `jzyzi-fd777-77774-qaafq-cai` tells a reader nothing,
+ *  and the point of this is the name. Clicking navigates there, but the label
+ *  earns its place even when it cannot — which is why the inert form still
+ *  renders rather than being suppressed when no handler is given.
+ *
+ *  Its own visual language, not declared's `--accent` or an inference's `--warn`.
+ *  This is neither: certain, because the value literally is the canister's id,
+ *  but a jump to a *canister* rather than a relation to rows. Putting it on the
+ *  same confidence scale as those would say it is a weaker version of one of
+ *  them, when it is a different thing entirely.
+ */
+function FleetChip({
+  link,
+  onGoTo,
+}: {
+  link: { pid: string; role: string };
+  onGoTo?: (pid: string) => void;
+}) {
+  const label = (
+    <>
+      <span aria-hidden="true" className="text-text-3">
+        ↳
+      </span>
+      {link.role}
+    </>
+  );
+  const shared = "flex shrink-0 items-center gap-1 rounded-row border border-rule px-1 font-sans text-xs";
+
+  if (!onGoTo) {
+    return (
+      <span
+        title={`${link.pid} is this fleet's ${link.role} canister.`}
+        className={`${shared} bg-surface-1 text-text-2`}
+      >
+        {label}
+      </span>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => onGoTo(link.pid)}
+      aria-label={`Go to ${link.role}`}
+      title={`${link.pid} is this fleet's ${link.role} canister. Opens it.`}
+      className={`${shared} bg-surface-1 text-text-2 hover:border-rule-strong hover:bg-surface-2`}
+    >
+      {label}
+    </button>
+  );
+}
+
 /** One data row plus, when a cell is expanded, the sub-row beneath it.
  *
  *  Split out because a row renders as two sibling `<tr>`s, which a `.map` in the
@@ -334,6 +401,8 @@ function ExpandableRow({
   onToggle,
   relations,
   onFollow,
+  fleet,
+  onGoToCanister,
 }: {
   row: RowsDto["rows"][number];
   rowIndex: number;
@@ -342,6 +411,14 @@ function ExpandableRow({
   onToggle: (row: number, column: number) => void;
   relations?: RelationDto[];
   onFollow?: (relation: RelationDto, cell: ValueDto) => void;
+  /** Principal → role for the fleet, so a cell holding a canister's id can say
+   *  which canister it is. Absent means no resolution is offered — which is right
+   *  while the fleet is still loading, since a principal with no name attached is
+   *  what the reader already has. */
+  fleet?: FleetIndex;
+  /** Go to a canister named by a cell. Absent leaves the role visible but inert:
+   *  knowing `jzyzi-…` is `project_ledger` is worth something on its own. */
+  onGoToCanister?: (pid: string) => void;
 }) {
   // Stripe by the row's position in the *data*, not in the DOM. The sub-row
   // rendered below (when this row's cell is open) is itself a sibling `<tr>`
@@ -381,6 +458,10 @@ function ExpandableRow({
           // relation holding an empty list. Both are ordinary states of a row, so
           // the cell gets no affordance rather than one that would fail.
           const followable = relation && onFollow && followPlan(relation, cell) !== null;
+          // Exact, not inferred: this cell's value *is* one of these canisters'
+          // ids. Most principals in a fleet's data are users and resolve to
+          // nothing, which is the correct answer and the common case.
+          const links = fleet ? fleetLinks(cell, fleet) : [];
           const valueCell = (
             <ValueCell
               value={cell}
@@ -397,10 +478,15 @@ function ExpandableRow({
               {/* Wrapped only when there is something to wrap. Every cell in the
                   app would otherwise gain a flex container for the sake of the
                   few that hold a relation key. */}
-              {followable ? (
-                <div className="flex items-start gap-1">
+              {followable || links.length > 0 ? (
+                <div className="flex flex-wrap items-start gap-1">
                   {valueCell}
-                  <FollowButton relation={relation} cell={cell} onFollow={onFollow} />
+                  {followable && (
+                    <FollowButton relation={relation} cell={cell} onFollow={onFollow} />
+                  )}
+                  {links.map((link) => (
+                    <FleetChip key={link.pid} link={link} onGoTo={onGoToCanister} />
+                  ))}
                 </div>
               ) : (
                 valueCell

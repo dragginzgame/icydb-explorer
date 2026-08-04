@@ -606,3 +606,155 @@ test("cells without a relation gain no wrapper", () => {
   expect(cells[1].firstElementChild?.children).toHaveLength(2);
   expect(cells[1].firstElementChild?.contains(follow)).toBe(true);
 });
+
+// ── Naming the canisters a cell points at ────────────────────────────────────
+
+const FLEET = new Map([
+  ["j6z74-i3777-77774-qaafa-cai", "project_instance"],
+  ["jzyzi-fd777-77774-qaafq-cai", "project_ledger"],
+]);
+const USER_PID = "b3bcf-xxk7r-uy5st-idags-wlqaj-yd64m-65y2h-pi4oh-7pjmh-zdgac-cqe";
+
+const principalRows = (display: string, kind = "principal") => ({
+  entity: "RegistryProject",
+  columns: ["id", "pid"],
+  rows: [[{ kind: "ulid", display: "01JBQPZ" }, { kind, display }]],
+  rowCount: 1,
+  nextCursor: null,
+});
+
+/// The point of this is the *name*: a bare principal tells a reader nothing.
+test("a cell whose principal is a fleet canister names it", () => {
+  render(
+    <RowGrid
+      rows={principalRows("jzyzi-fd777-77774-qaafq-cai")}
+      hasMore={false}
+      onLoadMore={() => {}}
+      fleet={FLEET}
+      onGoToCanister={() => {}}
+    />,
+  );
+
+  expect(screen.getByRole("button", { name: "Go to project_ledger" })).toBeInTheDocument();
+});
+
+/// Most principals in a fleet's data are users. Resolving to nothing is the
+/// correct answer and the common case, so it must read as normal.
+test("a user principal gets no chip", () => {
+  render(
+    <RowGrid
+      rows={principalRows(USER_PID)}
+      hasMore={false}
+      onLoadMore={() => {}}
+      fleet={FLEET}
+      onGoToCanister={() => {}}
+    />,
+  );
+
+  expect(screen.queryByRole("button", { name: /^Go to / })).not.toBeInTheDocument();
+});
+
+/// The real shape from toko: `UserProjects.projects` is a map whose canister ids
+/// are nested inside the rendered value.
+test("a canister nested in a rendered map is named", () => {
+  render(
+    <RowGrid
+      rows={principalRows(
+        "{j6z74-i3777-77774-qaafa-cai: {pid: j6z74-i3777-77774-qaafa-cai}}",
+        "map",
+      )}
+      hasMore={false}
+      onLoadMore={() => {}}
+      fleet={FLEET}
+      onGoToCanister={() => {}}
+    />,
+  );
+
+  // Once, not twice: the same canister named twice is one canister.
+  expect(screen.getAllByRole("button", { name: "Go to project_instance" })).toHaveLength(1);
+});
+
+test("clicking the chip reports the canister to go to", () => {
+  const went: string[] = [];
+  render(
+    <RowGrid
+      rows={principalRows("jzyzi-fd777-77774-qaafq-cai")}
+      hasMore={false}
+      onLoadMore={() => {}}
+      fleet={FLEET}
+      onGoToCanister={(pid) => went.push(pid)}
+    />,
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: "Go to project_ledger" }));
+  expect(went).toEqual(["jzyzi-fd777-77774-qaafq-cai"]);
+});
+
+/// Knowing that `jzyzi-…` is `project_ledger` is worth something even when there
+/// is nowhere to go, so the label survives without a handler — as text, not as a
+/// button that would do nothing.
+test("without a handler the role is still named, inertly", () => {
+  render(
+    <RowGrid
+      rows={principalRows("jzyzi-fd777-77774-qaafq-cai")}
+      hasMore={false}
+      onLoadMore={() => {}}
+      fleet={FLEET}
+    />,
+  );
+
+  expect(screen.getByText("project_ledger")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /^Go to / })).not.toBeInTheDocument();
+});
+
+/// While the fleet is still loading there is nothing to resolve against, and a
+/// principal with no name attached is exactly what the reader already had.
+test("with no fleet, cells are left alone", () => {
+  render(
+    <RowGrid
+      rows={principalRows("jzyzi-fd777-77774-qaafq-cai")}
+      hasMore={false}
+      onLoadMore={() => {}}
+    />,
+  );
+
+  expect(screen.queryByText("project_ledger")).not.toBeInTheDocument();
+});
+
+/// A cell can be both a relation to follow and a principal that names a canister.
+/// Neither affordance may swallow the other.
+test("a relation arrow and a fleet chip coexist on one cell", () => {
+  const rows = {
+    entity: "RegistryProject",
+    columns: ["id", "owner"],
+    rows: [
+      [
+        { kind: "ulid", display: "01JBQPZ" },
+        { kind: "principal", display: "jzyzi-fd777-77774-qaafq-cai" },
+      ],
+    ],
+    rowCount: 1,
+    nextCursor: null,
+  };
+  render(
+    <RowGrid
+      rows={rows}
+      hasMore={false}
+      onLoadMore={() => {}}
+      relations={[
+        {
+          field: "owner",
+          targetEntity: "User",
+          targetStorePath: "toko::user::store::UserStore",
+          cardinality: "single",
+        },
+      ]}
+      onFollow={() => {}}
+      fleet={FLEET}
+      onGoToCanister={() => {}}
+    />,
+  );
+
+  expect(screen.getByRole("button", { name: "Follow owner to User" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Go to project_ledger" })).toBeInTheDocument();
+});

@@ -1,5 +1,5 @@
 import { save } from "@tauri-apps/plugin-dialog";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   canisterTree,
   countRows,
@@ -31,6 +31,7 @@ import type {
 import { CanisterTree, type QueryableMap } from "./components/CanisterTree";
 import { exportFilename, exportRows, type ExportFormat } from "./lib/exportRows";
 import { followPlan, followStatement, primaryKeyOf } from "./lib/followRelation";
+import { fleetIndex, type FleetIndex } from "./lib/fleetLinks";
 import { mergeSweep, type MergedSweep } from "./lib/mergeSweep";
 import { flatten, poolOf, roleOfPid } from "./lib/pools";
 import { ErrorBanner } from "./components/ErrorBanner";
@@ -899,6 +900,20 @@ function App() {
     [env, canister, identity, sweeping, forest],
   );
 
+  // Principal → role for the whole fleet, so a cell holding a canister's id can
+  // name it. Memoised on the forest because it is read once per rendered cell —
+  // a hundred rows of ten columns would otherwise walk the tree a thousand times
+  // for an answer that changes only when the fleet does.
+  const fleet = useMemo(() => fleetIndex(forest ?? []), [forest]);
+
+  // Going to a canister a cell points at. Selecting it is the whole action: the
+  // effects keyed on `canister` fetch its tables, and the reader lands where they
+  // would have if they had found it in the tree themselves.
+  const goToCanister = useCallback((pid: string) => {
+    setCanister(pid);
+    setEntity(null);
+  }, []);
+
   // A full page (== DEFAULT_ROW_LIMIT rows on the most recently fetched
   // page) means there may be more; there is no COUNT here, so this never
   // claims a total.
@@ -1335,7 +1350,13 @@ function App() {
                 <div className="flex min-h-0 flex-col">
                   <SweepStatusStrip statuses={sweep.statuses} />
                   {sweep.rows ? (
-                    <RowGrid rows={sweep.rows} hasMore={false} onLoadMore={() => {}} />
+                    <RowGrid
+                      rows={sweep.rows}
+                      hasMore={false}
+                      onLoadMore={() => {}}
+                      fleet={fleet}
+                      onGoToCanister={goToCanister}
+                    />
                   ) : (
                     <SweepAllRefused statuses={sweep.statuses} />
                   )}
@@ -1356,6 +1377,8 @@ function App() {
                 onFollow={(relation: RelationDto, cell: ValueDto) =>
                   void followRelationFrom(relation, cell)
                 }
+                fleet={fleet}
+                onGoToCanister={goToCanister}
               />
               ) : (
                 <>
@@ -1382,6 +1405,8 @@ function App() {
                       onFollow={(relation: RelationDto, cell: ValueDto) =>
                         void followRelationFrom(relation, cell)
                       }
+                      fleet={fleet}
+                      onGoToCanister={goToCanister}
                     />
                   )}
                 </>
@@ -1517,6 +1542,8 @@ function SqlResultView({
   onExport,
   schema,
   onFollow,
+  fleet,
+  onGoToCanister,
 }: {
   result: ResultDto;
   onExport?: (format: ExportFormat) => void;
@@ -1526,6 +1553,10 @@ function SqlResultView({
    *  entity. */
   schema?: SchemaDto | null;
   onFollow?: (relation: RelationDto, cell: ValueDto) => void;
+  /** Principal → role, so a result's cells can name the canisters they point at
+   *  even when the result did not come from a relation. */
+  fleet?: FleetIndex;
+  onGoToCanister?: (pid: string) => void;
 }) {
   if (result.type === "rows") {
     return (
@@ -1536,6 +1567,8 @@ function SqlResultView({
         onExport={onExport && ((format) => onExport(format))}
         relations={schema?.relations}
         onFollow={schema ? onFollow : undefined}
+        fleet={fleet}
+        onGoToCanister={onGoToCanister}
       />
     );
   }

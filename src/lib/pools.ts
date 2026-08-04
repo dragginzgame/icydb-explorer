@@ -27,7 +27,14 @@ export function flatten(forest: TreeNode[]): TreeNode[] {
 export function pools(forest: TreeNode[]): Pool[] {
   const byRole = new Map<string, string[]>();
   for (const node of flatten(forest)) {
-    byRole.set(node.role, [...(byRole.get(node.role) ?? []), node.pid]);
+    const members = byRole.get(node.role) ?? [];
+    // Deduplicated by principal. canic's children listing can report the same
+    // canister under more than one parent — observed while walking toko's live
+    // fleet, which yielded 16 entries for 10 canisters. A repeated principal here
+    // would be a pool that sweeps the same canister several times and counts its
+    // rows once per appearance, which is a wrong answer rather than a slow one.
+    if (!members.includes(node.pid)) members.push(node.pid);
+    byRole.set(node.role, members);
   }
 
   return [...byRole.entries()]
