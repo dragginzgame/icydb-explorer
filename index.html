@@ -4,6 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>icydb Explorer</title>
+    <!-- The transparent variant, so the mark works on a light or a dark tab strip.
+         Referenced out of src/assets rather than copied into public/: Vite rewrites
+         asset URLs in this file at build time, so one file serves both this and the
+         header's import — two copies of the same bytes is one edit away from
+         drifting. -->
+    <link rel="icon" type="image/svg+xml" href="/src/assets/icydb-glyph.svg" />
   </head>
 
   <body>

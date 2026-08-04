@@ -1,4 +1,6 @@
 import { save } from "@tauri-apps/plugin-dialog";
+
+import icydbGlyph from "./assets/icydb-glyph.svg";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   canisterTree,
@@ -1158,6 +1160,14 @@ function App() {
   return (
     <main className="flex h-screen flex-col bg-surface-0 font-ui text-text-1">
       <header className="flex items-center gap-3 border-b border-rule bg-surface-1 px-4 py-2">
+        {/* `alt=""` and `aria-hidden`: the mark sits beside the wordmark that
+            already names the app, so announcing it would read as "icydb logo,
+            icydb Explorer". Decorative next to its own name.
+
+            The transparent variant, which is why it can sit on all five themes —
+            the source artwork is a full-bleed white square and would have been a
+            white tile on four of them. */}
+        <img src={icydbGlyph} alt="" aria-hidden="true" className="size-7 shrink-0" />
         <h1 className="text-lg font-semibold">icydb Explorer</h1>
         <ProjectSelector root={root} busy={projectBusy} onSelect={handleSelectProject} />
         {environments.length > 0 && (
