@@ -82,6 +82,39 @@ export function formatType(raw: string): FormattedType {
     return { name: enumeration[1], shape: "enum", constraint: null, optional };
   }
 
+  // `map<K, V>` — the whole reason this branch exists. Unhandled, a map fell
+  // through to the catch-all and printed its entire nested structure: toko's
+  // `UserProjects.projects` rendered as five lines of
+  // `map<principal, composite(path=Project, codec=structural_v1, shape=record{…})>`
+  // in a pane a few characters wide. The key and value types are the news; the
+  // machinery inside them is not.
+  const map = /^map<(.*)>$/s.exec(rest);
+  if (map) {
+    const [key, value] = splitAtDepth0(map[1]);
+
+    return {
+      // Composed into the *name* rather than the shape, because a named wrapper
+      // around this (`ProjectMap`) collapses `inner.shape ?? inner.name` — so a
+      // shape here would be discarded and the reader would see only `ProjectMap`.
+      name: `map<${formatType(key).name} → ${formatType(value ?? "").name}>`,
+      shape: null,
+      constraint: null,
+      optional,
+    };
+  }
+
+  // `list<X>`/`set<X>` — same wall for the same reason. toko's `User.pins` is a
+  // `list<composite(path=Pin, …)>` and printed its whole record inline.
+  const sequence = /^(list|set)<(.*)>$/s.exec(rest);
+  if (sequence) {
+    return {
+      name: `${sequence[1]}<${formatType(sequence[2]).name}>`,
+      shape: null,
+      constraint: null,
+      optional,
+    };
+  }
+
   const bounded = /^(\w+)\(max_len=(\d+)\)$/.exec(rest);
   if (bounded) {
     return {
@@ -100,6 +133,34 @@ export function formatType(raw: string): FormattedType {
   }
 
   return { name: rest, shape: null, constraint: null, optional };
+}
+
+/** Splits on commas at the top level only.
+ *
+ *  A map's value type is routinely a composite full of its own commas, so
+ *  `"principal, composite(path=Project, codec=structural_v1, …)"` has to break
+ *  into two parts rather than four. Same depth-tracking as `countFields`, which
+ *  needs the count rather than the pieces.
+ */
+function splitAtDepth0(body: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let current = "";
+
+  for (const char of body) {
+    if (char === "{" || char === "<" || char === "(") depth += 1;
+    else if (char === "}" || char === ">" || char === ")") depth -= 1;
+
+    if (char === "," && depth === 0) {
+      parts.push(current.trim());
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  parts.push(current.trim());
+
+  return parts;
 }
 
 /** Counts a record's fields by splitting only at its own depth — a nested

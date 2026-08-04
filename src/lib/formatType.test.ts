@@ -112,3 +112,73 @@ test("an unrecognised shape passes through unchanged", () => {
     optional: false,
   });
 });
+
+// ── Containers ───────────────────────────────────────────────────────────────
+// The strings below are verbatim from toko's running replica.
+
+/// The column that motivated this. Unhandled, a map fell through to the catch-all
+/// and printed its whole nested structure — five lines in a pane a few characters
+/// wide, restating a record whose fields are already rows beneath it.
+test("a named map collapses to its key and value types", () => {
+  const raw =
+    "composite(path=ProjectMap, codec=structural_v1, shape=newtype<map<principal, " +
+    "composite(path=Project, codec=structural_v1, shape=record{pid:principal, " +
+    "status:enum(ProjectStatus)})>>)";
+
+  expect(formatType(raw)).toEqual({
+    name: "ProjectMap",
+    shape: "map<principal → Project>",
+    constraint: null,
+    optional: false,
+  });
+});
+
+/// A bare map keeps the compact form in its *name*, which is what lets a named
+/// wrapper around it collapse — `composite` takes `inner.shape ?? inner.name`, so
+/// a shape here would be discarded and the reader would see only `ProjectMap`.
+test("a bare map reads as its key and value", () => {
+  expect(formatType("map<principal, ulid>").name).toBe("map<principal → ulid>");
+});
+
+/// A map's value is routinely a composite full of its own commas, so the split has
+/// to happen at the top level only — otherwise `principal, composite(path=P,
+/// codec=…)` becomes three parts and the value type is `composite(path=P`.
+test("a map with a comma-laden value type still splits into two", () => {
+  const raw = "map<ulid, composite(path=Project, codec=structural_v1, shape=record{a:bool})>";
+
+  expect(formatType(raw).name).toBe("map<ulid → Project>");
+});
+
+/// The same wall for the same reason: toko's `User.pins` printed its whole record.
+test("a list of composites reads as a list of their name", () => {
+  const raw =
+    "list<composite(path=Pin, codec=structural_v1, shape=record{collection_id:ulid?, " +
+    "is_hidden:bool, project_pid:principal})>";
+
+  expect(formatType(raw).name).toBe("list<Pin>");
+});
+
+test("a set behaves like a list", () => {
+  expect(formatType("set<ulid>").name).toBe("set<ulid>");
+});
+
+/// Already short, and must stay exactly as it was — this branch is for collapsing
+/// walls, not for rewriting what already reads well.
+test("a list of a scalar is unchanged", () => {
+  expect(formatType("list<principal>").name).toBe("list<principal>");
+});
+
+/// A container nests: a list of maps keeps both levels compact rather than
+/// collapsing one and dumping the other.
+test("nested containers stay compact at every level", () => {
+  expect(formatType("list<map<ulid, principal>>").name).toBe("list<map<ulid → principal>>");
+});
+
+/// A trailing `?` is read off before the container is, so an optional map is still
+/// recognised as one.
+test("an optional container is still collapsed", () => {
+  const formatted = formatType("map<ulid, principal>?");
+
+  expect(formatted.name).toBe("map<ulid → principal>");
+  expect(formatted.optional).toBe(true);
+});
