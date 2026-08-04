@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { TreeNode } from "../api/types";
+import { copyText } from "../lib/copyText";
 import { descendantCount, filterForest, forestSize } from "../lib/filterFleet";
 
 /// Whether a canister exposes an icydb SQL surface, once known.
@@ -29,11 +30,26 @@ export function CanisterTree({
   queryable?: QueryableMap;
 }) {
   const [query, setQuery] = useState("");
-  // Collapsed rather than expanded, so a fleet arrives fully visible and nothing
-  // a reader has not touched is hidden from them. Keyed by principal, which is
-  // what identifies a canister across a refresh — the tree is re-fetched by
-  // Refresh, and collapse must survive that or the control would undo itself.
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  // Every canister that has anything to collapse.
+  const collapsible = useMemo(() => withChildren(trees), [trees]);
+  // Collapsed by default: a fleet with a hundred project canisters is a scroll
+  // before it is navigation, and the counts on a collapsed node say what is
+  // inside without opening it. Keyed by principal, which is what identifies a
+  // canister across a refresh — the tree is re-fetched by Refresh, and collapse
+  // has to survive that or the control would undo itself.
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(collapsible));
+  // Only *newly seen* canisters get collapsed. Re-collapsing everything on every
+  // refresh would fight the reader — they expanded a branch, refreshed to see new
+  // rows, and found it shut again. A canister that genuinely just appeared does
+  // start collapsed, which is right: nothing should expand itself under them.
+  const seen = useRef<Set<string>>(new Set(collapsible));
+  const unseen = collapsible.filter((pid) => !seen.current.has(pid));
+  if (unseen.length > 0) {
+    // Adjusted during render rather than in an effect, so the tree never paints
+    // expanded-then-collapsed. React's documented pattern for derived state.
+    for (const pid of unseen) seen.current.add(pid);
+    setCollapsed((current) => new Set([...current, ...unseen]));
+  }
 
   const searching = query.trim() !== "";
   const shown = filterForest(trees, query);
@@ -91,6 +107,57 @@ export function CanisterTree({
       </ul>
     </div>
   );
+}
+
+/** Copies a canister's principal.
+ *
+ *  Worth its own control because the principal is the thing a reader takes
+ *  *out* of this app — into a `dfx` command, a bug report, a log search — and
+ *  selecting the text out of a tree row is fiddly at best.
+ *
+ *  Confirms only on success: `copyText` has two routes and neither is guaranteed
+ *  in a webview, so a silent failure must not be reported as a copy.
+ */
+function CopyPrincipal({ pid, role }: { pid: string; role: string }) {
+  const [copied, setCopied] = useState(false);
+  // So a second click cannot have its confirmation cut short by the first
+  // click's timer, and nothing stays scheduled after this row unmounts — which
+  // happens whenever the filter changes.
+  const hideTimer = useRef<number | undefined>(undefined);
+
+  useEffect(() => () => window.clearTimeout(hideTimer.current), []);
+
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        void copyText(pid).then((ok) => {
+          if (!ok) return;
+          window.clearTimeout(hideTimer.current);
+          setCopied(true);
+          hideTimer.current = window.setTimeout(() => setCopied(false), 1200);
+        });
+      }}
+      aria-label={`Copy ${role} principal`}
+      title={pid}
+      className="w-6 shrink-0 rounded-row text-xs text-text-3 hover:bg-surface-2 hover:text-text-1"
+    >
+      <span aria-hidden="true">{copied ? "✓" : "⧉"}</span>
+      {/* Announced rather than only drawn: the glyph swap says nothing to a
+          screen reader, and "did that work" is the whole question. */}
+      <span className="sr-only" role="status">
+        {copied ? "Copied" : ""}
+      </span>
+    </button>
+  );
+}
+
+/** Every canister in a forest that has children, at any depth. */
+function withChildren(trees: TreeNode[]): string[] {
+  return trees.flatMap((node) => [
+    ...(node.children.length > 0 ? [node.pid] : []),
+    ...withChildren(node.children),
+  ]);
 }
 
 function CanisterTreeNode({
@@ -173,6 +240,11 @@ function CanisterTreeNode({
             {node.pid}
           </div>
         </button>
+
+        {/* A sibling of the select button, not inside it: a button within a button
+            is invalid, and clicking to copy an id must not also re-query the
+            canister it belongs to. */}
+        <CopyPrincipal pid={node.pid} role={node.role} />
       </div>
 
       {hasChildren && !isCollapsed && (

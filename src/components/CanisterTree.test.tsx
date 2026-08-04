@@ -1,6 +1,19 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { CanisterTree } from "./CanisterTree";
+
+/** Opens every branch.
+ *
+ *  The tree collapses by default, so tests about anything *other* than the fold
+ *  state have to open it first. Repeated, because expanding one level reveals the
+ *  collapsed nodes beneath it. */
+function expandAll() {
+  for (let pass = 0; pass < 6; pass += 1) {
+    const toggles = screen.queryAllByRole("button", { name: /^Expand / });
+    if (toggles.length === 0) return;
+    for (const toggle of toggles) fireEvent.click(toggle);
+  }
+}
 
 const forest = [
   {
@@ -15,6 +28,7 @@ const forest = [
 
 test("renders the fleet as a tree", () => {
   render(<CanisterTree trees={forest} selectedPid={null} onSelect={() => {}} />);
+  expandAll();
 
   expect(screen.getByText("project_hub")).toBeInTheDocument();
   expect(screen.getByText("wasm_store")).toBeInTheDocument();
@@ -40,6 +54,7 @@ test("a canister with no icydb surface says so", () => {
       queryable={{ "aaaaa-aa": true, "bbbbb-bb": false }}
     />,
   );
+  expandAll();
 
   expect(screen.getByText(/no tables/)).toBeInTheDocument();
   // The one that does carry a schema is left alone.
@@ -60,6 +75,7 @@ test("a canister with no surface is still selectable", () => {
       queryable={{ "bbbbb-bb": false }}
     />,
   );
+  expandAll();
 
   const button = screen.getByText("wasm_store").closest("button");
   expect(button).not.toBeDisabled();
@@ -76,6 +92,7 @@ test("the reason is available on hover", () => {
       queryable={{ "bbbbb-bb": false }}
     />,
   );
+  expandAll();
 
   expect(screen.getByTitle(/wasm_store exposes no icydb SQL surface/)).toBeInTheDocument();
 });
@@ -157,16 +174,23 @@ test("a principal is searchable", () => {
 });
 
 /// The count is what makes a collapsed node informative rather than just absent.
-test("collapsing a node hides its children and says how many", () => {
+test("a collapsed node hides its children and says how many", () => {
   renderTree();
 
-  fireEvent.click(screen.getByRole("button", { name: "Collapse project_hub" }));
+  // Root is folded too, so its own child has to be brought into view before its
+  // fold state can be looked at.
+  fireEvent.click(screen.getByRole("button", { name: "Expand root" }));
 
+  // And it arrived collapsed, which is the default a large fleet needs.
   expect(screen.queryByText("project_instance")).not.toBeInTheDocument();
   expect(screen.getByText("· 2 canisters")).toBeInTheDocument();
-  // And it can be undone.
+
   fireEvent.click(screen.getByRole("button", { name: "Expand project_hub" }));
   expect(screen.getAllByText("project_instance")).toHaveLength(2);
+
+  // And it folds away again.
+  fireEvent.click(screen.getByRole("button", { name: "Collapse project_hub" }));
+  expect(screen.queryByText("project_instance")).not.toBeInTheDocument();
 });
 
 /// Collapsing a hub to get past it is not the same intent as looking at it. One
@@ -175,6 +199,8 @@ test("collapsing does not select the canister", () => {
   const selected: string[] = [];
   render(<CanisterTree trees={fleet} selectedPid={null} onSelect={(pid) => selected.push(pid)} />);
 
+  fireEvent.click(screen.getByRole("button", { name: "Expand root" }));
+  fireEvent.click(screen.getByRole("button", { name: "Expand project_hub" }));
   fireEvent.click(screen.getByRole("button", { name: "Collapse project_hub" }));
 
   expect(selected).toEqual([]);
@@ -182,10 +208,12 @@ test("collapsing does not select the canister", () => {
 
 /// A leaf has nothing to collapse, and offering a control that does nothing is
 /// worse than offering none.
-test("a canister with no children has no collapse control", () => {
+test("a canister with no children has no fold control", () => {
   renderTree();
+  expandAll();
 
   expect(screen.queryByRole("button", { name: /Collapse wasm_store/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Expand wasm_store/ })).not.toBeInTheDocument();
 });
 
 /// Finding a match and then not being shown it because an ancestor happened to be
@@ -193,7 +221,6 @@ test("a canister with no children has no collapse control", () => {
 test("filtering reveals matches inside collapsed branches", () => {
   renderTree();
 
-  fireEvent.click(screen.getByRole("button", { name: "Collapse project_hub" }));
   expect(screen.queryByText("project_instance")).not.toBeInTheDocument();
 
   fireEvent.change(screen.getByLabelText("Filter canisters"), {
@@ -207,16 +234,118 @@ test("filtering reveals matches inside collapsed branches", () => {
 /// thing saying how much was folded away.
 test("the count appears only while collapsed", () => {
   renderTree();
+  fireEvent.click(screen.getByRole("button", { name: "Expand root" }));
 
-  expect(screen.queryByText(/· 2 canisters/)).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "Collapse project_hub" }));
   expect(screen.getByText("· 2 canisters")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Expand project_hub" }));
+  expect(screen.queryByText(/· 2 canisters/)).not.toBeInTheDocument();
 });
 
-/// A fleet arrives fully visible: nothing the reader has not touched is hidden.
-test("nothing is collapsed until asked", () => {
+/// The default a large fleet needs: a hundred project canisters is a scroll
+/// before it is navigation, so a fleet arrives folded and the counts say what is
+/// inside. Only the roots are on screen to begin with.
+test("everything with children starts collapsed", () => {
   renderTree();
 
-  expect(screen.getByText("user_shard")).toBeInTheDocument();
-  expect(screen.getAllByText("project_instance")).toHaveLength(2);
+  expect(screen.getByText("root")).toBeInTheDocument();
+  expect(screen.queryByText("user_shard")).not.toBeInTheDocument();
+  expect(screen.queryByText("project_instance")).not.toBeInTheDocument();
+  expect(screen.queryByText("project_hub")).not.toBeInTheDocument();
+  // Root says how much it is holding, so the fold is informative rather than
+  // just empty.
+  expect(screen.getByText("· 6 canisters")).toBeInTheDocument();
+});
+
+// ── Copying a principal ──────────────────────────────────────────────────────
+
+/// The principal is the thing a reader takes *out* of this app — into a dfx
+/// command, a bug report, a log search — and selecting it out of a tree row is
+/// fiddly at best.
+test("every canister offers to copy its principal", async () => {
+  const written: string[] = [];
+  const writeText = vi.fn(async (text: string) => {
+    written.push(text);
+  });
+  vi.stubGlobal("navigator", { clipboard: { writeText } });
+
+  renderTree();
+  fireEvent.click(screen.getByRole("button", { name: "Copy root principal" }));
+
+  // The principal, not the role — which is the whole point of the control.
+  await waitFor(() => expect(written).toEqual(["root-id"]));
+  vi.unstubAllGlobals();
+});
+
+/// Copying an id must not also re-query the canister it belongs to.
+test("copying does not select the canister", async () => {
+  vi.stubGlobal("navigator", { clipboard: { writeText: vi.fn(async () => {}) } });
+  const selected: string[] = [];
+  render(<CanisterTree trees={fleet} selectedPid={null} onSelect={(pid) => selected.push(pid)} />);
+
+  fireEvent.click(screen.getByRole("button", { name: "Copy root principal" }));
+
+  await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Copied"));
+  expect(selected).toEqual([]);
+  vi.unstubAllGlobals();
+});
+
+/// `copyText` has two routes and neither is guaranteed in a webview, so a silent
+/// failure must not be reported as a copy.
+test("a failed copy confirms nothing", async () => {
+  vi.stubGlobal("navigator", {
+    clipboard: {
+      writeText: vi.fn(async () => {
+        throw new Error("refused");
+      }),
+    },
+  });
+  // The textarea fallback is what runs next; make it fail too.
+  const exec = vi.fn(() => false);
+  Object.defineProperty(document, "execCommand", { value: exec, configurable: true });
+
+  renderTree();
+  fireEvent.click(screen.getByRole("button", { name: "Copy root principal" }));
+
+  await waitFor(() => expect(exec).toHaveBeenCalled());
+  expect(screen.getByRole("status")).toHaveTextContent("");
+  vi.unstubAllGlobals();
+});
+
+// ── Collapse across a refresh ────────────────────────────────────────────────
+
+/// Re-collapsing everything on every refresh would fight the reader: they open a
+/// branch, refresh to see new rows, and find it shut again.
+test("an expanded branch survives the tree being re-fetched", () => {
+  const { rerender } = render(
+    <CanisterTree trees={fleet} selectedPid={null} onSelect={() => {}} />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Expand root" }));
+  expect(screen.getByText("project_hub")).toBeInTheDocument();
+
+  // A new forest object with the same canisters, which is what Refresh produces.
+  rerender(
+    <CanisterTree trees={structuredClone(fleet)} selectedPid={null} onSelect={() => {}} />,
+  );
+
+  expect(screen.getByText("project_hub")).toBeInTheDocument();
+});
+
+/// But a canister that genuinely just appeared starts collapsed: nothing should
+/// expand itself under the reader.
+test("a newly-appeared branch arrives collapsed", () => {
+  const { rerender } = render(
+    <CanisterTree trees={fleet} selectedPid={null} onSelect={() => {}} />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Expand root" }));
+
+  const grown = structuredClone(fleet);
+  grown[0].children.push({
+    pid: "new-hub",
+    role: "new_hub",
+    children: [{ pid: "new-child", role: "new_child", children: [] }],
+  });
+  rerender(<CanisterTree trees={grown} selectedPid={null} onSelect={() => {}} />);
+
+  expect(screen.getByText("new_hub")).toBeInTheDocument();
+  expect(screen.queryByText("new_child")).not.toBeInTheDocument();
 });

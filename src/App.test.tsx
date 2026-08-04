@@ -93,6 +93,32 @@ function bodySkeletons(): NodeListOf<Element> {
   return document.querySelectorAll('tbody [data-skeleton="true"]');
 }
 
+/** Reveals a canister in the tree and selects it.
+ *
+ *  The tree collapses by default now — a fleet with a hundred project canisters
+ *  is a scroll before it is navigation — so a child is not on screen until its
+ *  ancestors are open. Expanding every branch is what a reader does to browse,
+ *  and doing it here keeps these tests about what they were about rather than
+ *  about the tree's default state.
+ *
+ *  Repeated, because expanding one level reveals the collapsed nodes beneath it.
+ */
+async function expandFleet() {
+  for (let pass = 0; pass < 6; pass += 1) {
+    const toggles = screen.queryAllByRole("button", { name: /^Expand / });
+    if (toggles.length === 0) return;
+    for (const toggle of toggles) fireEvent.click(toggle);
+  }
+}
+
+/** Selects a canister by role, opening the tree far enough to reach it. */
+async function pickCanister(role: string) {
+  await screen.findByLabelText("Filter canisters");
+  await expandFleet();
+  const rows = await screen.findAllByText(role);
+  fireEvent.click(rows[0]);
+}
+
 function environmentFixture(): Environment {
   return {
     name: "local",
@@ -145,8 +171,7 @@ test("a stale canister's tables never overwrite a newer selection", async () => 
   // Wait for the fleet tree to render, then select A and, before its
   // `listTables` resolves, switch to B — exactly the "click through a
   // fleet tree quickly" scenario the review flagged.
-  await screen.findByText("canister-a");
-  fireEvent.click(screen.getByText("canister-a"));
+  await pickCanister("canister-a");
   fireEvent.click(screen.getByText("canister-b"));
 
   // Resolve out of order: B (the current selection) settles first, then
@@ -315,8 +340,7 @@ test("a stale SQL console run never overwrites a newer canister's result", async
 
   render(<App />);
 
-  await screen.findByText("canister-a");
-  fireEvent.click(screen.getByText("canister-a"));
+  await pickCanister("canister-a");
   // The console lives in the SQL bar, which starts collapsed — open it before
   // driving it. (It stays open across the canister switch below: the bar's
   // expanded state is layout, not selection.)
@@ -498,8 +522,7 @@ test("renders SHOW CONSTRAINTS results from the console", async () => {
 
   render(<App />);
 
-  await screen.findByText("canister-a");
-  fireEvent.click(screen.getByText("canister-a"));
+  await pickCanister("canister-a");
   // The console lives in the SQL bar, which starts collapsed.
   fireEvent.click(screen.getByRole("button", { name: "SQL" }));
   typeSql("SHOW CONSTRAINTS FROM demo_row");
@@ -702,7 +725,7 @@ test("switching projects clears the canister and entity selection", async () => 
   dialogOpen.mockResolvedValue("/Users/me/projects/second");
 
   render(<App />);
-  fireEvent.click(await screen.findByText("canister-a"));
+  await pickCanister("canister-a");
   expect(await screen.findByText("DemoRow")).toBeInTheDocument();
 
   fireEvent.click(await screen.findByRole("button", { name: /first/i }));
@@ -743,7 +766,7 @@ test("switching projects reloads the canister tree even when env and identity na
   dialogOpen.mockResolvedValue("/Users/me/projects/second");
 
   render(<App />);
-  fireEvent.click(await screen.findByText("canister-from-first"));
+  await pickCanister("canister-from-first");
   expect(await screen.findByText("DemoRow")).toBeInTheDocument();
 
   // Selected by `title` (the project selector button's full path), not by
@@ -786,7 +809,7 @@ test("switching projects clears the stale 'default LIMIT was added' note", async
   dialogOpen.mockResolvedValue("/Users/me/projects/second");
 
   render(<App />);
-  fireEvent.click(await screen.findByText("canister-a"));
+  await pickCanister("canister-a");
   // The console lives in the SQL bar, which starts collapsed. It stays open
   // across the project switch below, so the stale note is still on screen to
   // be absent from.
@@ -874,7 +897,7 @@ test("the Tables pane shows a named empty state before a canister is picked, and
   expect(within(tablesPane).getByText("No canister selected")).toBeInTheDocument();
   expect(within(tablesPane).getByText(/select a canister to see its tables/i)).toBeInTheDocument();
 
-  fireEvent.click(await screen.findByText("canister-a"));
+  await pickCanister("canister-a");
 
   expect(within(tablesPane).getByText(/loading tables/i)).toBeInTheDocument();
   expect(within(tablesPane).queryByText("No canister selected")).not.toBeInTheDocument();
@@ -944,7 +967,7 @@ test("a failed rows fetch is anchored inside the Rows pane", async () => {
   });
 
   render(<App />);
-  fireEvent.click(await screen.findByText("canister-a"));
+  await pickCanister("canister-a");
   fireEvent.click(await screen.findByText("DemoRow"));
 
   const rowsPane = await screen.findByRole("region", { name: "Rows" });
@@ -1004,7 +1027,7 @@ test("a pending row fetch shows skeletons at the SELECTED table's column count",
   );
 
   render(<App />);
-  fireEvent.click(await screen.findByText("canister-a"));
+  await pickCanister("canister-a");
   fireEvent.click(await screen.findByText("NarrowRow"));
   expect(await screen.findByText("narrow_a-0")).toBeInTheDocument();
 
@@ -1048,7 +1071,7 @@ test("the first fetch of a session already shows correctly sized skeletons", asy
   vi.mocked(commands.fetchRows).mockReturnValue(first.promise);
 
   render(<App />);
-  fireEvent.click(await screen.findByText("canister-a"));
+  await pickCanister("canister-a");
   fireEvent.click(await screen.findByText("WideRow"));
 
   await waitFor(() => expect(bodySkeletons()).toHaveLength(48));
@@ -1099,7 +1122,7 @@ test("switching to a canister with no tables shows the empty state, not skeleton
   );
 
   render(<App />);
-  fireEvent.click(await screen.findByText("canister-a"));
+  await pickCanister("canister-a");
   fireEvent.click(await screen.findByText("WideRow"));
   expect(await screen.findByText("w1-0")).toBeInTheDocument();
 
@@ -1166,7 +1189,7 @@ test("every max-w-cell element in the app has an @container ancestor", async () 
   });
 
   render(<App />);
-  fireEvent.click(await screen.findByText("canister-a"));
+  await pickCanister("canister-a");
   fireEvent.click(await screen.findByText("DemoRow"));
   expect(await screen.findByText("a-0")).toBeInTheDocument();
 
@@ -1225,7 +1248,7 @@ test("a failed Load more keeps the rows already on screen", async () => {
   );
 
   render(<App />);
-  fireEvent.click(await screen.findByText("canister-a"));
+  await pickCanister("canister-a");
   fireEvent.click(await screen.findByText("DemoRow"));
   expect(await screen.findByText("id-0")).toBeInTheDocument();
 
@@ -1289,7 +1312,7 @@ test("switching tables with a cell expanded clears the expansion", async () => {
   );
 
   render(<App />);
-  fireEvent.click(await screen.findByText("canister-a"));
+  await pickCanister("canister-a");
   fireEvent.click(await screen.findByText("DemoRow"));
 
   fireEvent.click(await screen.findByRole("button", { name: "Expand payload" }));
@@ -1423,7 +1446,7 @@ test("every scroll region can actually shrink: its column-flex ancestors carry m
   // (so Rows and Schema populate) and the SQL bar opened — it starts closed.
   // The schema pane is expanded by default (`schemaCollapsed` is false unless
   // something set it), so no click is needed to reach its scroll region.
-  fireEvent.click(await screen.findByText("canister-a"));
+  await pickCanister("canister-a");
   fireEvent.click(await screen.findByText("DemoRow"));
   await screen.findByText("a-0");
   fireEvent.click(screen.getByRole("button", { name: "SQL" }));
@@ -1486,6 +1509,10 @@ test("a failing capability probe still leaves the fleet navigable", async () => 
 
   render(<App />);
 
+  // Opened first: the tree collapses by default, and this test is about the
+  // fleet surviving a failed probe rather than about its initial fold state.
+  await screen.findByLabelText("Filter canisters");
+  await expandFleet();
   expect(await screen.findByText("project_hub")).toBeInTheDocument();
   // Unmarked, because unknown is not the same as "has nothing".
   expect(screen.queryByText(/no tables/)).not.toBeInTheDocument();
@@ -1516,7 +1543,7 @@ test("exporting writes the rows on screen to the chosen path", async () => {
   dialogSave.mockResolvedValue("/tmp/User.csv");
 
   render(<App />);
-  fireEvent.click(await screen.findByText("hub"));
+  await pickCanister("hub");
   fireEvent.click(await screen.findByText("User"));
   // Counted before the click, because mock calls accumulate across this file.
   const fetchesBeforeExport = vi.mocked(commands.fetchRows).mock.calls.length;
@@ -1556,7 +1583,7 @@ test("cancelling the save dialog writes nothing", async () => {
   const writesBeforeCancel = vi.mocked(commands.writeExport).mock.calls.length;
 
   render(<App />);
-  fireEvent.click(await screen.findByText("hub"));
+  await pickCanister("hub");
   fireEvent.click(await screen.findByText("User"));
   fireEvent.click(await screen.findByRole("button", { name: /export json/i }));
 
@@ -1594,7 +1621,7 @@ test("explaining the row view opens the SQL bar with the plan", async () => {
   });
 
   render(<App />);
-  fireEvent.click(await screen.findByText("hub"));
+  await pickCanister("hub");
   fireEvent.click(await screen.findByText("User"));
   fireEvent.click(await screen.findByRole("button", { name: /explain query/i }));
 
@@ -1630,7 +1657,7 @@ test("a canister without sql-explain surfaces the rejection", async () => {
   });
 
   render(<App />);
-  fireEvent.click(await screen.findByText("hub"));
+  await pickCanister("hub");
   fireEvent.click(await screen.findByText("User"));
   fireEvent.click(await screen.findByRole("button", { name: /explain query/i }));
 
@@ -1743,7 +1770,7 @@ test("a query result takes over the rows pane and names itself", async () => {
   });
 
   render(<App />);
-  fireEvent.click(await screen.findByText("hub"));
+  await pickCanister("hub");
   fireEvent.click(await screen.findByText("User"));
   await screen.findByRole("region", { name: "Rows" });
 
@@ -1784,7 +1811,7 @@ test("selecting a table clears a query result", async () => {
   });
 
   render(<App />);
-  fireEvent.click(await screen.findByText("hub"));
+  await pickCanister("hub");
   fireEvent.click(await screen.findByText("User"));
   fireEvent.click(screen.getByRole("button", { name: "SQL" }));
   typeSql("SELECT * FROM Other ORDER BY x LIMIT 100");
@@ -1919,7 +1946,7 @@ async function selectRelationTable() {
   vi.mocked(commands.runSql).mockClear();
   vi.mocked(commands.describeTable).mockClear();
   render(<App />);
-  fireEvent.click(await screen.findByText("shard"));
+  await pickCanister("shard");
   fireEvent.click(await screen.findByText("ProjectInstance"));
   return screen.findByRole("button", { name: "Follow owner to User" });
 }
@@ -2222,7 +2249,7 @@ test("refresh picks up a row created since the table was selected", async () => 
   refreshableFleet([projectRows("first"), projectRows("first", "second")]);
 
   render(<App />);
-  fireEvent.click(await screen.findByText("shard"));
+  await pickCanister("shard");
   fireEvent.click(await screen.findByText("Project"));
   expect(await screen.findByText("first")).toBeInTheDocument();
   expect(screen.queryByText("second")).not.toBeInTheDocument();
@@ -2238,7 +2265,7 @@ test("refresh keeps the canister and table selected", async () => {
   refreshableFleet([projectRows("first"), projectRows("first", "second")]);
 
   render(<App />);
-  fireEvent.click(await screen.findByText("shard"));
+  await pickCanister("shard");
   fireEvent.click(await screen.findByText("Project"));
   await screen.findByText("first");
 
@@ -2264,7 +2291,7 @@ test("refresh re-reads the fleet so a new canister appears", async () => {
   });
 
   render(<App />);
-  fireEvent.click(await screen.findByText("shard"));
+  await pickCanister("shard");
   expect(screen.queryByText("new-shard")).not.toBeInTheDocument();
 
   fireEvent.click(screen.getByRole("button", { name: /refresh/i }));
@@ -2284,7 +2311,7 @@ test("refresh re-runs only the counts already on screen", async () => {
   vi.mocked(commands.countRows).mockResolvedValue(1);
 
   render(<App />);
-  fireEvent.click(await screen.findByText("shard"));
+  await pickCanister("shard");
   await screen.findByText("Project");
 
   // Nothing counted yet, so a refresh must count nothing.
@@ -2362,7 +2389,7 @@ async function openSweepableConsole() {
   render(<App />);
   // Three canisters share the `shard` role — that is what makes it a pool — so
   // the label repeats and the first member is picked explicitly.
-  fireEvent.click((await screen.findAllByText("shard"))[0]);
+  await pickCanister("shard");
   fireEvent.click(screen.getByRole("button", { name: /^sql$/i }));
   return screen.findByRole("button", { name: /1 of 3/ });
 }
@@ -2374,7 +2401,7 @@ test("a canister in a pool offers a scope control, a lone one does not", async (
   pooledFleet();
   render(<App />);
 
-  fireEvent.click(await screen.findByText("market"));
+  await pickCanister("market");
   fireEvent.click(screen.getByRole("button", { name: /^sql$/i }));
   expect(screen.queryByRole("button", { name: /1 of/ })).not.toBeInTheDocument();
 
