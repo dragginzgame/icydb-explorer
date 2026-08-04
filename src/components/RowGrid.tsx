@@ -24,8 +24,6 @@ export function RowGrid({
   onLoadMore,
   loading = false,
   skeletonColumns,
-  onExport,
-  onExplain,
   relations,
   onFollow,
   fleet,
@@ -46,10 +44,6 @@ export function RowGrid({
    *  with the schema or the first page. See the skeleton branch below for what
    *  is drawn in the header when the names are not known yet. */
   skeletonColumns?: number;
-  /** Save the page currently on screen. Absent means no export control. */
-  onExport?: (format: "csv" | "json") => void;
-  /** Explain the statement this grid is running. Absent means no control. */
-  onExplain?: () => void;
   /** The relations the rendered entity declares, so a cell holding a target's
    *  key can offer to follow it. Absent (or empty) means no cell does — which is
    *  also the right state for a grid showing a statement's output, since the
@@ -130,7 +124,7 @@ export function RowGrid({
   }
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col">
       <div>
         <table className="min-w-full border-collapse text-sm" aria-busy={loading}>
           <thead className="sticky top-0 bg-surface-inset">
@@ -179,46 +173,20 @@ export function RowGrid({
           </tbody>
         </table>
       </div>
-      <div className="flex items-center gap-2">
-        {onExport && (
-          // Exports the page in hand, which is what "save what I am looking at"
-          // means here — not the whole table, since that would be an unbounded
-          // read this app does not issue.
-          <>
-            <button
-              type="button"
-              onClick={() => onExport("csv")}
-              className="rounded-control border border-rule px-2 py-0.5 text-xs text-text-2 hover:bg-surface-2"
-            >
-              Export CSV
-            </button>
-            <button
-              type="button"
-              onClick={() => onExport("json")}
-              className="rounded-control border border-rule px-2 py-0.5 text-xs text-text-2 hover:bg-surface-2"
-            >
-              Export JSON
-            </button>
-          </>
-        )}
-        {onExplain && (
+      {hasMore && (
+        // Full width and padded: it is the one action at the bottom of a long
+        // scroll, and a small button hugging the left edge of a wide pane is easy
+        // to scroll straight past. The padding also keeps it off the last row's
+        // rule, which it previously sat flush against.
+        <div className="p-2">
           <button
             type="button"
-            onClick={onExplain}
-            className="rounded-control border border-rule px-2 py-0.5 text-xs text-text-2 hover:bg-surface-2"
+            onClick={onLoadMore}
+            className="w-full rounded-control border border-rule py-1.5 text-sm text-text-2 hover:bg-surface-2"
           >
-            Explain query
+            Load more
           </button>
-        )}
-      </div>
-      {hasMore && (
-        <button
-          type="button"
-          onClick={onLoadMore}
-          className="self-start rounded-control border border-rule px-3 py-1 text-sm hover:bg-surface-2"
-        >
-          Load more
-        </button>
+        </div>
       )}
     </div>
   );

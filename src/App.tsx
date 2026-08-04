@@ -58,6 +58,50 @@ const DEFAULT_ROW_LIMIT = 100;
 
 const genericError = (explanation: string): AppErrorDto => ({ kind: "unknown", explanation });
 
+/** The actions that apply to the rows on screen.
+ *
+ *  In the pane's header rather than under the grid. Under it they sat below a page
+ *  that can be a hundred rows tall, so "save what I am looking at" was somewhere
+ *  the reader had to scroll to find — and they are about the pane's contents,
+ *  which is what a pane header is for.
+ *
+ *  Rendered only when there is something to act on: an export of nothing is a file
+ *  with a header row, and offering it says there is a page here when there is not.
+ */
+function GridActions({
+  onExport,
+  onExplain,
+}: {
+  onExport?: (format: ExportFormat) => void;
+  onExplain?: () => void;
+}) {
+  const shared =
+    "rounded-control border border-rule px-2 py-0.5 text-xs text-text-2 hover:bg-surface-2";
+
+  return (
+    <span className="flex items-center gap-1.5">
+      {onExport && (
+        <>
+          {/* The page in hand, which is what "save what I am looking at" means —
+              not the whole table, which would be an unbounded read this app does
+              not issue. */}
+          <button type="button" onClick={() => onExport("csv")} className={shared}>
+            Export CSV
+          </button>
+          <button type="button" onClick={() => onExport("json")} className={shared}>
+            Export JSON
+          </button>
+        </>
+      )}
+      {onExplain && (
+        <button type="button" onClick={onExplain} className={shared}>
+          Explain query
+        </button>
+      )}
+    </span>
+  );
+}
+
 /// What a result is *of*, for a trail step's label.
 ///
 /// Every variant this app can reach carries an entity except the three catalogue
@@ -914,6 +958,52 @@ function App() {
     setEntity(null);
   }, []);
 
+  // Where following has been, for the rows pane's header.
+  //
+  // A trail rather than one "back": following relations can land two or three
+  // entities from where you started, and a single undo would strand the reader in
+  // the middle. Each step restores the view it captured rather than re-running it
+  // — the rows are already in hand, and re-querying could show different data
+  // than the one being stepped back to.
+  //
+  // With no trail, a bare result still gets a way out, because a pane that
+  // silently swapped its source would have you reading a statement's output as
+  // though it were the table's contents.
+  //
+  // Lifted out of the JSX because the header now carries this *and* the actions,
+  // and two multi-line expressions in one attribute is where a header stops being
+  // readable.
+  const rowsPaneTrail =
+    trail.length > 0 ? (
+                <span className="flex flex-wrap items-center gap-1 text-xs">
+                  {trail.map((step, index) => (
+                    <span key={`${step.label}-${index}`} className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => backTo(index)}
+                        className="rounded-control px-1 font-mono text-accent hover:bg-surface-2"
+                      >
+                        {step.label}
+                      </button>
+                      <span className="text-text-3">›</span>
+                    </span>
+                  ))}
+                  <span className="font-mono text-text-2">
+                    {sqlResult ? resultLabel(sqlResult) : (entity ?? "rows")}
+                  </span>
+                </span>
+              ) : (
+                sqlResult && (
+                  <button
+                    type="button"
+                    onClick={() => setSqlResult(null)}
+                    className="rounded-control px-1 text-xs text-text-3 hover:bg-surface-2"
+                  >
+                    {entity ? `back to ${entity}` : "clear"}
+                  </button>
+                )
+              );
+
   // A full page (== DEFAULT_ROW_LIMIT rows on the most recently fetched
   // page) means there may be more; there is no COUNT here, so this never
   // claims a total.
@@ -1299,45 +1389,37 @@ function App() {
               title={sweep ? "Merged result" : sqlResult ? "Query result" : "Rows"}
               className="@container"
               trailing={
-                /* A trail rather than one "back": following relations can land
-                   two or three entities from where you started, and a single undo
-                   would strand the reader in the middle. Each step restores the
-                   view it captured rather than re-running it — the rows are
-                   already in hand, and re-querying could show different data than
-                   the one being stepped back to.
+                /* The pane's header carries two things: where following has been,
+                   and what can be done with the rows in front of the reader. Both
+                   are about the pane's contents, which is what a header is for.
 
-                   With no trail, a bare result still gets a way out, because a
-                   pane that silently swapped its source would have you reading a
-                   statement's output as though it were the table's contents. */
-                trail.length > 0 ? (
-                  <span className="flex flex-wrap items-center gap-1 text-xs">
-                    {trail.map((step, index) => (
-                      <span key={`${step.label}-${index}`} className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => backTo(index)}
-                          className="rounded-control px-1 font-mono text-accent hover:bg-surface-2"
-                        >
-                          {step.label}
-                        </button>
-                        <span className="text-text-3">›</span>
-                      </span>
-                    ))}
-                    <span className="font-mono text-text-2">
-                      {sqlResult ? resultLabel(sqlResult) : (entity ?? "rows")}
-                    </span>
-                  </span>
-                ) : (
-                  sqlResult && (
-                    <button
-                      type="button"
-                      onClick={() => setSqlResult(null)}
-                      className="rounded-control px-1 text-xs text-text-3 hover:bg-surface-2"
-                    >
-                      {entity ? `back to ${entity}` : "clear"}
-                    </button>
-                  )
-                )
+                   The actions are gated on there being rows to act on — an export
+                   of nothing is a file with a header row, and offering it claims a
+                   page exists when it does not. */
+                <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  {rowsPaneTrail}
+                  <GridActions
+                    onExport={
+                      sweep
+                        ? undefined
+                        : sqlResult
+                          ? sqlResult.type === "rows"
+                            ? (format: ExportFormat) => void exportResultRows(format)
+                            : undefined
+                          : rows && rows.rows.length > 0
+                            ? (format: ExportFormat) => void exportCurrentRows(format)
+                            : undefined
+                    }
+                    /* Explaining is about the statement this app built for the
+                       selected table, so it belongs to that view alone — not to a
+                       statement the reader wrote, which they can EXPLAIN
+                       themselves, and not to a sweep, which is one statement
+                       against several canisters and has no single plan. */
+                    onExplain={
+                      !sweep && !sqlResult && entity ? () => void explainCurrentRows() : undefined
+                    }
+                  />
+                </span>
               }
             >
               {sweep ? (
@@ -1364,7 +1446,6 @@ function App() {
               ) : sqlResult ? (
                 <SqlResultView
                 result={sqlResult}
-                onExport={exportResultRows}
                 /* Only when this schema is actually about the result on screen.
                    A statement the reader typed has no known schema, and matching
                    another entity's relations by column name would offer to follow
@@ -1394,8 +1475,6 @@ function App() {
                       onLoadMore={loadMore}
                       loading={rowsPending}
                       skeletonColumns={skeletonColumns}
-                      onExport={(format) => void exportCurrentRows(format)}
-                      onExplain={() => void explainCurrentRows()}
                       /* Only the selected table's own grid gets relation
                          affordances. A statement's output need not have this
                          entity's columns at all, so matching relations by column
@@ -1539,14 +1618,12 @@ function SqlBar({
 
 function SqlResultView({
   result,
-  onExport,
   schema,
   onFollow,
   fleet,
   onGoToCanister,
 }: {
   result: ResultDto;
-  onExport?: (format: ExportFormat) => void;
   /** The schema of the entity this result is about, when it is known — which is
    *  the case when the result came from following a relation. Null for a
    *  statement the reader typed, whose columns need not belong to any one
@@ -1564,7 +1641,6 @@ function SqlResultView({
         rows={result}
         hasMore={false}
         onLoadMore={() => {}}
-        onExport={onExport && ((format) => onExport(format))}
         relations={schema?.relations}
         onFollow={schema ? onFollow : undefined}
         fleet={fleet}

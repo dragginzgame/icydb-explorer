@@ -396,23 +396,26 @@ test("the grid does not own a scroll container, so its sticky header can stick",
   expect(header).toHaveClass("top-0");
 });
 
-/// Paging SQL is derived, never typed, so a reader cannot otherwise see which
-/// statement the grid issued. The control is offered only when the caller
-/// supplies a handler.
-test("no explain control unless the caller supplies one", () => {
+/// The grid renders rows and nothing else now: exporting and explaining moved to
+/// the pane's header, where they sit beside the pane title rather than below a page
+/// that can be a hundred rows tall. Their behaviour is covered in `App.test.tsx`,
+/// which is where they are rendered.
+test("the grid itself offers no export or explain controls", () => {
   render(<RowGrid rows={wide} hasMore={false} onLoadMore={() => {}} />);
 
   expect(screen.queryByRole("button", { name: /explain/i })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /export/i })).not.toBeInTheDocument();
 });
 
-test("explaining is user-initiated", () => {
-  const clicks: number[] = [];
-  render(
-    <RowGrid rows={wide} hasMore={false} onLoadMore={() => {}} onExplain={() => clicks.push(1)} />,
-  );
+/// The one action at the bottom of a long scroll, so it spans the pane rather than
+/// hugging the left edge where it is easy to scroll straight past.
+test("Load more spans the pane and is padded off the last row", () => {
+  render(<RowGrid rows={wide} hasMore onLoadMore={() => {}} />);
 
-  fireEvent.click(screen.getByRole("button", { name: /explain query/i }));
-  expect(clicks).toHaveLength(1);
+  const more = screen.getByRole("button", { name: /load more/i });
+  expect(more.className).toMatch(/\bw-full\b/);
+  // Padded by its wrapper, so it does not sit flush against the last row's rule.
+  expect(more.parentElement?.className).toMatch(/\bp-2\b/);
 });
 
 // ── Following a declared relation ────────────────────────────────────────────

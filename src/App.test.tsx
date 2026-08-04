@@ -2519,3 +2519,88 @@ test("changing canister clears the sweep scope", async () => {
   // Back on a pooled canister, and narrowed again rather than still sweeping.
   expect(await screen.findByRole("button", { name: /1 of 3/ })).toBeInTheDocument();
 });
+
+// ── Where the row actions live, and when ─────────────────────────────────────
+
+/// In the pane's header rather than under the grid: under it they sat below a page
+/// that can be a hundred rows tall, so "save what I am looking at" was somewhere
+/// the reader had to scroll to find.
+test("the row actions sit in the rows pane header", async () => {
+  refreshableFleet([projectRows("first")]);
+
+  render(<App />);
+  await pickCanister("shard");
+  fireEvent.click(await screen.findByText("Project"));
+  await screen.findByText("first");
+
+  const exportCsv = screen.getByRole("button", { name: "Export CSV" });
+  // Not inside the grid — which is what "under the rows" meant before.
+  expect(exportCsv.closest("table")).toBeNull();
+
+  // And ahead of it in the document, which is what "in the header" means. The
+  // schema pane renders a table too, so the grid is located within the rows pane
+  // rather than by role alone.
+  const grid = within(screen.getByRole("region", { name: "Rows" })).getByRole("table");
+  expect(
+    exportCsv.compareDocumentPosition(grid) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Explain query" })).toBeInTheDocument();
+});
+
+/// An export of nothing is a file with a header row, and offering it claims a page
+/// exists when it does not.
+test("no export control before a table is selected", async () => {
+  refreshableFleet([projectRows("first")]);
+
+  render(<App />);
+  await pickCanister("shard");
+
+  expect(screen.queryByRole("button", { name: /^Export / })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Explain query" })).not.toBeInTheDocument();
+});
+
+/// Explaining is about the statement *this app* built for the selected table. A
+/// statement the reader wrote is theirs to EXPLAIN, and offering to explain it
+/// would explain the wrong thing.
+test("a query result offers export but not explain", async () => {
+  refreshableFleet([projectRows("first")]);
+  vi.mocked(commands.runSql).mockResolvedValue({
+    result: rowsFixture("Project", ["name"], 1),
+    limitAppended: false,
+    orderByMissing: false,
+  });
+
+  render(<App />);
+  await pickCanister("shard");
+  fireEvent.click(await screen.findByText("Project"));
+  await screen.findByText("first");
+
+  fireEvent.click(screen.getByRole("button", { name: /^sql$/i }));
+  typeSql("SELECT * FROM Project ORDER BY name LIMIT 100");
+  fireEvent.click(screen.getByRole("button", { name: /^run/i }));
+  await screen.findByText("name-0");
+
+  expect(screen.getByRole("button", { name: "Export CSV" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Explain query" })).not.toBeInTheDocument();
+});
+
+/// A sweep is one statement against several canisters and has no single plan, and
+/// its grid is a merge rather than a page of one table's rows.
+test("a merged sweep offers neither", async () => {
+  pooledFleet();
+  vi.mocked(commands.runSqlMany).mockResolvedValue({
+    outcomes: [sweepPage("s1", "a")],
+    limitAppended: false,
+    orderByMissing: false,
+  });
+
+  fireEvent.click(await openSweepableConsole());
+  typeSql("SELECT * FROM User ORDER BY id LIMIT 100");
+  fireEvent.click(screen.getByRole("button", { name: /^run/i }));
+  // The summary, rather than a cell: a sweep labels its rows by role, and every
+  // member of this pool shares one.
+  await screen.findByText(/1 row from/);
+
+  expect(screen.queryByRole("button", { name: /^Export / })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Explain query" })).not.toBeInTheDocument();
+});
