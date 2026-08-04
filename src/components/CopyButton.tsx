@@ -43,7 +43,13 @@ export function CopyButton({
       }}
       aria-label={label}
       title={copied ? "Copied" : label}
-      className={`shrink-0 rounded-row text-xs text-text-3 hover:bg-surface-2 hover:text-text-1 ${className}`}
+      // `relative` is load-bearing, not decoration. The `sr-only` span below is
+      // `position: absolute`, so without a positioned ancestor here it resolves
+      // against whatever distant one it finds and lands at an arbitrary offset —
+      // measured escaping to `bottom: 1000` in a 900px viewport, which stretched the
+      // document's scroll extent and gave the app a second scrollbar. `clip` hides
+      // it from paint but not from scrollable overflow.
+      className={`relative shrink-0 rounded-row text-xs text-text-3 hover:bg-surface-2 hover:text-text-1 ${className}`}
     >
       <span aria-hidden="true">{copied ? "✓" : "⧉"}</span>
       {/* Announced, not only drawn: the glyph swap says nothing to a screen

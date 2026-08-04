@@ -80,3 +80,21 @@ test("copying twice keeps the confirmation up", async () => {
   expect(screen.getByRole("status")).toHaveTextContent("Copied");
   vi.useRealTimers();
 });
+
+/// The button must establish a containing block for the `sr-only` status span,
+/// which is `position: absolute`. Without one it resolves against whatever distant
+/// positioned ancestor it finds — measured escaping to `bottom: 1000` in a 900px
+/// viewport, which stretched the document's scroll extent and gave the app a second
+/// scrollbar on top of its own. `clip` hides that span from paint but not from
+/// scrollable overflow.
+///
+/// A class assertion, because jsdom computes no layout and cannot see the escape.
+/// The measurement is in the component's comment; this is the tripwire.
+test("the button positions its own status span", () => {
+  render(<CopyButton value="x" label="Copy id" />);
+
+  const button = screen.getByRole("button", { name: "Copy id" });
+  expect(button.className).toMatch(/\brelative\b/);
+  // And the span that needs it is really there and really absolute-positioned.
+  expect(button.querySelector(".sr-only")).not.toBeNull();
+});

@@ -13,17 +13,21 @@ import { ProjectSelector } from "./ProjectSelector";
 export const ICYDB_VERSION = "0.215.7";
 
 /** The edits that turn the SQL surface on, verbatim from the change that made a
- *  real fleet readable. Offered to copy rather than applied: see the card. */
-const ENABLE_SNIPPET = `// build.rs
-icydb_model::build_with_options!(
+ *  real fleet readable.
+ *
+ *  Two blocks and two copy buttons, because they are two files: one pasted into the
+ *  other does nothing, and a single block invites copying the whole thing into
+ *  whichever file is open. Both are needed — the build options alone leave the
+ *  generated glue behind a `#[cfg]` that is off, and the feature alone leaves
+ *  nothing for it to compile. */
+const BUILD_RS = `icydb_model::build_with_options!(
     "<your>::schema::path::Canister",
     icydb_model::build::BuildOptions::default()
         .with_sql_readonly_enabled(true)
         .with_sql_introspection_enabled(true)
-);
+);`;
 
-# Cargo.toml — the canister crate's own features, not icydb's
-[features]
+const CARGO_TOML = `[features]
 default = ["sql"]
 sql = ["icydb/sql-explain"]`;
 
@@ -156,12 +160,16 @@ export function Welcome({
   busy: boolean;
   onSelect: (path: string) => void;
 }) {
+  // A block scroll container centring with `mx-auto`, not a flex one with
+  // `justify-center`. As a flex container this stretched its single child to the
+  // container's height — 851px against 1600px of content — so the cards overflowed
+  // the child's box and its `padding-bottom` sat 800px above where they ended,
+  // doing nothing at all. Two attempts at "add some padding" failed for that
+  // reason before measuring found it. In normal flow the child's height is its
+  // content, so the padding is part of the scrollable overflow.
   return (
-    /* `pb-16` rather than a symmetric `p-8`: the last requirement card ended flush
-       against the bottom of the window, which reads as content cut off rather than
-       content ended. */
-    <div className="flex min-h-0 flex-1 justify-center overflow-auto p-8 pb-16">
-      <div className="w-full max-w-2xl">
+    <div className="min-h-0 flex-1 overflow-auto p-8">
+      <div className="mx-auto w-full max-w-2xl pb-8">
         <div className="flex items-center gap-3">
           <img src={icydbGlyph} alt="" aria-hidden="true" className="size-10 shrink-0" />
           <div>
@@ -249,11 +257,33 @@ export function Welcome({
  */
 function Snippet() {
   return (
-    <span className="mt-2 flex items-start gap-2">
-      <pre className="min-w-0 flex-1 overflow-x-auto rounded-control border border-rule bg-surface-0 p-2 font-mono text-xs leading-relaxed text-text-2">
-        {ENABLE_SNIPPET}
+    <span className="mt-3 flex flex-col gap-3">
+      <Block file="build.rs" code={BUILD_RS} />
+      <Block
+        file="Cargo.toml"
+        note="the canister crate's own features, not icydb's"
+        code={CARGO_TOML}
+      />
+    </span>
+  );
+}
+
+/** One file's worth of change, named and separately copyable. */
+function Block({ file, note, code }: { file: string; note?: string; code: string }) {
+  return (
+    <span className="flex flex-col gap-1">
+      <span className="flex items-baseline gap-2">
+        <code className="font-mono text-xs font-semibold text-text-1">{file}</code>
+        {note && <span className="text-xs text-text-3">— {note}</span>}
+        <CopyButton
+          value={code}
+          label={`Copy the ${file} change`}
+          className="ml-auto px-1 py-0.5"
+        />
+      </span>
+      <pre className="overflow-x-auto rounded-control border border-rule bg-surface-0 p-2 font-mono text-xs leading-relaxed text-text-2">
+        {code}
       </pre>
-      <CopyButton value={ENABLE_SNIPPET} label="Copy the changes needed" className="px-1 py-0.5" />
     </span>
   );
 }

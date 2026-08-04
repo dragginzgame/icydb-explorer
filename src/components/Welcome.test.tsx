@@ -41,7 +41,12 @@ test("the version requirement does not overclaim in either direction", () => {
 /// The app cannot enable the surface — that means editing a source tree and
 /// upgrading a canister, and this app makes no update calls at all. What it can do
 /// is hand over the exact lines.
-test("the exact changes are offered to copy", async () => {
+/// Two files, so two blocks and two buttons: one pasted into the other does
+/// nothing, and a single block invites copying the whole thing into whichever file
+/// happens to be open. Both are still needed — the build options alone leave the
+/// generated glue behind a `#[cfg]` that is off, and the feature alone leaves
+/// nothing for it to compile.
+test("each file's change is offered separately", async () => {
   const written: string[] = [];
   vi.stubGlobal("navigator", {
     clipboard: {
@@ -52,24 +57,51 @@ test("the exact changes are offered to copy", async () => {
   });
   render(<Welcome {...props} />);
 
-  fireEvent.click(screen.getByRole("button", { name: "Copy the changes needed" }));
-
+  fireEvent.click(screen.getByRole("button", { name: "Copy the build.rs change" }));
   await waitFor(() => expect(written).toHaveLength(1));
-  // Both halves, because either alone leaves the surface off: the build options and
-  // the canister crate's own `sql` feature.
   expect(written[0]).toContain("with_sql_readonly_enabled(true)");
   expect(written[0]).toContain("with_sql_introspection_enabled(true)");
-  expect(written[0]).toContain('sql = ["icydb/sql-explain"]');
-  expect(written[0]).toContain('default = ["sql"]');
+  // Not the other file's lines mixed in.
+  expect(written[0]).not.toContain("[features]");
+
+  fireEvent.click(screen.getByRole("button", { name: "Copy the Cargo.toml change" }));
+  await waitFor(() => expect(written).toHaveLength(2));
+  expect(written[1]).toContain('default = ["sql"]');
+  expect(written[1]).toContain('sql = ["icydb/sql-explain"]');
+  expect(written[1]).not.toContain("build_with_options");
+
   vi.unstubAllGlobals();
 });
 
-/// The last card used to sit flush against the bottom of the window, which reads as
-/// content cut off rather than content ended.
+/// Each block says which file it belongs in. A snippet you cannot place is a
+/// snippet you have to guess about.
+test("each block names its file", () => {
+  render(<Welcome {...props} />);
+
+  expect(screen.getByText("build.rs")).toBeInTheDocument();
+  expect(screen.getByText("Cargo.toml")).toBeInTheDocument();
+});
+
+/// The last card sat flush against the bottom of the window, which reads as content
+/// cut off rather than content ended — and two attempts to fix it by adding padding
+/// changed nothing.
+///
+/// The reason was the scroll container being `display: flex`: its single child was
+/// stretched to the container's height, so the cards overflowed that child's box and
+/// its `padding-bottom` sat hundreds of pixels above where they actually ended. So
+/// what is pinned here is the mechanism — a *block* scroller, and the space on the
+/// in-flow child — rather than the presence of a padding class that was there
+/// throughout and did nothing.
 test("the page leaves room below its last card", () => {
   const { container } = render(<Welcome {...props} />);
 
-  const scroller = container.firstElementChild;
-  expect(scroller?.className).toMatch(/overflow-auto/);
-  expect(scroller?.className).toMatch(/\bpb-16\b/);
+  const scroller = container.firstElementChild!;
+  expect(scroller.className).toMatch(/overflow-auto/);
+  // Not a flex container: that is what stretched the child and swallowed the space.
+  expect(scroller.className).not.toMatch(/(?:^|\s)flex(?:\s|$)/);
+
+  // The space is on the child, which is in normal flow and so has its own height.
+  const content = scroller.firstElementChild!;
+  expect(content.className).toMatch(/\bpb-\d/);
+  expect(content.className).toMatch(/\bmx-auto\b/);
 });
