@@ -28,6 +28,61 @@ React/Vite/Tailwind  ──tauri invoke──▶  Rust backend  ──ic-agent�
   never even attempts them — see [Read-only, and where that guarantee
   actually lives](#read-only-and-where-that-guarantee-actually-lives).
 
+## Platforms
+
+**macOS and Linux.** Both are built and released. macOS is the platform this app
+is developed on and the only one whose behaviour has been exercised by hand.
+
+**Windows: use WSL.** There is no native Windows story, because icp-cli does not
+run on Windows — without it there is no `.icp` project layout to read and no
+`icp identity export` to obtain a signing identity from. Run the **Linux** build
+inside WSL2 instead, where this app is an ordinary Linux app talking to an
+ordinary Linux `icp`.
+
+Four things to know for that setup:
+
+- **WSLg is required** for any GUI application, so Windows 11, or Windows 10 with
+  a recent enough update.
+- **Prefer the `.deb` over the `.AppImage`.** AppImage needs FUSE, which WSL
+  distributions frequently lack; installing the `.deb` lets apt resolve
+  webkit2gtk properly. (`--appimage-extract-and-run` also works if you would
+  rather not install anything.)
+- **Use a `pem` identity rather than a `keyring` one.** Keyring identities are
+  obtained through `icp identity export`, which needs a D-Bus secret service that
+  WSL usually has no session for. It fails with an explanation rather than
+  hanging, but it fails.
+- **Don't run the Windows build against `\\wsl$\...`.** Even setting icp-cli
+  aside, `HOME` is unset on Windows, so the project-root walk loses its home
+  bound and a `.icp` in your Windows user directory would be adopted for every
+  folder beneath it. See `discovery::root::resolve_root`.
+
+Only `x86_64` Linux is built. ARM Windows' WSL would need an `aarch64` build,
+which this project does not currently produce.
+
+### Where identities are found
+
+In order, first match winning:
+
+1. The project's own `.icp/cli-home/identity/`, when present.
+2. `$ICP_HOME/identity`, if `ICP_HOME` is set. This is icp-cli's own override, so
+   it is honoured on every platform and outranks the defaults below.
+3. The user-level store icp-cli keeps outside any project:
+   - macOS: `~/Library/Application Support/org.dfinity.icp-cli/identity`
+   - Linux: `$XDG_DATA_HOME/icp-cli/identity`, else
+     `~/.local/share/icp-cli/identity`
+
+Both a project-local and a user-level store are used when both exist — a canic
+project typically declares controllers that live in the user-level store while
+its project-local store holds only a local development identity.
+
+Only the macOS path has been verified against a real installation. The Linux
+locations are derived from it: `icp` 1.2.0 carries `org.dfinity` and `icp-cli` as
+separate strings with no joined literal, which means the reverse-DNS directory
+name is assembled at run time — the `directories` crate's behaviour, which uses
+only the application component on Linux. Both spellings are tried, and a
+candidate that does not exist costs one directory check. If your store is
+somewhere else entirely, set `ICP_HOME` and this app will follow it.
+
 ## Security
 
 This app reads private keys. That is not a side effect of how it is built — it

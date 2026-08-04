@@ -309,7 +309,11 @@ fn identity_stores(icp_dir: &Path) -> Vec<PathBuf> {
     if identity_store_present(&project_local) {
         stores.push(project_local);
     }
-    if let Some(user_level) = user_level_identity_dir() {
+    // Every candidate that is actually there, not just the first: a machine can
+    // hold both an `ICP_HOME` store and a default one, and hiding the second
+    // behind the first is the same mistake this function's doc comment describes
+    // for the project-local store.
+    for user_level in user_level_identity_dirs() {
         if identity_store_present(&user_level) && !stores.contains(&user_level) {
             stores.push(user_level);
         }
@@ -336,20 +340,29 @@ fn read_default_identity(icp_dir: &Path) -> Result<Option<IdentityRef>, AppError
 /// definitively whether *the* real store this machine's `icp` CLI uses
 /// exists, not just "no project-local override was found".
 pub fn user_level_identity_store() -> Result<PathBuf, AppError> {
-    let dir = user_level_identity_dir().ok_or_else(|| {
-        AppError::Io(
+    let candidates = user_level_identity_dirs();
+    if candidates.is_empty() {
+        return Err(AppError::Io(
             "no user-level icp identity store location is known on this platform".to_string(),
-        )
-    })?;
-    if identity_store_present(&dir) {
-        Ok(dir)
-    } else {
-        Err(AppError::Io(format!(
-            "no icp identity store found at {} (missing identity_list.json or \
-             identity_defaults.json)",
-            dir.display()
-        )))
+        ));
     }
+    if let Some(found) = candidates.iter().find(|dir| identity_store_present(dir)) {
+        return Ok(found.clone());
+    }
+    // Every candidate, not just the first. This error is read by someone working
+    // out why their identities are invisible, and "not at A" is a much weaker
+    // answer than "not at A, B or C" when the whole question is which path this
+    // app should have been looking at.
+    Err(AppError::Io(format!(
+        "no icp identity store found (missing identity_list.json or \
+         identity_defaults.json). Looked in: {}. Set ICP_HOME if icp keeps its \
+         store elsewhere.",
+        candidates
+            .iter()
+            .map(|dir| dir.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )))
 }
 
 /// Reads just the configured default identity's *name* out of
@@ -433,25 +446,118 @@ fn identity_store_present(identity_dir: &Path) -> bool {
 /// the path actually exercised for it). `IdentityRef` can represent a
 /// keyring identity directly now (see `types::IdentityRef`), so this no
 /// longer needs to be treated as "no identity to load".
-#[cfg(target_os = "macos")]
-fn user_level_identity_dir() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")?;
-    Some(
-        PathBuf::from(home)
-            .join("Library")
-            .join("Application Support")
-            .join("org.dfinity.icp-cli")
-            .join("identity"),
+/// Which layout of user-level store to look for.
+///
+/// A parameter rather than a `cfg!` inside the logic, for the same reason
+/// `resolve_root` takes `home`: it makes every platform's candidate list
+/// testable from any host. That matters more than usual here — the Linux
+/// layout is the one that needed adding, and it cannot be exercised on the
+/// macOS machine where it was written.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Platform {
+    MacOs,
+    /// Linux and the other unices, which follow the XDG base directory spec.
+    Xdg,
+    /// Everywhere else. icp-cli does not run on Windows, so there is no store
+    /// to find rather than a store whose path is unknown.
+    Unsupported,
+}
+
+const fn current_platform() -> Platform {
+    if cfg!(target_os = "macos") {
+        Platform::MacOs
+    } else if cfg!(unix) {
+        Platform::Xdg
+    } else {
+        Platform::Unsupported
+    }
+}
+
+/// Every place icp-cli might keep its user-level identity store, most likely
+/// first.
+///
+/// A list of candidates rather than one derived path, because only the macOS
+/// layout could be verified against a real installation. The caller filters by
+/// `identity_store_present`, so a candidate that is wrong for a given machine
+/// costs one `is_dir()` and finds nothing — precisely what this returned on
+/// every non-macOS platform before. That asymmetry is the whole argument for
+/// guessing here when guessing was rejected for the original single path: a
+/// wrong candidate cannot be worse than the empty list it replaces, and a right
+/// one makes Linux and WSL usable.
+fn user_level_identity_dirs() -> Vec<PathBuf> {
+    identity_dir_candidates(
+        current_platform(),
+        std::env::var_os("ICP_HOME").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+        std::env::var_os("XDG_DATA_HOME").as_deref(),
     )
 }
 
-#[cfg(not(target_os = "macos"))]
-fn user_level_identity_dir() -> Option<PathBuf> {
-    // icp-cli's user-level store location on Linux/Windows was not
-    // available to verify against a real installation; rather than guess
-    // at a path, this app simply finds no user-level identity there. A
-    // project-local `cli-home/identity/` still works on every platform.
-    None
+/// The pure half of `user_level_identity_dirs`, with the environment supplied.
+fn identity_dir_candidates(
+    platform: Platform,
+    icp_home: Option<&std::ffi::OsStr>,
+    home: Option<&std::ffi::OsStr>,
+    xdg_data_home: Option<&std::ffi::OsStr>,
+) -> Vec<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    // `ICP_HOME` first, on every platform. It is icp-cli's own override — the
+    // name is compiled into the 1.2.0 binary, and pointing it at an empty
+    // directory was observed to hide this machine's real `default` identity from
+    // `icp identity list` while creating `identity/` beneath the override.
+    // Someone who has set it means it, so it outranks the derived defaults.
+    if let Some(icp_home) = icp_home.filter(|value| !value.is_empty()) {
+        candidates.push(PathBuf::from(icp_home).join("identity"));
+    }
+
+    // Both spellings of the directory name, because the two plausible readings of
+    // the observed macOS path disagree about Linux and the difference is not
+    // visible from macOS. `icp` 1.2.0 carries `org.dfinity` and `icp-cli` as
+    // separate strings with no joined literal, which says the reverse-DNS name is
+    // assembled at run time — the `directories` crate's behaviour, and it uses
+    // only the application component on Linux (`icp-cli`). The other spelling is
+    // kept as a fallback rather than argued away.
+    //
+    // The order is per-platform, and deliberately so: whichever name has actually
+    // been observed on a platform must be tried there first. Sharing one order
+    // across both put the unverified spelling ahead of the confirmed macOS store,
+    // so a stray `~/Library/Application Support/icp-cli/identity` would have
+    // shadowed the real one. Caught by `macos_looks_under_application_support`.
+    const XDG_NAMES: [&str; 2] = ["icp-cli", "org.dfinity.icp-cli"];
+    const MACOS_NAMES: [&str; 2] = ["org.dfinity.icp-cli", "icp-cli"];
+
+    match platform {
+        // Verified against a real installation on this machine.
+        Platform::MacOs => {
+            if let Some(home) = home.filter(|value| !value.is_empty()) {
+                let support = PathBuf::from(home).join("Library").join("Application Support");
+                candidates
+                    .extend(MACOS_NAMES.iter().map(|name| support.join(name).join("identity")));
+            }
+        }
+        Platform::Xdg => {
+            // `$XDG_DATA_HOME` when set, else the spec's `$HOME/.local/share`
+            // default. Honouring the variable matters on the distros that set it
+            // to something other than the default, and costs one lookup.
+            let mut roots: Vec<PathBuf> = Vec::new();
+            if let Some(xdg) = xdg_data_home.filter(|value| !value.is_empty()) {
+                roots.push(PathBuf::from(xdg));
+            }
+            if let Some(home) = home.filter(|value| !value.is_empty()) {
+                roots.push(PathBuf::from(home).join(".local").join("share"));
+            }
+            for root in roots {
+                candidates.extend(XDG_NAMES.iter().map(|name| root.join(name).join("identity")));
+            }
+        }
+        Platform::Unsupported => {}
+    }
+
+    // `ICP_HOME` can name a directory a derived candidate also names, and a
+    // duplicate would make `identity_stores` report the same store twice.
+    candidates.dedup();
+    candidates
 }
 
 /// Builds one `IdentityRef` from its `identity_list.json` entry. Used by
@@ -571,6 +677,134 @@ fn read_artifacts(icp_dir: &Path, env_name: &str) -> Result<Vec<CanisterArtifact
 
 #[cfg(test)]
 mod tests {
+
+    use super::{identity_dir_candidates, Platform};
+    use std::ffi::OsStr;
+
+    fn os(value: &str) -> &OsStr {
+        OsStr::new(value)
+    }
+
+    /// The candidate this app previously had no way to produce, and the reason
+    /// Linux and WSL users saw "no identities were found" while `icp identity
+    /// list` showed several. `directories` uses only the application component
+    /// on Linux, so this is the likely one — hence first.
+    #[test]
+    fn linux_looks_under_local_share() {
+        let found = identity_dir_candidates(Platform::Xdg, None, Some(os("/home/me")), None);
+
+        assert_eq!(found.first().unwrap(), Path::new("/home/me/.local/share/icp-cli/identity"));
+        assert!(
+            found.contains(&PathBuf::from("/home/me/.local/share/org.dfinity.icp-cli/identity")),
+            "the reverse-DNS spelling should stay a candidate, not be argued away: {found:?}"
+        );
+    }
+
+    /// A distro that moves the data directory must be followed, and must win over
+    /// the spec's default rather than merely be appended after it.
+    #[test]
+    fn xdg_data_home_outranks_the_default() {
+        let found = identity_dir_candidates(
+            Platform::Xdg,
+            None,
+            Some(os("/home/me")),
+            Some(os("/custom/data")),
+        );
+
+        assert_eq!(found.first().unwrap(), Path::new("/custom/data/icp-cli/identity"));
+        assert!(
+            found.contains(&PathBuf::from("/home/me/.local/share/icp-cli/identity")),
+            "the default should remain a fallback: {found:?}"
+        );
+    }
+
+    /// Verified against this machine's real installation.
+    #[test]
+    fn macos_looks_under_application_support() {
+        let found = identity_dir_candidates(Platform::MacOs, None, Some(os("/Users/me")), None);
+
+        assert_eq!(
+            found.first().unwrap(),
+            Path::new("/Users/me/Library/Application Support/org.dfinity.icp-cli/identity")
+        );
+    }
+
+    /// `ICP_HOME` is icp-cli's own override, so it outranks every derived path on
+    /// every platform — including the one that was verified.
+    #[test]
+    fn icp_home_wins_over_the_platform_default() {
+        for platform in [Platform::MacOs, Platform::Xdg, Platform::Unsupported] {
+            let found = identity_dir_candidates(
+                platform,
+                Some(os("/opt/icp")),
+                Some(os("/home/me")),
+                None,
+            );
+            assert_eq!(
+                found.first().unwrap(),
+                Path::new("/opt/icp/identity"),
+                "ICP_HOME should lead on {platform:?}"
+            );
+        }
+    }
+
+    /// An unset variable and a variable set to nothing are the same intent, and
+    /// the empty one must not become a candidate at the filesystem root. Left
+    /// unguarded, `PathBuf::from("").join("identity")` is the relative path
+    /// `identity`, which would be resolved against the process's working
+    /// directory — a real store belonging to nobody.
+    #[test]
+    fn empty_environment_variables_are_ignored() {
+        let found =
+            identity_dir_candidates(Platform::Xdg, Some(os("")), Some(os("/home/me")), Some(os("")));
+
+        assert!(
+            !found.iter().any(|dir| dir.is_relative()),
+            "no candidate should be relative: {found:?}"
+        );
+        assert_eq!(found.first().unwrap(), Path::new("/home/me/.local/share/icp-cli/identity"));
+    }
+
+    /// With nothing to go on there is nothing to offer, and the caller must get an
+    /// empty list rather than a path built from missing pieces.
+    #[test]
+    fn no_environment_at_all_yields_no_candidates() {
+        assert!(identity_dir_candidates(Platform::Xdg, None, None, None).is_empty());
+        assert!(identity_dir_candidates(Platform::MacOs, None, None, None).is_empty());
+    }
+
+    /// icp-cli does not run on Windows, so there is no store to look for. The
+    /// override is still honoured — someone pointing it somewhere explicit is
+    /// making a claim this code has no business overruling.
+    #[test]
+    fn an_unsupported_platform_offers_only_the_explicit_override() {
+        assert!(identity_dir_candidates(Platform::Unsupported, None, Some(os("/home/me")), None)
+            .is_empty());
+
+        assert_eq!(
+            identity_dir_candidates(Platform::Unsupported, Some(os("/opt/icp")), None, None),
+            vec![PathBuf::from("/opt/icp/identity")]
+        );
+    }
+
+    /// `ICP_HOME` set to the platform default would otherwise appear twice, and
+    /// `identity_stores` would report one store as two.
+    #[test]
+    fn a_duplicate_candidate_is_collapsed() {
+        let found = identity_dir_candidates(
+            Platform::Xdg,
+            Some(os("/home/me/.local/share/icp-cli")),
+            Some(os("/home/me")),
+            None,
+        );
+
+        let target = PathBuf::from("/home/me/.local/share/icp-cli/identity");
+        assert_eq!(
+            found.iter().filter(|dir| **dir == target).count(),
+            1,
+            "the same store should appear once: {found:?}"
+        );
+    }
     use super::*;
     use std::path::Path;
 

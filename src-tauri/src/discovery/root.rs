@@ -14,14 +14,18 @@ use std::path::{Path, PathBuf};
 /// stored directly at `$HOME` is still found when picked exactly.
 ///
 /// The home bound only applies where a home directory is discoverable in the
-/// first place. The caller (`commands::select_project`) currently determines
-/// it by reading `HOME`, which is normally unset on Windows — there, `home`
-/// is `None` and this function walks all the way to the filesystem root, so
-/// a `.icp` at, say, `C:\Users\me` would be adopted for every folder beneath
-/// it. See that caller and `discovery::icp_dir` for why this isn't worth
-/// fixing by reading `%USERPROFILE%` instead: the identity store lookup has
-/// the same `HOME`-only assumption, so Windows is unsupported in practice
-/// regardless.
+/// first place. The caller (`commands::select_project`) determines it by reading
+/// `HOME`, which is normally unset on Windows — there, `home` is `None` and this
+/// function walks all the way to the filesystem root, so a `.icp` at, say,
+/// `C:\Users\me` would be adopted for every folder beneath it.
+///
+/// That is not worth fixing by reading `%USERPROFILE%`, and the reason is not the
+/// one this comment used to give. It is not that the identity lookup shares the
+/// assumption — `icp_dir::identity_dir_candidates` no longer reads `HOME` on
+/// Windows at all. It is that **icp-cli does not run on Windows**, so there is no
+/// `.icp` project for this walk to find and no `icp` binary to export an identity
+/// from. A Windows user's route is WSL, where this code runs as the Linux build
+/// with `HOME` set normally and none of the above applies.
 ///
 /// `home` is a parameter rather than an environment read so this function
 /// is testable against fixture directories with no global state.
