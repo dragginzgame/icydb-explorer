@@ -54,7 +54,9 @@ test("expanding a cell opens a sub-row spanning every column", () => {
 
   const spanning = document.querySelector("td[colspan]");
   expect(spanning).not.toBeNull();
-  expect(spanning?.getAttribute("colspan")).toBe("2");
+  // Two data columns plus the ordinal: the sub-row has to span the whole grid, or
+  // the last column escapes the expanded panel.
+  expect(spanning?.getAttribute("colspan")).toBe("3");
 });
 
 test("collapsing removes the sub-row", () => {
@@ -155,7 +157,12 @@ test("loading renders skeleton rows at the known column count", () => {
   const skeletonRows = [...document.querySelectorAll("tbody tr")];
   expect(skeletonRows.length).toBeGreaterThan(1);
   for (const row of skeletonRows) {
-    expect(row.querySelectorAll('[data-skeleton="true"]')).toHaveLength(wide.columns.length);
+    // `+ 1` for the ordinal column, which the skeleton carries too — a header
+    // that appeared only with the data would shift every column right at the
+    // moment this table exists to keep still.
+    expect(row.querySelectorAll('[data-skeleton="true"]')).toHaveLength(
+      wide.columns.length + 1,
+    );
   }
   expect(screen.queryByText(/no rows/i)).toBeNull();
 });
@@ -588,7 +595,9 @@ test("cells without a relation gain no wrapper", () => {
     />,
   );
 
-  const cells = screen.getAllByRole("cell");
+  // `slice(1)`: the first cell of every row is the ordinal, which is the grid's
+  // own annotation rather than one of the entity's columns.
+  const cells = screen.getAllByRole("cell").slice(1);
   const follow = screen.getByRole("button", { name: "Follow owner to User" });
 
   // Structure, not class strings: several value kinds render their own flex
@@ -757,4 +766,100 @@ test("a relation arrow and a fleet chip coexist on one cell", () => {
 
   expect(screen.getByRole("button", { name: "Follow owner to User" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Go to project_ledger" })).toBeInTheDocument();
+});
+
+// ── The ordinal column ───────────────────────────────────────────────────────
+
+const threeRows = {
+  entity: "User",
+  columns: ["handle"],
+  rows: [
+    [{ kind: "text", display: "juno" }],
+    [{ kind: "text", display: "remco" }],
+    [{ kind: "text", display: "kit" }],
+  ],
+  rowCount: 3,
+  nextCursor: null,
+};
+
+test("rows are numbered from one, in order", () => {
+  render(<RowGrid rows={threeRows} hasMore={false} onLoadMore={() => {}} />);
+
+  const firstCells = [...document.querySelectorAll("tbody tr")].map(
+    (row) => row.querySelector("td")?.textContent,
+  );
+  expect(firstCells).toEqual(["1", "2", "3"]);
+});
+
+/// A column head that reads like a column name invites being mistaken for one, so
+/// this is `#` — and it says what it counts on hover, because "position on screen"
+/// and "position in the table" diverge the moment a statement carries an OFFSET.
+test("the ordinal column is marked as the grid's own, not a column of the table", () => {
+  render(<RowGrid rows={threeRows} hasMore={false} onLoadMore={() => {}} />);
+
+  const heads = [...document.querySelectorAll("thead th")].map((th) => th.textContent);
+  expect(heads).toEqual(["#", "handle"]);
+  expect(screen.getByTitle(/Not a row id, and not a position in the table/)).toBeInTheDocument();
+});
+
+/// The ordinal is an annotation, not data. A row's own cells have to stay
+/// addressable without accounting for it.
+test("the ordinal leads the row and the data follows unchanged", () => {
+  render(<RowGrid rows={threeRows} hasMore={false} onLoadMore={() => {}} />);
+
+  const cells = [...document.querySelectorAll("tbody tr")[1].querySelectorAll("td")];
+  expect(cells[0].textContent).toBe("2");
+  expect(cells[1].textContent).toBe("remco");
+});
+
+/// Digits down a column have to line up, or a long list is unreadable.
+test("the ordinals are tabular so they align", () => {
+  render(<RowGrid rows={threeRows} hasMore={false} onLoadMore={() => {}} />);
+
+  const ordinal = document.querySelector("tbody td");
+  expect(ordinal?.className).toMatch(/\btabular-nums\b/);
+  expect(ordinal?.className).toMatch(/\btext-right\b/);
+});
+
+/// A merged sweep numbers the merged list. The `_canister` column stays a column
+/// of the result; the ordinal sits in front of it.
+test("a merged result is numbered too, in front of the origin column", () => {
+  const merged = {
+    entity: "User",
+    columns: ["_canister", "handle"],
+    rows: [
+      [{ kind: "text", display: "shard_1" }, { kind: "text", display: "juno" }],
+      [{ kind: "text", display: "shard_2" }, { kind: "text", display: "remco" }],
+    ],
+    rowCount: 2,
+    nextCursor: null,
+  };
+  render(<RowGrid rows={merged} hasMore={false} onLoadMore={() => {}} />);
+
+  const heads = [...document.querySelectorAll("thead th")].map((th) => th.textContent);
+  expect(heads).toEqual(["#", "_canister", "handle"]);
+  const first = [...document.querySelectorAll("tbody tr")[0].querySelectorAll("td")];
+  expect(first.map((cell) => cell.textContent)).toEqual(["1", "shard_1", "juno"]);
+});
+
+/// Appending a page continues the count rather than restarting it — the numbering
+/// is of the rows on screen, and after Load more there are more of them.
+test("loading another page continues the numbering", () => {
+  const { rerender } = render(
+    <RowGrid rows={threeRows} hasMore onLoadMore={() => {}} />,
+  );
+  rerender(
+    <RowGrid
+      rows={{
+        ...threeRows,
+        rows: [...threeRows.rows, [{ kind: "text", display: "ada" }]],
+        rowCount: 4,
+      }}
+      hasMore={false}
+      onLoadMore={() => {}}
+    />,
+  );
+
+  const rows = [...document.querySelectorAll("tbody tr")];
+  expect(rows[3].querySelector("td")?.textContent).toBe("4");
 });

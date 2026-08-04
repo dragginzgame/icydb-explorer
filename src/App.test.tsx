@@ -1035,8 +1035,10 @@ test("a pending row fetch shows skeletons at the SELECTED table's column count",
   // used to be unreachable: grid mounted, loading, no rows.
   fireEvent.click(screen.getByText("WideRow"));
 
-  // 8 skeleton rows × WideRow's OWN 6 columns — not NarrowRow's 2.
-  await waitFor(() => expect(bodySkeletons()).toHaveLength(48));
+  // 8 skeleton rows × (WideRow's OWN 6 columns + the ordinal column) — not
+  // NarrowRow's 2. The ordinal is in the skeleton too, so the grid does not shift
+  // every column right the moment real data lands.
+  await waitFor(() => expect(bodySkeletons()).toHaveLength(56));
   expect(screen.queryByText(/loading rows/i)).not.toBeInTheDocument();
   // And not under the previous table's headers, which would reflow away the
   // instant the real data arrived.
@@ -1074,7 +1076,7 @@ test("the first fetch of a session already shows correctly sized skeletons", asy
   await pickCanister("canister-a");
   fireEvent.click(await screen.findByText("WideRow"));
 
-  await waitFor(() => expect(bodySkeletons()).toHaveLength(48));
+  await waitFor(() => expect(bodySkeletons()).toHaveLength(56));
   // The header row is drawn too, at the same count, so the grid does not shift
   // down when the real names arrive. Deliberately unnamed: the arity is known
   // this early but the names are not, and the previous table's names — what

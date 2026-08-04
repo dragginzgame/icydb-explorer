@@ -135,6 +135,18 @@ export function RowGrid({
         <table className="min-w-full border-collapse text-sm" aria-busy={loading}>
           <thead className="sticky top-0 bg-surface-inset">
             <tr>
+              {/* A position in what is on screen, not a row id and not a position
+                  in the table. Those differ the moment a statement carries an
+                  OFFSET, and a merged sweep has no table position at all — so this
+                  counts the rows in front of the reader and claims nothing more.
+                  `#` rather than a word, because a column head that reads like a
+                  column name invites it to be mistaken for one. */}
+              <th
+                title="Position in the rows shown here. Not a row id, and not a position in the table."
+                className="w-0 border-b border-rule px-2 py-1 text-right text-xs font-semibold uppercase tracking-wide text-text-3"
+              >
+                #
+              </th>
               {rows.columns.map((column) => (
                 <th
                   key={column}
@@ -248,6 +260,12 @@ function RowSkeletons({
     <table className="min-w-full border-collapse text-sm" aria-busy={loading}>
       <thead className="sticky top-0 bg-surface-inset">
         <tr>
+          {/* Present here too: the real grid has this column, and a header that
+              appeared only once data landed would shift every column right at the
+              moment this table exists to keep still. */}
+          <th className="w-0 border-b border-rule px-2 py-1 text-right text-xs font-semibold uppercase tracking-wide text-text-3">
+            #
+          </th>
           {columns.map((columnIndex) => (
             <th
               key={columnIndex}
@@ -269,6 +287,15 @@ function RowSkeletons({
       <tbody>
         {Array.from({ length: SKELETON_ROWS }, (_, rowIndex) => (
           <tr key={rowIndex} className="border-b border-rule">
+            {/* A bar, not the ordinal. The position is knowable, but printing
+                1..8 beside skeletons would assert there are eight rows coming. */}
+            <td className="w-0 px-2 py-1">
+              <div
+                data-skeleton="true"
+                aria-hidden="true"
+                className="h-3 w-3 rounded-row bg-surface-2"
+              />
+            </td>
             {columns.map((columnIndex) => (
               <td key={columnIndex} className="px-2 py-1">
                 <div
@@ -449,6 +476,11 @@ function ExpandableRow({
           `surface-inset`, so zebra there would make every other data row the
           same colour as the header and defeat both cues at once. */}
       <tr className={["border-b border-rule", striped && "bg-surface-1"].filter(Boolean).join(" ")}>
+        {/* `tabular-nums` so the digits line up down the column, and `w-0` so it
+            takes only the width its widest number needs. */}
+        <td className="w-0 whitespace-nowrap px-2 py-1 align-top text-right font-mono text-xs tabular-nums text-text-3">
+          {rowIndex + 1}
+        </td>
         {row.map((cell, columnIndex) => {
           const column = columns[columnIndex];
           // A relation is matched by column name, which is what the DTO gives:
@@ -497,7 +529,10 @@ function ExpandableRow({
       </tr>
       {openCell && (
         <tr id={subRowId} className="border-b border-rule">
-          <td colSpan={row.length} className="bg-surface-2 px-2 py-2 pl-8">
+          {/* `+ 1` for the ordinal column, which is not in `row`. Without it the
+              sub-row stops one column short and the grid's last column escapes
+              the expanded panel. */}
+          <td colSpan={row.length + 1} className="bg-surface-2 px-2 py-2 pl-8">
             <pre className="whitespace-pre-wrap break-words font-mono text-xs text-text-2">
               {formatExpanded(openCell.display)}
             </pre>
