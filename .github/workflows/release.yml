@@ -159,22 +159,27 @@ jobs:
       # `tauri-action` runs `beforeBuildCommand` from tauri.conf.json, so the
       # frontend is built here rather than in a step of its own.
       #
-      # The Apple variables are passed unconditionally and are empty until the
-      # secrets exist. Tauri skips signing when they are unset, so this is wired
-      # ahead of time rather than being a later edit to a working workflow — but
-      # until they are set, every artifact here is UNSIGNED: macOS Gatekeeper will
-      # refuse to open the .dmg without an explicit right-click → Open, and Windows
-      # will show a SmartScreen warning. That is a property of these builds, not a
-      # bug in them, and the draft release below is where it should be written down.
+      # No Apple signing variables here, and that omission is deliberate.
+      #
+      # They were originally wired up in advance, on the assumption that Tauri
+      # would skip signing while the secrets did not exist yet. It does not: a
+      # GitHub secret that has never been set still defines the environment
+      # variable, as an empty string, and Tauri reads a defined `APPLE_CERTIFICATE`
+      # as "sign this". The macOS leg then failed in the bundler with
+      # `SecKeychainItemImport: One or more parameters ... were not valid` after a
+      # successful six-minute compile — a confusing failure a long way from its
+      # cause. Add these only alongside real certificates:
+      #
+      #   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
+      #   APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
+      #
+      # Until then every artifact here is UNSIGNED: macOS Gatekeeper refuses the
+      # .dmg without an explicit right-click → Open, and Windows shows a
+      # SmartScreen warning. That is a property of these builds rather than a bug
+      # in them, and the draft release below is where it is written down.
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           # Empty on a manual run, which is what stops a dry run from creating a
           # release. The artifacts still get uploaded by the step below.
