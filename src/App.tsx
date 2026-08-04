@@ -12,6 +12,7 @@ import {
   listEnvironments,
   listTables,
   runSql,
+  runSqlMany,
   selectIdentity,
   selectProject,
 } from "./api/commands";
@@ -30,6 +31,8 @@ import type {
 import { CanisterTree, type QueryableMap } from "./components/CanisterTree";
 import { exportFilename, exportRows, type ExportFormat } from "./lib/exportRows";
 import { followPlan, followStatement, primaryKeyOf } from "./lib/followRelation";
+import { mergeSweep, type MergedSweep } from "./lib/mergeSweep";
+import { flatten, poolOf, roleOfPid } from "./lib/pools";
 import { ErrorBanner } from "./components/ErrorBanner";
 import { IdentitySelector } from "./components/IdentitySelector";
 import { Pane } from "./components/Pane";
@@ -40,6 +43,7 @@ import { SchemaInspector } from "./components/SchemaInspector";
 import { SchemaPanel } from "./components/SchemaPanel";
 import { SettingsMenu } from "./components/SettingsMenu";
 import { SqlConsole } from "./components/SqlConsole";
+import { SweepAllRefused, SweepStatusStrip } from "./components/SweepView";
 import { TableList, type RowCounts } from "./components/TableList";
 import { usePaneLayout } from "./layout/usePaneLayout";
 import { useTheme } from "./theme/useTheme";
@@ -109,7 +113,14 @@ function noUsableIdentitySummary(environment: Environment): string {
 /// The role a canister is known by, which is what a reader recognises — the
 /// principal is an identifier, not a name.
 function roleOf(trees: TreeNode[] | null, pid: string): string | null {
-  return flattenForest(trees ?? []).find((node) => node.pid === pid)?.role ?? null;
+  return roleOfPid(trees ?? [], pid);
+}
+
+/// A canister named the way a reader recognises it. Falls back to the principal,
+/// which is worse to read but never wrong — an unlabelled row in a merged grid
+/// would be worse than a long one.
+function roleLabel(trees: TreeNode[] | null, pid: string): string {
+  return roleOfPid(trees ?? [], pid) ?? pid;
 }
 
 /// Every canister in the forest, roots and descendants alike.
@@ -117,9 +128,10 @@ function roleOf(trees: TreeNode[] | null, pid: string): string | null {
 /// The tree is arbitrarily deep — a canic fleet nests shards under hubs under
 /// root — so probing "the canisters" means walking it, not reading the top
 /// level.
-function flattenForest(trees: TreeNode[]): TreeNode[] {
-  return trees.flatMap((tree) => [tree, ...flattenForest(tree.children)]);
-}
+/// Kept as a name local to this file because several call sites read better with
+/// it, but it is `pools.flatten` — one implementation, so a fleet is walked the
+/// same way whether the caller is probing capabilities or grouping a pool.
+const flattenForest = flatten;
 
 function App() {
   const { choice: themeChoice, setChoice: setThemeChoice } = useTheme();
@@ -199,6 +211,13 @@ function App() {
   // trail that can never hold more than one step is not a trail. Keeping the
   // schema we already fetched costs nothing and makes following chain.
   const [resultSchema, setResultSchema] = useState<SchemaDto | null>(null);
+  // Whether the next statement sweeps the selected canister's pool.
+  //
+  // Opt-in and never sticky across a selection change: a sweep costs one call
+  // per member, so it is something the reader asks for each time they mean it
+  // rather than a mode they can forget they are in.
+  const [sweeping, setSweeping] = useState(false);
+  const [sweep, setSweep] = useState<MergedSweep | null>(null);
 
   // Incremented by every `adoptProject` call. The canister tree effect
   // depends on it so that adopting a project ALWAYS refetches the tree —
@@ -464,6 +483,11 @@ function App() {
     // one indirection further away.
     setTrail([]);
     setResultSchema(null);
+    // A sweep is opt-in per selection, never a mode. The pool a reader chose to
+    // sweep belonged to the outgoing canister, and carrying the flag forward
+    // would silently widen the scope of the next statement they type.
+    setSweeping(false);
+    setSweep(null);
     if (!env || !canister || !identity) return;
     if (!entity) return;
     let cancelled = false;
@@ -836,6 +860,28 @@ function App() {
 
       setSqlError(undefined);
       setSqlResult(null);
+      setSweep(null);
+
+      // A sweep only where there is a pool to sweep. `sweeping` cannot outlive
+      // the selection that offered it (the effect below clears it), but reading
+      // the pool again here means the request is built from what is true now
+      // rather than from a flag.
+      const target = sweeping ? poolOf(forest ?? [], requestCanister) : null;
+      if (target) {
+        runSqlMany(requestEnv, target.members, sql, requestIdentity)
+          .then((run) => {
+            if (isStale()) return;
+            setSweep(mergeSweep(run.outcomes, (pid) => roleLabel(forest, pid)));
+            setSqlLimitAppended(run.limitAppended);
+            setSqlOrderByMissing(run.orderByMissing);
+          })
+          .catch((error: AppErrorDto) => {
+            if (isStale()) return;
+            setSqlError(error);
+          });
+        return;
+      }
+
       runSql(requestEnv, requestCanister, sql, requestIdentity)
         .then((run) => {
           if (isStale()) return;
@@ -850,7 +896,7 @@ function App() {
           setSqlOrderByMissing(false);
         });
     },
-    [env, canister, identity],
+    [env, canister, identity, sweeping, forest],
   );
 
   // A full page (== DEFAULT_ROW_LIMIT rows on the most recently fetched
@@ -1122,6 +1168,9 @@ function App() {
                 ? { canister: roleOf(forest, canister) ?? canister, entity }
                 : null
             }
+            pool={canister ? poolOf(forest ?? [], canister) : null}
+            sweeping={sweeping}
+            onToggleScope={() => setSweeping((current) => !current)}
             expanded={layout.sqlExpanded}
             onExpandedChange={setSqlExpanded}
             onRun={handleRunSql}
@@ -1232,7 +1281,7 @@ function App() {
                 its source would have you reading a statement's output as though
                 it were the table's contents. */}
             <Pane
-              title={sqlResult ? "Query result" : "Rows"}
+              title={sweep ? "Merged result" : sqlResult ? "Query result" : "Rows"}
               className="@container"
               trailing={
                 /* A trail rather than one "back": following relations can land
@@ -1276,7 +1325,22 @@ function App() {
                 )
               }
             >
-              {sqlResult ? (
+              {sweep ? (
+                /* A sweep is neither a single result nor a table's rows, so it
+                   gets its own branch rather than being squeezed into either.
+                   The status strip is above the grid because a refusal has no row
+                   to attach itself to — and without it, a canister that could not
+                   be read would simply be absent, making a sweep short of a
+                   member read as a complete answer. */
+                <div className="flex min-h-0 flex-col">
+                  <SweepStatusStrip statuses={sweep.statuses} />
+                  {sweep.rows ? (
+                    <RowGrid rows={sweep.rows} hasMore={false} onLoadMore={() => {}} />
+                  ) : (
+                    <SweepAllRefused statuses={sweep.statuses} />
+                  )}
+                </div>
+              ) : sqlResult ? (
                 <SqlResultView
                 result={sqlResult}
                 onExport={exportResultRows}
@@ -1373,6 +1437,9 @@ function SqlBar({
   entities,
   schema,
   target,
+  pool,
+  sweeping,
+  onToggleScope,
 }: {
   expanded: boolean;
   onExpandedChange: (expanded: boolean) => void;
@@ -1385,6 +1452,10 @@ function SqlBar({
   entities: EntityDto[] | null;
   schema: SchemaDto | null;
   target: { canister: string; entity: string | null } | null;
+  /** The selected canister's pool, for the scope control. */
+  pool: { role: string; members: string[] } | null;
+  sweeping: boolean;
+  onToggleScope: () => void;
 }) {
   if (!expanded) {
     return (
@@ -1432,6 +1503,9 @@ function SqlBar({
           entities={entities}
           schema={schema}
           target={target ?? undefined}
+          pool={pool}
+          sweeping={sweeping}
+          onToggleScope={onToggleScope}
         />
       </div>
     </div>

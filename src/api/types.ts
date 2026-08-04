@@ -121,6 +121,29 @@ export type AppErrorDto = { kind: string; explanation: string };
  * `ORDER BY` (icydb rejects `LIMIT`/`OFFSET` without one). */
 export type SqlRunDto = { result: ResultDto; limitAppended: boolean; orderByMissing: boolean };
 
+/** One canister's outcome in a fan-out (see
+ * `src-tauri/src/view/dto.rs::SweepOutcomeDto`).
+ *
+ * Exactly one of `result` and `error` is set. They are deliberately not
+ * collapsed into "an empty result": a canister that could not answer has not
+ * told us there are no rows, and treating the two the same would make a
+ * partly-authorised sweep read as a definitive "not found" — the single most
+ * misleading thing a fan-out can do. */
+export type SweepOutcomeDto = {
+  canister: string;
+  result: ResultDto | null;
+  error: AppErrorDto | null;
+};
+
+/** A sweep's outcomes, plus the two notes that belong to the statement rather
+ * than to any one canister — it is classified and bounded once for the whole
+ * sweep, so they are not repeated per outcome. */
+export type SweepRunDto = {
+  outcomes: SweepOutcomeDto[];
+  limitAppended: boolean;
+  orderByMissing: boolean;
+};
+
 // `list_environments` returns a `Project` (see `src-tauri/src/discovery/types.rs`).
 export type IdentityRef = {
   name: string;

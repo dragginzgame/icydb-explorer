@@ -67,6 +67,7 @@ pub fn run() {
             commands::fetch_rows,
             commands::explain_rows,
             commands::run_sql,
+            commands::run_sql_many,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

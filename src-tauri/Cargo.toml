@@ -27,6 +27,10 @@ candid = "0.10"
 ic-agent = "0.48"
 icydb = { workspace = true }
 tokio = { version = "1", features = ["sync", "process", "time"] }
+# `join_all`, for sweeping a pool concurrently. Already in the tree transitively
+# via tauri/ic-agent; declared here because relying on a transitive dependency
+# for a direct `use` is how a build breaks on someone else's upgrade.
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }

@@ -26,6 +26,7 @@ import type {
   ResultDto,
   SqlCapabilities,
   SqlRunDto,
+  SweepRunDto,
   TreeNode,
 } from "./types";
 
@@ -210,6 +211,28 @@ export async function fetchRows(
 ): Promise<ResultDto> {
   try {
     return await invoke<ResultDto>("fetch_rows", { env, canister, entity, offset, identity });
+  } catch (error) {
+    throw toAppErrorDto(error);
+  }
+}
+
+/** Runs one statement against several canisters, reporting each outcome.
+ *
+ * The whole of "cross-canister" in this app: icydb has no JOIN and no
+ * cross-database addressing, so a statement spanning canisters is the same
+ * statement sent to each, correlated here. Concurrent on the Rust side.
+ *
+ * Rejects only when the *request* is bad — an unclassifiable statement, an
+ * unknown environment, a malformed principal. A canister that cannot answer is
+ * an outcome, not a rejection, so a partly-authorised sweep still resolves. */
+export async function runSqlMany(
+  env: string,
+  canisters: string[],
+  sql: string,
+  identity: string,
+): Promise<SweepRunDto> {
+  try {
+    return await invoke<SweepRunDto>("run_sql_many", { env, canisters, sql, identity });
   } catch (error) {
     throw toAppErrorDto(error);
   }

@@ -12,6 +12,9 @@ export function SqlConsole({
   entities,
   schema,
   target,
+  pool,
+  sweeping = false,
+  onToggleScope,
 }: {
   onRun: (sql: string) => void;
   error?: AppErrorDto;
@@ -24,6 +27,14 @@ export function SqlConsole({
    *  canister — each is its own icydb database — and nothing else on screen says
    *  which, so the bar has to. */
   target?: { canister: string; entity: string | null };
+  /** The pool the selected canister belongs to, if any. Absent means its role is
+   *  held by one canister, so there is no wider scope to offer. */
+  pool?: { role: string; members: string[] } | null;
+  /** Whether the next run sweeps that pool rather than the one canister. */
+  sweeping?: boolean;
+  /** Switch between the one canister and its pool. Absent leaves the scope
+   *  fixed, which is the honest rendering when there is nothing to switch to. */
+  onToggleScope?: () => void;
   limitAppended?: boolean;
   /** No default `LIMIT` was appended specifically because the statement has
    * no `ORDER BY` — icydb rejects `LIMIT`/`OFFSET` without one, so this asks
@@ -94,7 +105,31 @@ export function SqlConsole({
           {target && (
             <>
               <span className="text-text-3">Querying</span>
-              <span className="font-mono text-text-1">{target.canister}</span>
+              {/* Scope is state, not a caption. This line used to carry a fixed
+                  note that a statement reached only the selected canister — true
+                  while that was all it could do, and false the moment a sweep
+                  exists. So it became the control that says which. */}
+              {pool && onToggleScope ? (
+                <button
+                  type="button"
+                  onClick={onToggleScope}
+                  title={
+                    sweeping
+                      ? `Sweeping all ${pool.members.length} ${pool.role} canisters. ` +
+                        "Click to narrow to the selected one."
+                      : `${pool.role} is a pool of ${pool.members.length} canisters, each its ` +
+                        "own icydb database. Click to run this statement against all of them."
+                  }
+                  className="flex items-center gap-1.5 rounded-control border border-rule-strong bg-surface-2 px-1.5 font-mono text-text-1 hover:border-accent"
+                >
+                  {pool.role}
+                  <span className="border-l border-rule pl-1.5 font-sans text-accent">
+                    {sweeping ? `${pool.members.length} canisters` : `1 of ${pool.members.length}`}
+                  </span>
+                </button>
+              ) : (
+                <span className="font-mono text-text-1">{target.canister}</span>
+              )}
               {target.entity && (
                 <>
                   <span className="text-text-3">·</span>
@@ -104,12 +139,21 @@ export function SqlConsole({
               {/* Short inline, reason on hover. Sharing the row with the hint
                   leaves no space for the sentence, and it is a thing worth
                   learning once rather than reading every session. */}
-              <span
-                className="text-text-3"
-                title="Each canister carries its own icydb database, so a statement here reaches one and only one of them."
-              >
-                — one canister only
-              </span>
+              {sweeping ? (
+                <span
+                  className="text-text-3"
+                  title="Each canister orders its own page, so the union is merged in fleet order. There is no global ordering across a pool, and this app will not imply one."
+                >
+                  — merged, not globally ordered
+                </span>
+              ) : (
+                <span
+                  className="text-text-3"
+                  title="Each canister carries its own icydb database, so a statement here reaches one and only one of them."
+                >
+                  — one canister only
+                </span>
+              )}
             </>
           )}
 

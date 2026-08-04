@@ -2307,3 +2307,186 @@ test("refresh is disabled before there is a fleet to re-read", async () => {
   const button = await screen.findByRole("button", { name: /refresh/i });
   expect(button).toBeDisabled();
 });
+
+// ── Fan-out over a pool ──────────────────────────────────────────────────────
+
+/** A fleet whose `shard` role is held by three canisters — a pool. */
+function pooledFleet() {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/project",
+    error: null,
+    environments: [environmentFixture()],
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    {
+      pid: "root-id",
+      role: "root",
+      children: [
+        { pid: "s1", role: "shard", children: [] },
+        { pid: "s2", role: "shard", children: [] },
+        { pid: "s3", role: "shard", children: [] },
+        { pid: "solo", role: "market", children: [] },
+      ],
+    },
+  ]);
+  vi.mocked(commands.listTables).mockResolvedValue({
+    type: "entities",
+    entities: [entity("User", 1)],
+  });
+  vi.mocked(commands.fetchRows).mockResolvedValue(rowsFixture("User", ["id"], 1));
+  vi.mocked(commands.describeTable).mockResolvedValue({
+    type: "schema",
+    entity: "User",
+    columns: [{ name: "id", typeName: "ulid", primaryKey: true, optional: false }],
+    indexes: [],
+    relations: [],
+  });
+}
+
+const sweepPage = (canister: string, ...ids: string[]) => ({
+  canister,
+  result: {
+    type: "rows" as const,
+    entity: "User",
+    columns: ["id"],
+    rows: ids.map((id) => [{ kind: "ulid", display: id }]),
+    rowCount: ids.length,
+    nextCursor: null,
+  },
+  error: null,
+});
+
+async function openSweepableConsole() {
+  vi.mocked(commands.runSqlMany).mockClear();
+  vi.mocked(commands.runSql).mockClear();
+  render(<App />);
+  // Three canisters share the `shard` role — that is what makes it a pool — so
+  // the label repeats and the first member is picked explicitly.
+  fireEvent.click((await screen.findAllByText("shard"))[0]);
+  fireEvent.click(screen.getByRole("button", { name: /^sql$/i }));
+  return screen.findByRole("button", { name: /1 of 3/ });
+}
+
+/// A pool is more than one canister sharing a role, and the scope control is how
+/// a reader widens to it. Its absence on a singleton is as important: offering a
+/// "sweep" of one canister would dress a single query up as a fan-out.
+test("a canister in a pool offers a scope control, a lone one does not", async () => {
+  pooledFleet();
+  render(<App />);
+
+  fireEvent.click(await screen.findByText("market"));
+  fireEvent.click(screen.getByRole("button", { name: /^sql$/i }));
+  expect(screen.queryByRole("button", { name: /1 of/ })).not.toBeInTheDocument();
+
+  fireEvent.click(screen.getAllByText("shard")[0]);
+  expect(await screen.findByRole("button", { name: /1 of 3/ })).toBeInTheDocument();
+});
+
+/// Widening the scope sends the statement to every member, through the sweep
+/// command rather than the single-canister one.
+test("sweeping runs the statement against every pool member", async () => {
+  pooledFleet();
+  vi.mocked(commands.runSqlMany).mockResolvedValue({
+    outcomes: [sweepPage("s1", "a"), sweepPage("s2", "b")],
+    limitAppended: false,
+    orderByMissing: false,
+  });
+
+  fireEvent.click(await openSweepableConsole());
+  typeSql("SELECT * FROM User ORDER BY id LIMIT 100");
+  fireEvent.click(screen.getByRole("button", { name: /^run/i }));
+
+  await waitFor(() => expect(commands.runSqlMany).toHaveBeenCalled());
+  expect(vi.mocked(commands.runSqlMany).mock.calls[0][1]).toEqual(["s1", "s2", "s3"]);
+  // And not through the single-canister path, which would have queried one.
+  expect(commands.runSql).not.toHaveBeenCalled();
+});
+
+/// Narrowed, it is one canister again — the control toggles rather than latching.
+test("narrowing the scope goes back to the single-canister path", async () => {
+  pooledFleet();
+  vi.mocked(commands.runSql).mockResolvedValue({
+    result: rowsFixture("User", ["id"], 1),
+    limitAppended: false,
+    orderByMissing: false,
+  });
+
+  const chip = await openSweepableConsole();
+  fireEvent.click(chip);
+  fireEvent.click(await screen.findByRole("button", { name: /3 canisters/ }));
+
+  typeSql("SELECT * FROM User ORDER BY id LIMIT 100");
+  fireEvent.click(screen.getByRole("button", { name: /^run/i }));
+
+  await waitFor(() => expect(commands.runSql).toHaveBeenCalled());
+  expect(commands.runSqlMany).not.toHaveBeenCalled();
+});
+
+/// One canister's failure is its own. A sweep across a pool the caller only
+/// partly controls still shows every answer that arrived, and says which did not.
+test("a partly-authorised sweep shows the rows it got and names what it could not read", async () => {
+  pooledFleet();
+  vi.mocked(commands.runSqlMany).mockResolvedValue({
+    outcomes: [
+      sweepPage("s1", "row-from-one"),
+      { canister: "s2", result: null, error: { kind: "notController", explanation: "not a controller" } },
+      sweepPage("s3"),
+    ],
+    limitAppended: false,
+    orderByMissing: false,
+  });
+
+  fireEvent.click(await openSweepableConsole());
+  typeSql("SELECT * FROM User ORDER BY id LIMIT 100");
+  fireEvent.click(screen.getByRole("button", { name: /^run/i }));
+
+  expect(await screen.findByText("row-from-one")).toBeInTheDocument();
+  // The refusal is visible as a state, not as an absence.
+  expect(screen.getByText("unreadable")).toBeInTheDocument();
+  // And answering with nothing is its own, different state.
+  expect(screen.getByText("no rows")).toBeInTheDocument();
+  // The summary must not let "1 row" imply that is all of them.
+  expect(screen.getByText(/1 could not be read/)).toBeInTheDocument();
+});
+
+/// Nobody managed to look, which is not the same as looking and finding nothing.
+test("a sweep where every canister refused says so rather than showing no rows", async () => {
+  pooledFleet();
+  const refusal = (canister: string) => ({
+    canister,
+    result: null,
+    error: { kind: "notController", explanation: "not a controller" },
+  });
+  vi.mocked(commands.runSqlMany).mockResolvedValue({
+    outcomes: [refusal("s1"), refusal("s2"), refusal("s3")],
+    limitAppended: false,
+    orderByMissing: false,
+  });
+
+  fireEvent.click(await openSweepableConsole());
+  typeSql("SELECT * FROM User ORDER BY id LIMIT 100");
+  fireEvent.click(screen.getByRole("button", { name: /^run/i }));
+
+  expect(await screen.findByText(/Nothing could be read/)).toBeInTheDocument();
+  expect(screen.queryByText("No rows")).not.toBeInTheDocument();
+});
+
+/// The scope belongs to the selection that offered it. Carried forward, it would
+/// silently widen the next statement a reader types.
+test("changing canister clears the sweep scope", async () => {
+  pooledFleet();
+  vi.mocked(commands.runSql).mockResolvedValue({
+    result: rowsFixture("User", ["id"], 1),
+    limitAppended: false,
+    orderByMissing: false,
+  });
+
+  fireEvent.click(await openSweepableConsole());
+  expect(await screen.findByRole("button", { name: /3 canisters/ })).toBeInTheDocument();
+
+  fireEvent.click(screen.getByText("market"));
+  fireEvent.click(screen.getAllByText("shard")[0]);
+
+  // Back on a pooled canister, and narrowed again rather than still sweeping.
+  expect(await screen.findByRole("button", { name: /1 of 3/ })).toBeInTheDocument();
+});

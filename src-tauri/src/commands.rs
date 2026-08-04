@@ -25,7 +25,7 @@ use crate::sql::{
     SqlCapabilities,
 };
 use crate::topology::{build_tree, fetch_children, TreeNode};
-use crate::view::{result_to_dto, ResultDto};
+use crate::view::{result_to_dto, ResultDto, SweepOutcomeDto};
 
 /// The default row window used both by `fetch_rows`'s fixed `LIMIT` and by
 /// `run_sql`'s auto-appended `LIMIT` for a `SELECT` with none of its own.
@@ -611,6 +611,100 @@ pub async fn run_sql(
         limit_appended: limited.limit_appended,
         order_by_missing: limited.order_by_missing,
     })
+}
+
+/// Runs one statement against several canisters and reports each outcome.
+///
+/// This is the whole of "cross-canister" in this app. icydb has no `JOIN` and no
+/// cross-database addressing — `JOIN` exists in its lexer only to raise a
+/// diagnostic, and `SHOW DATABASES` is a tested-unsupported command — so a
+/// statement spanning canisters is this: the same statement, sent to each, with
+/// the correlating done here rather than there.
+///
+/// Concurrent, because a pool is the point: a twenty-shard sweep run serially
+/// would be twenty round-trips end to end.
+///
+/// The read-only guarantee is untouched. This adds no call site — every canister
+/// goes through the same `query_dto` → `run_query` → `.query()` path a single
+/// statement uses — and no classification is relaxed: the statement is
+/// classified *once*, before any agent is fetched, so a rejected statement never
+/// reaches any canister rather than being rejected N times.
+///
+/// One canister's failure is its own. Each outcome carries either a result or an
+/// error, so a sweep across a pool the caller only partly controls still returns
+/// every answer that arrived.
+#[tauri::command]
+pub async fn run_sql_many(
+    env: String,
+    canisters: Vec<String>,
+    sql: String,
+    identity: String,
+    project: State<'_, ProjectState>,
+    pool: State<'_, AgentPool>,
+) -> Result<SweepRunDto, AppError> {
+    let project = project.snapshot().ok_or(AppError::NoProjectSelected)?;
+    let environment = find_environment(&project, &env)?;
+    let identity_ref = find_identity(environment, &identity)?;
+
+    // Classified once, for the sweep. A statement this app will not send is not
+    // sent to any canister, and reporting the same rejection once per canister
+    // would present one authoring mistake as a fleet-wide failure.
+    let statement = classify(&sql)?;
+    let limited = apply_default_limit(&sql, statement, DEFAULT_ROW_LIMIT);
+
+    // A malformed principal is the caller's error about the whole request, not
+    // one canister's outcome — resolved up front so the sweep either runs
+    // against every canister named or none.
+    let targets = canisters
+        .iter()
+        .map(|canister| parse_principal(canister).map(|id| (canister.clone(), id)))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // Borrowed once, outside the closure: `project` is a local that
+    // `environment` already borrows from, so moving either into the per-canister
+    // futures would end the borrow the sweep is still using. These are shared
+    // references, which every future can hold at the same time — which is the
+    // point, since they all run at once.
+    let root = project.root.as_path();
+    let agents = &*pool;
+    let statement_sql = limited.sql.as_str();
+
+    let outcomes = futures_util::future::join_all(targets.into_iter().map(|(text, id)| {
+        async move {
+            match query_dto(agents, root, environment, identity_ref, id, statement_sql).await {
+                Ok(result) => SweepOutcomeDto {
+                    canister: text,
+                    result: Some(result),
+                    error: None,
+                },
+                Err(error) => SweepOutcomeDto {
+                    canister: text,
+                    result: None,
+                    error: Some(error),
+                },
+            }
+        }
+    }))
+    .await;
+
+    Ok(SweepRunDto {
+        outcomes,
+        limit_appended: limited.limit_appended,
+        order_by_missing: limited.order_by_missing,
+    })
+}
+
+/// A sweep's outcomes, plus the same two notes a single run carries.
+///
+/// The notes are properties of the *statement*, which is classified and bounded
+/// once for the whole sweep — so they sit here rather than being repeated,
+/// identically, on every outcome.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SweepRunDto {
+    pub outcomes: Vec<SweepOutcomeDto>,
+    pub limit_appended: bool,
+    pub order_by_missing: bool,
 }
 
 /// The result of switching projects: the newly-open project, plus a warning

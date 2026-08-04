@@ -194,3 +194,30 @@ pub enum ResultDto {
         constraints: Vec<ConstraintDto>,
     },
 }
+
+/// One canister's outcome in a fan-out.
+///
+/// A sweep sends the same statement to several canisters, and they do not
+/// succeed or fail together: icydb's SQL endpoints are controller-gated per
+/// canister, a pool member can be stopped, and a replica can drop one call and
+/// not another. So an outcome is per-canister and one failure never voids the
+/// rest — a sweep that reported only its first error would throw away every
+/// answer that did arrive.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SweepOutcomeDto {
+    /// The canister this outcome is from, as principal text — the same string
+    /// the caller passed in, so the frontend can match outcomes to what it asked
+    /// for without relying on order.
+    pub canister: String,
+    /// What it answered, or `None` if it could not.
+    ///
+    /// Deliberately not "an empty result": a canister that cannot answer has not
+    /// told us there are no rows. Collapsing the two would make a
+    /// partly-authorised sweep read as a definitive "not found", which is the
+    /// single most misleading thing a fan-out can do.
+    pub result: Option<ResultDto>,
+    /// Why it could not answer, or `None` if it did. Exactly one of this and
+    /// `result` is set.
+    pub error: Option<crate::error::AppError>,
+}

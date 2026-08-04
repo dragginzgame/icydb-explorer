@@ -11,8 +11,8 @@ mod schema;
 mod value;
 
 pub use dto::{
-    ColumnDto, ConstraintDto, EntityDto, MemoryDto, ResultDto, RowsDto, SchemaDto, StoreDto,
-    ValueDto,
+    ColumnDto, ConstraintDto, EntityDto, MemoryDto, RelationDto, ResultDto, RowsDto, SchemaDto,
+    StoreDto, SweepOutcomeDto, ValueDto,
 };
 pub use value::value_to_dto;
 
