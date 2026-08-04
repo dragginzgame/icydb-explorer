@@ -2174,3 +2174,136 @@ test("a typed statement's result gets no relation affordances", async () => {
 
   expect(screen.queryByRole("button", { name: /^Follow / })).not.toBeInTheDocument();
 });
+
+// ── Refresh ──────────────────────────────────────────────────────────────────
+
+/** A fleet with one canister and one table, whose rows the test can change
+ *  between fetches — which is the whole point of a refresh. */
+function refreshableFleet(rowsByCall: ResultDto[]) {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/project",
+    error: null,
+    environments: [environmentFixture()],
+  });
+  vi.mocked(commands.canisterTree).mockResolvedValue([
+    { pid: "root-id", role: "root", children: [{ pid: "aaaaa-aa", role: "shard", children: [] }] },
+  ]);
+  vi.mocked(commands.listTables).mockResolvedValue({
+    type: "entities",
+    entities: [entity("Project", 1)],
+  });
+  let call = 0;
+  vi.mocked(commands.fetchRows).mockImplementation(async () => {
+    const result = rowsByCall[Math.min(call, rowsByCall.length - 1)];
+    call += 1;
+    return result;
+  });
+  vi.mocked(commands.describeTable).mockResolvedValue({
+    type: "schema",
+    entity: "Project",
+    columns: [{ name: "name", typeName: "text", primaryKey: true, optional: false }],
+    indexes: [],
+    relations: [],
+  });
+}
+
+const projectRows = (...names: string[]): ResultDto => ({
+  type: "rows",
+  entity: "Project",
+  columns: ["name"],
+  rows: names.map((name) => [{ kind: "text", display: name }]),
+  rowCount: names.length,
+  nextCursor: null,
+});
+
+/// The reason this control exists: nothing polls, and a canister cannot notify
+/// us, so a row written by something else is invisible until something re-asks.
+test("refresh picks up a row created since the table was selected", async () => {
+  refreshableFleet([projectRows("first"), projectRows("first", "second")]);
+
+  render(<App />);
+  fireEvent.click(await screen.findByText("shard"));
+  fireEvent.click(await screen.findByText("Project"));
+  expect(await screen.findByText("first")).toBeInTheDocument();
+  expect(screen.queryByText("second")).not.toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: /refresh/i }));
+
+  expect(await screen.findByText("second")).toBeInTheDocument();
+});
+
+/// A reader asking for current data is not asking to start over. This is the
+/// difference between a refresh and switching project, which share the effects.
+test("refresh keeps the canister and table selected", async () => {
+  refreshableFleet([projectRows("first"), projectRows("first", "second")]);
+
+  render(<App />);
+  fireEvent.click(await screen.findByText("shard"));
+  fireEvent.click(await screen.findByText("Project"));
+  await screen.findByText("first");
+
+  fireEvent.click(screen.getByRole("button", { name: /refresh/i }));
+  await screen.findByText("second");
+
+  // Still on the same table: its rows are shown, not the "no table selected"
+  // empty state that clearing the selection would produce.
+  expect(screen.queryByText(/No table selected/i)).not.toBeInTheDocument();
+  expect(screen.getByText("Project")).toBeInTheDocument();
+});
+
+/// The fleet is re-read too, because creating a project can provision a canister
+/// from a pool — so a refresh that only re-read rows would never show it.
+test("refresh re-reads the fleet so a new canister appears", async () => {
+  refreshableFleet([projectRows("first")]);
+  let treeCall = 0;
+  vi.mocked(commands.canisterTree).mockImplementation(async () => {
+    treeCall += 1;
+    const children = [{ pid: "aaaaa-aa", role: "shard", children: [] }];
+    if (treeCall > 1) children.push({ pid: "bbbbb-bb", role: "new-shard", children: [] });
+    return [{ pid: "root-id", role: "root", children }];
+  });
+
+  render(<App />);
+  fireEvent.click(await screen.findByText("shard"));
+  expect(screen.queryByText("new-shard")).not.toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: /refresh/i }));
+
+  expect(await screen.findByText("new-shard")).toBeInTheDocument();
+});
+
+/// A count already on screen is re-run: the reader paid for that number once and
+/// letting it go quietly stale is worse than paying again. Counts they never
+/// asked for stay unasked, because each is a full scan.
+test("refresh re-runs only the counts already on screen", async () => {
+  refreshableFleet([projectRows("first")]);
+  vi.mocked(commands.listTables).mockResolvedValue({
+    type: "entities",
+    entities: [entity("Project", 1), entity("Other", 1)],
+  });
+  vi.mocked(commands.countRows).mockResolvedValue(1);
+
+  render(<App />);
+  fireEvent.click(await screen.findByText("shard"));
+  await screen.findByText("Project");
+
+  // Nothing counted yet, so a refresh must count nothing.
+  vi.mocked(commands.countRows).mockClear();
+  fireEvent.click(screen.getByRole("button", { name: /refresh/i }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(commands.countRows).not.toHaveBeenCalled();
+});
+
+/// Offered with nothing behind it, the control would be a lie.
+test("refresh is disabled before there is a fleet to re-read", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue({
+    root: "/project",
+    error: null,
+    environments: [],
+  });
+
+  render(<App />);
+
+  const button = await screen.findByRole("button", { name: /refresh/i });
+  expect(button).toBeDisabled();
+});

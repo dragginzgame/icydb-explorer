@@ -210,6 +210,21 @@ function App() {
   // previous project's canisters stay on screen — where clicking one would
   // query the OLD project's canister id through the NEW project's agent.
   const [projectGeneration, setProjectGeneration] = useState(0);
+  // Bumped by the Refresh control to re-read what is on screen.
+  //
+  // A separate counter from `projectGeneration` because the two mean opposite
+  // things to the selection. Switching project invalidates it — the old
+  // canister id means nothing in the new project — so those effects clear it.
+  // A refresh does the reverse: the ids are the same and the reader wants the
+  // same view, only current. So the effects below distinguish the two and keep
+  // the selection (and the rendered data) across a refresh.
+  const [refreshGeneration, setRefreshGeneration] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  // Lets the fleet effect tell a refresh from a project switch. A ref rather
+  // than state: reading it must not itself cause a render.
+  const refreshSeenRef = useRef(0);
+  const tablesRefreshRef = useRef(0);
+  const rowsRefreshRef = useRef(0);
 
   // Tracks the *latest requested* `handleSelectIdentity` call — see that
   // handler's doc comment below for why. Declared here, ahead of both
@@ -348,16 +363,31 @@ function App() {
   // one would query the *old* project's canister id through the *new*
   // project's agent.
   useEffect(() => {
-    setForest(null);
+    // A refresh re-reads the same fleet, so it must not blank the tree or drop
+    // the selection: the reader asked for current data, not to start over. A
+    // project switch is the opposite and still clears both.
+    const isRefresh = refreshSeenRef.current !== refreshGeneration;
+    refreshSeenRef.current = refreshGeneration;
+
+    if (!isRefresh) {
+      setForest(null);
+      setCanister(null);
+      setQueryable({});
+    }
     setTreeError(null);
-    setCanister(null);
-    setQueryable({});
     if (!env || !identity) return;
     let cancelled = false;
     canisterTree(env, identity)
       .then((result) => {
         if (cancelled) return;
         setForest(result);
+        // A refresh can reveal that the selected canister is gone — a pool
+        // canister released, say. Keeping the selection would leave the panes
+        // querying an id the fleet no longer lists, so it is dropped, which
+        // reads as "nothing selected" rather than as a failing query.
+        setCanister((current) =>
+          current && !flattenForest(result).some((node) => node.pid === current) ? null : current,
+        );
       })
       .catch((error: AppErrorDto) => {
         if (cancelled) return;
@@ -366,17 +396,24 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [env, identity, projectGeneration]);
+  }, [env, identity, projectGeneration, refreshGeneration]);
 
   useEffect(() => {
-    setEntities(null);
+    // Same rule as the fleet effect: a refresh re-reads this canister's tables
+    // and must keep the selected one, where changing canister must not.
+    const isRefresh = tablesRefreshRef.current !== refreshGeneration;
+    tablesRefreshRef.current = refreshGeneration;
+
+    if (!isRefresh) {
+      setEntities(null);
+      setEntity(null);
+      // Counts belong to the entity list they were taken against. Two canisters
+      // can hold tables of the same name, so keeping them would show one
+      // canister's count beside another's table.
+      setRowCounts({});
+      setCounting(false);
+    }
     setEntitiesError(null);
-    setEntity(null);
-    // Counts belong to the entity list they were taken against. Two canisters
-    // can hold tables of the same name, so keeping them would show one
-    // canister's count beside another's table.
-    setRowCounts({});
-    setCounting(false);
     if (!env || !canister || !identity) return;
     let cancelled = false;
     listTables(env, canister, identity)
@@ -395,12 +432,20 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [env, canister, identity]);
+  }, [env, canister, identity, refreshGeneration]);
 
   useEffect(() => {
+    // A refresh keeps the rows on screen while the new page is in flight, so the
+    // grid does not blink to skeletons and back for data that is about to look
+    // almost identical. Everything else it resets, because a refresh really does
+    // discard: paging returns to the first page, and a statement's output is not
+    // what the reader asked to have refreshed.
+    const isRefresh = rowsRefreshRef.current !== refreshGeneration;
+    rowsRefreshRef.current = refreshGeneration;
+
     setSchema(null);
     setSchemaError(null);
-    setRows(null);
+    if (!isRefresh) setRows(null);
     setRowsError(null);
     setOffset(0);
     setLastPageRowCount(0);
@@ -455,7 +500,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [env, canister, entity, identity]);
+  }, [env, canister, entity, identity, refreshGeneration]);
 
   // `loadMore` isn't tied to a `useEffect` cleanup (it's fired from a click,
   // not a selection change), so it uses a request-token equivalent instead:
@@ -716,6 +761,31 @@ function App() {
     [env, canister, identity],
   );
 
+  // Re-reads what is on screen: the fleet, this canister's tables, and the
+  // selected table's rows and schema. The selection survives, because a reader
+  // asking for current data is not asking to start over.
+  //
+  // Why this is needed at all: everything here is fetched once, when a selection
+  // changes. Nothing polls, and a canister cannot notify us — so a row written
+  // by something else (creating a project in the app, say) is invisible until
+  // something re-asks. This is that something.
+  //
+  // Counts are re-run only where one is already on screen. They are full scans,
+  // which this app never issues unasked; but a count the reader already paid for
+  // going stale silently is worse than paying for it again, and dropping it would
+  // make refresh visibly destroy information.
+  const refresh = useCallback(() => {
+    setRefreshing(true);
+    const alreadyCounted = (entities ?? []).filter((listed) => listed.name in rowCounts);
+    setRefreshGeneration((generation) => generation + 1);
+    if (alreadyCounted.length > 0) void countAllRows(alreadyCounted);
+    // The fetches are effect-driven and each guards its own staleness, so there
+    // is nothing here to await. The spinner is a deliberate fixed beat: it says
+    // "this was received" rather than tracking a completion this callback cannot
+    // observe. Claiming to know when every fetch has landed would be a lie.
+    window.setTimeout(() => setRefreshing(false), 400);
+  }, [entities, rowCounts, countAllRows]);
+
   const loadMore = useCallback(() => {
     if (!env || !canister || !entity || !identity) return;
     const nextOffset = offset + DEFAULT_ROW_LIMIT;
@@ -895,7 +965,28 @@ function App() {
           selected={identity}
           onSelect={handleSelectIdentity}
         />
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
+          {/* Nothing here polls and a canister cannot notify us, so everything on
+              screen is as of the moment it was selected. A row written by
+              something else — creating a project in the app — is invisible until
+              something re-asks. Disabled until there is a fleet to re-read, so
+              the control is never offered with nothing behind it. */}
+          <button
+            type="button"
+            onClick={refresh}
+            disabled={!env || !identity || refreshing}
+            title={
+              "Re-reads the fleet, this canister's tables, and the selected table's rows. " +
+              "Keeps your selection. Row counts are re-run only where one is already shown, " +
+              "since a count is a full scan."
+            }
+            className="flex items-center gap-1.5 rounded-control border border-rule px-2 py-1 text-sm text-text-2 hover:bg-surface-2 disabled:opacity-50"
+          >
+            <span aria-hidden="true" className={refreshing ? "inline-block animate-spin" : ""}>
+              ↻
+            </span>
+            Refresh
+          </button>
           <SettingsMenu choice={themeChoice} onChoose={setThemeChoice} />
         </div>
       </header>
