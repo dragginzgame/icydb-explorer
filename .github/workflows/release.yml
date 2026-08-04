@@ -47,8 +47,11 @@ jobs:
 
       # `rust-toolchain.toml` pins the channel, so clippy and its lint set are
       # pinned too — which is why `-D warnings` below cannot break a release on
-      # somebody else's schedule.
-      - uses: dtolnay/rust-toolchain@stable
+      # somebody else's schedule. `rustup show` installs that pinned toolchain;
+      # naming a channel here instead would be a fiction, since the toolchain
+      # file overrides it for every cargo invocation anyway.
+      - name: Install the pinned Rust toolchain
+        run: rustup show
       # No `workspaces:` input. The cargo workspace root is the repo root, where
       # both `Cargo.lock` and the shared `target/` live — `src-tauri` is a member
       # of that workspace, not a workspace itself, and has no lockfile of its own.
@@ -99,7 +102,9 @@ jobs:
           # have to know which chip they have.
           - platform: macos-latest
             args: --target universal-apple-darwin
-            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            # Space-separated: this is passed straight to `rustup target add`,
+            # which takes a list of arguments rather than one comma-joined string.
+            rust-targets: aarch64-apple-darwin x86_64-apple-darwin
             label: macos
           # Deliberately not `ubuntu-latest`. The binary links the glibc of the
           # runner it was built on, so building on the newest Ubuntu produces
@@ -131,9 +136,19 @@ jobs:
           node-version: 22
           cache: npm
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust-targets }}
+      # Deliberately not `dtolnay/rust-toolchain@stable` with a `targets:` input.
+      # `rust-toolchain.toml` pins 1.96.0, and that file wins for every cargo
+      # invocation in this directory — so installing targets into `stable` left
+      # the toolchain that actually builds holding only its own host target, and
+      # the macOS leg died with "Target x86_64-apple-darwin is not installed
+      # (installed targets: aarch64-apple-darwin)". Adding the targets to the
+      # pinned toolchain is the whole fix; `rustup show` materialises it first.
+      - name: Install the pinned Rust toolchain
+        run: rustup show
+
+      - name: Add cross-compilation targets
+        if: matrix.rust-targets != ''
+        run: rustup target add ${{ matrix.rust-targets }}
 
       - uses: Swatinem/rust-cache@v2
         with:
