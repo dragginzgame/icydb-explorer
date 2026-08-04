@@ -493,7 +493,13 @@ function ExpandableRow({
                   app would otherwise gain a flex container for the sake of the
                   few that hold a relation key. */}
               {followable || links.length > 0 || copyable ? (
-                <div className="group flex flex-wrap items-start gap-1">
+                /* No wrapping. `flex-wrap` was here for the fleet chips, and it
+                   put the copy control on a second line whenever the value filled
+                   `max-w-cell` — which made every long cell a two-line row and the
+                   grid half as dense. The value truncates instead: its
+                   `overflow-hidden` zeroes the flex automatic minimum, so it gives
+                   up width to keep the controls beside it rather than under it. */
+                <div className="group flex items-start gap-1">
                   {valueCell}
                   {followable && (
                     <FollowButton relation={relation} cell={cell} onFollow={onFollow} />

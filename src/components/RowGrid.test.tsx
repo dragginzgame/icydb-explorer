@@ -969,3 +969,25 @@ test("Load more reads normally when idle", () => {
   expect(more).not.toBeDisabled();
   expect(more).toHaveAttribute("aria-busy", "false");
 });
+
+/// jsdom has no layout, so the mechanism is what is checkable — but the mechanism
+/// is the whole bug: `flex-wrap` put the copy control on a second line whenever the
+/// value filled `max-w-cell`, which made every long cell a two-line row and halved
+/// the grid's density.
+test("a cell's controls sit beside the value, never under it", () => {
+  render(<RowGrid rows={longCell} hasMore={false} onLoadMore={() => {}} />);
+
+  const wrapper = screen.getByRole("button", { name: "Copy bio" }).parentElement;
+  expect(wrapper?.className).toMatch(/\bflex\b/);
+  expect(wrapper?.className).not.toMatch(/flex-wrap/);
+});
+
+/// Which only works because the value gives up width rather than pushing the
+/// control out: `truncate` carries `overflow-hidden`, and that zeroes a flex item's
+/// automatic minimum size so it can shrink below its content.
+test("the value truncates so it can yield width to the controls", () => {
+  render(<RowGrid rows={longCell} hasMore={false} onLoadMore={() => {}} />);
+
+  const value = screen.getByTitle("a".repeat(200));
+  expect(value.className).toMatch(/\btruncate\b/);
+});
