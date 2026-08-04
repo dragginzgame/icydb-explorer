@@ -47,38 +47,18 @@ test("a failed copy confirms nothing", async () => {
   expect(screen.getByRole("status")).toHaveTextContent("");
 });
 
-/// The lingering-icon bug. WebKit focuses a button on click, and while this control
-/// is revealed by hover-or-focus a retained focus kept it lit on a cell the mouse
-/// had already left — which reads as a rendering fault rather than as focus.
-test("a pointer copy does not keep focus", async () => {
+/// The blur-after-pointer-copy that used to live here is gone. Its only job was to
+/// undo a focus-based reveal, and that reveal is gone too — visibility is now driven
+/// by hover alone, so nothing focus does can pin the control. Taking focus off a
+/// keyboard user's button is a real cost, and with no reveal to undo it bought
+/// nothing.
+test("copying leaves focus where it was", () => {
   stubClipboard();
   render(<CopyButton value="x" label="Copy id" />);
   const button = screen.getByRole("button", { name: "Copy id" });
-
-  // Focused first, because jsdom does *not* focus a button on click the way a
-  // browser does — and the browser's focusing is the entire cause of the bug. The
-  // first version of this test clicked a never-focused button and asserted focus
-  // had moved: true before the click, so it passed with the fix deleted.
   button.focus();
-  expect(document.activeElement).toBe(button);
 
-  // `detail` non-zero is what distinguishes a real click from a keyboard
-  // activation; testing-library sends 0 unless told otherwise.
   fireEvent.click(button, { detail: 1 });
-
-  expect(document.activeElement).not.toBe(button);
-});
-
-/// But a keyboard user must keep the focus they need to carry on tabbing, so the
-/// blur is strictly for pointer activation. `detail` is 0 for Enter or Space on a
-/// button, which is exactly the discriminator.
-test("a keyboard copy keeps focus", async () => {
-  stubClipboard();
-  render(<CopyButton value="x" label="Copy id" />);
-  const button = screen.getByRole("button", { name: "Copy id" });
-  button.focus();
-
-  fireEvent.click(button, { detail: 0 });
 
   expect(document.activeElement).toBe(button);
 });

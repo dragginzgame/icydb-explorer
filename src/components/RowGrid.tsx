@@ -508,20 +508,27 @@ function ExpandableRow({
                     <FleetChip key={link.pid} link={link} onGoTo={onGoToCanister} />
                   ))}
                   {copyable && (
-                    /* Revealed on hover so a hundred rows are not a hundred visible
-                       controls — but `focus-visible` too, or the control would be
-                       unreachable by keyboard. Hidden with `opacity`, not
-                       `display`, so it keeps its place in the tab order and in the
-                       accessibility tree either way. */
+                    /* Exactly one condition drives visibility: the cell is hovered.
+                       That is the whole fix for an icon that would not go away.
+
+                       Both earlier versions had a *second*, focus-based condition —
+                       `focus-visible` on the button, then `group-focus-within` on
+                       this wrapper. The wrapper contains the button, WebKit focuses
+                       a button on click, and only `group-hover` is wrapped in
+                       `@media (hover: hover)` — so the focus rule was unguarded and
+                       outlived the hover it was meant to complement.
+
+                       The cost, stated rather than papered over: a sighted keyboard
+                       user tabbing here gets no visual reveal. The control stays
+                       focusable and in the accessibility tree — `opacity` hides it
+                       from sight, not from assistive technology — and the same value
+                       is reachable through the expand control. A focus reveal is
+                       what pinned the icon twice, so it stays out until there is a
+                       way to add one that cannot. */
                     <CopyButton
                       value={cell.display}
                       label={`Copy ${columns[columnIndex] ?? "value"}`}
-                      /* Both triggers hang off the wrapper, so visibility is one
-                         symmetric condition: the cell is hovered, or something in
-                         it has focus. `focus-visible` on the button itself was the
-                         other half of the lingering icon — it kept the control lit
-                         after a click, with nothing on screen explaining why. */
-                      className="px-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+                      className="px-1 opacity-0 group-hover:opacity-100"
                     />
                   )}
                 </div>

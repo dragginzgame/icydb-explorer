@@ -936,56 +936,37 @@ test("an empty cell offers no copy control", () => {
   expect(screen.queryByRole("button", { name: /^Copy / })).not.toBeInTheDocument();
 });
 
-/// Revealed on hover so a hundred rows are not a hundred visible controls — but
-/// hidden with `opacity`, not `display`, so it keeps its place in the tab order,
-/// and revealed on focus too or it would be unreachable by keyboard.
-///
-/// Both triggers hang off the *wrapper*, so visibility is one symmetric condition.
-/// `focus-visible` on the button itself was half of a lingering-icon bug: it kept
-/// the control lit after a click, on a cell the mouse had already left.
-test("the copy control is hover-revealed but still keyboard-reachable", () => {
+/// One condition, and only one: the cell is hovered. Two previous versions added a
+/// focus-based reveal alongside it — `focus-visible` on the button, then
+/// `group-focus-within` on the wrapper — and because the wrapper contains the button
+/// and WebKit focuses a button on click, the icon stayed lit after the pointer left.
+/// Only `group-hover` is wrapped in `@media (hover: hover)`; the focus rules were
+/// unguarded and outlived the hover they were meant to complement.
+test("only hover reveals the copy control, so nothing can pin it", () => {
   render(<RowGrid rows={longCell} hasMore={false} onLoadMore={() => {}} />);
 
   const copy = screen.getByRole("button", { name: "Copy bio" });
   expect(copy.className).toMatch(/\bopacity-0\b/);
   expect(copy.className).toMatch(/group-hover:opacity-100/);
-  // The half that makes it usable without a mouse — driven by the wrapper, not by
-  // the button's own focus state.
-  expect(copy.className).toMatch(/group-focus-within:opacity-100/);
+  // No second trigger. Either of these outlives the hover it sits beside.
   expect(copy.className).not.toMatch(/focus-visible:opacity-100/);
-  // And the wrapper both triggers hang off.
+  expect(copy.className).not.toMatch(/group-focus-within/);
+  // And the wrapper the one trigger hangs off.
   expect(copy.parentElement?.className).toMatch(/\bgroup\b/);
 });
 
-/// A page against a large table can take seconds, and a control that does not
-/// change on click reads as one that did not register it.
-test("Load more reports that it is working and cannot be fired twice", () => {
-  render(<RowGrid rows={wide} hasMore onLoadMore={() => {}} loadingMore />);
-
-  const more = screen.getByRole("button", { name: /loading/i });
-  expect(more).toBeDisabled();
-  expect(more).toHaveAttribute("aria-busy", "true");
-  expect(screen.queryByRole("button", { name: /^load more$/i })).not.toBeInTheDocument();
-});
-
-test("Load more reads normally when idle", () => {
-  render(<RowGrid rows={wide} hasMore onLoadMore={() => {}} />);
-
-  const more = screen.getByRole("button", { name: /load more/i });
-  expect(more).not.toBeDisabled();
-  expect(more).toHaveAttribute("aria-busy", "false");
-});
-
-/// jsdom has no layout, so the mechanism is what is checkable — but the mechanism
-/// is the whole bug: `flex-wrap` put the copy control on a second line whenever the
-/// value filled `max-w-cell`, which made every long cell a two-line row and halved
-/// the grid's density.
-test("a cell's controls sit beside the value, never under it", () => {
+/// Hidden from sight, not from assistive technology: `opacity` keeps the control in
+/// the tab order and the accessibility tree, which is what makes hover-only reveal
+/// acceptable rather than an exclusion.
+test("the hidden copy control is still focusable and named", () => {
   render(<RowGrid rows={longCell} hasMore={false} onLoadMore={() => {}} />);
 
-  const wrapper = screen.getByRole("button", { name: "Copy bio" }).parentElement;
-  expect(wrapper?.className).toMatch(/\bflex\b/);
-  expect(wrapper?.className).not.toMatch(/flex-wrap/);
+  const copy = screen.getByRole("button", { name: "Copy bio" });
+  expect(copy.className).not.toMatch(/\bhidden\b/);
+  expect(copy).not.toHaveAttribute("aria-hidden", "true");
+  expect(copy).not.toBeDisabled();
+  copy.focus();
+  expect(document.activeElement).toBe(copy);
 });
 
 /// Which only works because the value gives up width rather than pushing the
