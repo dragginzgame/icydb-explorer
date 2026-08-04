@@ -49,9 +49,11 @@ jobs:
       # pinned too — which is why `-D warnings` below cannot break a release on
       # somebody else's schedule.
       - uses: dtolnay/rust-toolchain@stable
+      # No `workspaces:` input. The cargo workspace root is the repo root, where
+      # both `Cargo.lock` and the shared `target/` live — `src-tauri` is a member
+      # of that workspace, not a workspace itself, and has no lockfile of its own.
+      # Naming it here pointed the cache at a directory with nothing to hash.
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
 
       - run: npm ci
 
@@ -135,7 +137,6 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
           key: ${{ matrix.label }}
 
       - run: npm ci
@@ -189,6 +190,22 @@ jobs:
         with:
           name: icydb-explorer-${{ matrix.label }}
           if-no-files-found: error
+          # The workspace root, not `src-tauri/target`. `src-tauri` is a member of
+          # the root workspace, so cargo writes the shared target directory beside
+          # the root `Cargo.toml`. A local universal build was measured writing to
+          # `target/universal-apple-darwin/release/bundle/`; the `src-tauri/`-prefixed
+          # paths this step started with matched nothing at all.
+          #
+          # Named by extension rather than `bundle/**/*`, which also swept up the
+          # dmg builder's scratch (`bundle_dmg.sh`, a copy of `icon.icns`) and
+          # presented it beside the installers as though it were something to
+          # download. The union covers all three platforms; `if-no-files-found`
+          # judges the search as a whole, so each runner matching only its own
+          # subset is expected and not an error.
           path: |
-            src-tauri/target/release/bundle/**/*
-            src-tauri/target/universal-apple-darwin/release/bundle/**/*
+            target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            target/release/bundle/deb/*.deb
+            target/release/bundle/rpm/*.rpm
+            target/release/bundle/appimage/*.AppImage
+            target/release/bundle/msi/*.msi
+            target/release/bundle/nsis/*.exe
