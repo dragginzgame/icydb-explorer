@@ -55,6 +55,17 @@ export function isExpandable(value: ValueDto): boolean {
  * That is a cosmetic oddity, never a loss — every character survives, in order,
  * which `formatExpanded preserves every non-whitespace character` pins.
  */
+/** Whether this kind of value already offers its own copy control.
+ *
+ *  An identifier renders as `Identifier`, whose whole elided value *is* the copy
+ *  button — a second one beside it would be two ways to do one thing. Exported so
+ *  `RowGrid` can ask rather than keep its own copy of the kind list, which would
+ *  drift the moment either changed.
+ */
+export function hasOwnCopyControl(value: ValueDto): boolean {
+  return IDENTIFIER_KINDS.has(value.kind);
+}
+
 export function formatExpanded(display: string): string {
   const out: string[] = [];
   let depth = 0;

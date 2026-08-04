@@ -11,29 +11,86 @@ use super::dto::ValueDto;
 
 /// Map one icydb output value to its frontend-facing `kind`/`display` pair.
 pub fn value_to_dto(value: &OutputValue) -> ValueDto {
-    let kind = kind_of(value).to_string();
-    let display = match value {
-        // The frontend renders the empty null cell itself; an empty
-        // `display` lets it tell "no value" apart from the literal text
-        // "null" that `render_output_value_text` would otherwise produce.
-        OutputValue::Null => String::new(),
-        // Raw bytes are not useful in a table cell; a length is.
-        OutputValue::Blob(bytes) => format!("{} bytes", bytes.len()),
-        other => render_output_value_text(other),
-    };
-    // Only a list carries elements. A map has pairs rather than keys and nothing
-    // follows a map, so flattening one here would invent a shape with no
-    // consumer; a scalar has no elements at all.
-    let items = match value {
-        OutputValue::List(elements) => Some(elements.iter().map(value_to_dto).collect()),
-        _ => None,
-    };
-
     ValueDto {
-        kind,
-        display,
-        items,
+        kind: kind_of(value).to_string(),
+        display: display_of(value),
+        // Only a list carries elements. A map has pairs rather than keys and
+        // nothing follows a map, so flattening one here would invent a shape with
+        // no consumer; a scalar has no elements at all.
+        items: match value {
+            OutputValue::List(elements) => Some(elements.iter().map(value_to_dto).collect()),
+            _ => None,
+        },
     }
+}
+
+/// The text for a cell, summarising blobs at *every* depth.
+///
+/// Containers are rendered here rather than by `render_output_value_text`, which
+/// is a deliberate reversal. icydb renders a blob as complete lowercase hex — `0x`
+/// plus two characters per byte — and the old code summarised only the *top-level*
+/// case, delegating containers wholesale. So a 30 kB thumbnail nested inside a
+/// composite arrived as a 60,000-character cell.
+///
+/// That was not merely ugly. A hundred-row page carried megabytes of hex across
+/// the command boundary, and every per-cell pass in the frontend then walked all
+/// of it — the expand re-indenter character by character, the fleet-principal scan
+/// by regex. It is the reason large tables felt like the app had frozen.
+///
+/// Scalars still go to icydb's renderer: its formatting of a timestamp, a decimal
+/// or an enum is the vocabulary the rest of the tooling uses, and reimplementing
+/// that here would be this module inventing its own dialect. Only the two
+/// container shapes and the two special cases are handled locally, so that a blob
+/// is summarised wherever it appears.
+fn display_of(value: &OutputValue) -> String {
+    render(value, true)
+}
+
+fn render(value: &OutputValue, whole_cell: bool) -> String {
+    match value {
+        // A whole cell that is null gets an empty display, so the frontend can draw
+        // its own marker and tell "no value" from the literal text "null".
+        OutputValue::Null if whole_cell => String::new(),
+        // Nested, "null" *is* the value and has to be readable: `{name: cover,
+        // alt: }` says a field is missing far less clearly than `{alt: null}`, and
+        // it is what icydb rendered before containers moved in here. An earlier
+        // version of this function returned the empty string at every depth, and a
+        // test of mine asserted that shape as though it were intended.
+        OutputValue::Null => "null".to_string(),
+        // Raw bytes are not useful in a table cell; a size is. Same summary at
+        // every depth, which is the whole point of this function existing.
+        OutputValue::Blob(bytes) => blob_summary(bytes.len()),
+        OutputValue::List(elements) => {
+            let rendered: Vec<String> = elements.iter().map(|e| render(e, false)).collect();
+
+            format!("[{}]", rendered.join(", "))
+        }
+        OutputValue::Map(entries) => {
+            let rendered: Vec<String> = entries
+                .iter()
+                .map(|(key, entry)| format!("{}: {}", render(key, false), render(entry, false)))
+                .collect();
+
+            format!("{{{}}}", rendered.join(", "))
+        }
+        other => render_output_value_text(other),
+    }
+}
+
+/// A blob's size, in the unit a reader can judge.
+///
+/// A thumbnail reported as "30720 bytes" is a number to decode; "30 kB" is a
+/// quantity. Powers of ten rather than two, matching how image and file sizes are
+/// quoted everywhere a reader would have seen this blob before.
+fn blob_summary(len: usize) -> String {
+    if len < 1_000 {
+        return format!("{len} bytes");
+    }
+    if len < 1_000_000 {
+        return format!("{:.1} kB", len as f64 / 1_000.0);
+    }
+
+    format!("{:.1} MB", len as f64 / 1_000_000.0)
 }
 
 /// The stable `kind` string for each `OutputValue` variant. Matches
@@ -110,7 +167,86 @@ mod tests {
     fn blob_reports_byte_length_rather_than_raw_bytes() {
         let dto = value_to_dto(&OutputValue::Blob(vec![0u8; 40]));
         assert_eq!(dto.kind, "blob");
-        assert!(dto.display.contains("40"));
+        assert_eq!(dto.display, "40 bytes");
+    }
+
+    /// The bug this branch exists for. icydb renders a blob as complete lowercase
+    /// hex, and only the top-level case used to be summarised — so a thumbnail
+    /// inside a composite arrived as tens of thousands of characters per cell.
+    #[test]
+    fn a_blob_nested_in_a_map_is_summarised_too() {
+        let thumbnail = OutputValue::Blob(vec![7u8; 30_000]);
+        let record = OutputValue::Map(vec![
+            (OutputValue::Text("name".into()), OutputValue::Text("cover".into())),
+            (OutputValue::Text("data".into()), thumbnail),
+        ]);
+
+        let dto = value_to_dto(&record);
+        assert_eq!(dto.display, "{name: cover, data: 30.0 kB}");
+        // The specific failure: no hex, and nothing remotely the size of the blob.
+        assert!(!dto.display.contains("0x"));
+        assert!(dto.display.len() < 60, "was {} chars", dto.display.len());
+    }
+
+    /// Nesting is arbitrary — a list of records each holding a blob is the real
+    /// shape in toko's `User.workspace.pins`.
+    #[test]
+    fn a_blob_nested_two_deep_is_summarised() {
+        let entry = OutputValue::Map(vec![(
+            OutputValue::Text("thumb".into()),
+            OutputValue::Blob(vec![0u8; 2_500_000]),
+        )]);
+        let dto = value_to_dto(&OutputValue::List(vec![entry]));
+
+        assert_eq!(dto.display, "[{thumb: 2.5 MB}]");
+    }
+
+    /// A size a reader can judge, rather than a number to decode. Powers of ten,
+    /// matching how file and image sizes are quoted everywhere else.
+    #[test]
+    fn blob_sizes_read_in_the_unit_that_suits_them() {
+        let at = |len: usize| value_to_dto(&OutputValue::Blob(vec![0u8; len])).display;
+
+        assert_eq!(at(0), "0 bytes");
+        assert_eq!(at(999), "999 bytes");
+        assert_eq!(at(1_000), "1.0 kB");
+        assert_eq!(at(30_720), "30.7 kB");
+        assert_eq!(at(999_999), "1000.0 kB");
+        assert_eq!(at(1_000_000), "1.0 MB");
+    }
+
+    /// Containers are rendered here now, so the shapes icydb produced must be
+    /// preserved exactly — a reader who has seen these values in icydb-cli should
+    /// recognise them.
+    #[test]
+    fn containers_keep_icydbs_own_bracket_shapes() {
+        let list = OutputValue::List(vec![OutputValue::Nat64(1), OutputValue::Nat64(2)]);
+        assert_eq!(value_to_dto(&list).display, "[1, 2]");
+
+        let map = OutputValue::Map(vec![
+            (OutputValue::Text("a".into()), OutputValue::Nat64(1)),
+            (OutputValue::Text("b".into()), OutputValue::Nat64(2)),
+        ]);
+        assert_eq!(value_to_dto(&map).display, "{a: 1, b: 2}");
+
+        assert_eq!(value_to_dto(&OutputValue::List(vec![])).display, "[]");
+        assert_eq!(value_to_dto(&OutputValue::Map(vec![])).display, "{}");
+    }
+
+    /// A null *inside* a container still renders as icydb spells it. The empty
+    /// display is for a whole cell being null, where the frontend draws its own
+    /// marker — nested, "null" is the value and has to be readable.
+    ///
+    /// The first version of this test asserted `{x: }`, documenting a regression
+    /// this rewrite had just introduced as though it were the intent. Rendering
+    /// containers locally moved every nested null onto the whole-cell rule.
+    #[test]
+    fn a_null_inside_a_container_still_reads_as_null() {
+        let map = OutputValue::Map(vec![(OutputValue::Text("x".into()), OutputValue::Null)]);
+        assert_eq!(value_to_dto(&map).display, "{x: null}");
+
+        // And the whole-cell rule is untouched.
+        assert_eq!(value_to_dto(&OutputValue::Null).display, "");
     }
 
     #[test]

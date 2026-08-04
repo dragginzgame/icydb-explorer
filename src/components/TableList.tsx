@@ -22,14 +22,15 @@ export function TableList({
   selected,
   onSelect,
   counts,
-  onCount,
-  counting,
+  counting = false,
 }: {
   entities: EntityDto[];
   selected: string | null;
   onSelect: (name: string) => void;
   counts?: RowCounts;
-  onCount?: () => void;
+  /** Whether a count pass is running. A table with no count yet then says so,
+   *  rather than looking identical to one whose count simply is not coming — the
+   *  pass is sequential, so most rows sit in that state for a while. */
   counting?: boolean;
 }) {
   // Every hook before the early return below. The `useState` used to sit after
@@ -102,20 +103,6 @@ export function TableList({
           </button>
         </div>
       )}
-      {onCount && (
-        // Counting is user-initiated because each count is a full scan: one
-        // statement per table, which is free against an empty local replica
-        // and careless against a production canister. The schema facts beside
-        // it (columns, indexes) came with SHOW ENTITIES and cost nothing.
-        <button
-          type="button"
-          onClick={onCount}
-          disabled={counting}
-          className="mx-2 my-1 rounded-control border border-rule px-2 py-0.5 text-xs text-text-2 hover:bg-surface-2 disabled:text-text-3"
-        >
-          {counting ? "Counting…" : "Count rows"}
-        </button>
-      )}
       {needle && shown.length === 0 && (
         // Says what was searched for, so the reader can see the typo rather
         // than wonder whether the canister lost its tables.
@@ -141,6 +128,11 @@ export function TableList({
                     (counted === null
                       ? " · count unavailable"
                       : ` · ${counted.toLocaleString()} ${counted === 1 ? "row" : "rows"}`)}
+                  {/* Its turn has not come yet. Counting runs one table at a time,
+                      so on a canister with a dozen large tables most rows sit here
+                      for a while — and a blank looks the same as a count that is
+                      never coming. */}
+                  {counted === undefined && counting && " · counting…"}
                 </div>
               </button>
             </li>

@@ -2301,10 +2301,12 @@ test("refresh re-reads the fleet so a new canister appears", async () => {
   expect(await screen.findByText("new-shard")).toBeInTheDocument();
 });
 
-/// A count already on screen is re-run: the reader paid for that number once and
-/// letting it go quietly stale is worse than paying again. Counts they never
-/// asked for stay unasked, because each is a full scan.
-test("refresh re-runs only the counts already on screen", async () => {
+/// Counting became automatic, so a refresh re-reads the counts by letting that
+/// pass run again — the earlier rule ("only tables that already have a count")
+/// was right while counting was manual and became a gap once it was not: a
+/// refresh during the first pass would have recounted only what was done so far
+/// and never revisited the rest.
+test("refresh re-counts the canister's tables", async () => {
   refreshableFleet([projectRows("first")]);
   vi.mocked(commands.listTables).mockResolvedValue({
     type: "entities",
@@ -2314,13 +2316,16 @@ test("refresh re-runs only the counts already on screen", async () => {
 
   render(<App />);
   await pickCanister("shard");
-  await screen.findByText("Project");
+  await waitFor(() => expect(countedTables()).toContain("Other"));
 
-  // Nothing counted yet, so a refresh must count nothing.
   vi.mocked(commands.countRows).mockClear();
   fireEvent.click(screen.getByRole("button", { name: /refresh/i }));
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(commands.countRows).not.toHaveBeenCalled();
+
+  // Both tables again, not just the ones counted before.
+  await waitFor(() => {
+    expect(countedTables()).toContain("Project");
+    expect(countedTables()).toContain("Other");
+  });
 });
 
 /// Offered with nothing behind it, the control would be a lie.
@@ -2670,4 +2675,121 @@ test("the row actions add no height to the pane header", async () => {
     expect(control.className).not.toMatch(/\bpy-\d/);
     expect(control.className).not.toMatch(/\bborder\b/);
   }
+});
+
+// ── Counting ─────────────────────────────────────────────────────────────────
+
+/** The table names `countRows` has been asked about since it was last cleared.
+ *
+ *  Asserted on instead of a call count: this file's mocks are per-file, so a
+ *  straggling count from an earlier test can land inside a later one's `waitFor`
+ *  and make an exact total flaky. Which tables were counted is also the stronger
+ *  claim — "twice" does not say it was the right two. */
+function countedTables(): string[] {
+  return vi.mocked(commands.countRows).mock.calls.map((call) => call[2]);
+}
+
+/// Counting used to wait to be asked, on the grounds that each count is a full
+/// scan. That was deliberately reversed: a canister now counts its tables as soon
+/// as they are listed. The cost is real — one statement per table, unasked — and
+/// against a production canister it is the only thing in this app that behaves
+/// that way.
+test("selecting a canister counts its tables without being asked", async () => {
+  refreshableFleet([projectRows("first")]);
+  vi.mocked(commands.listTables).mockResolvedValue({
+    type: "entities",
+    entities: [entity("Project", 1), entity("Other", 1)],
+  });
+  vi.mocked(commands.countRows).mockClear();
+  vi.mocked(commands.countRows).mockResolvedValue(7);
+
+  render(<App />);
+  await pickCanister("shard");
+
+  await waitFor(() => {
+    expect(countedTables()).toContain("Project");
+    expect(countedTables()).toContain("Other");
+  });
+  // Both tables count to 7, so both rows show it.
+  expect(await screen.findAllByText(/7 rows/)).toHaveLength(2);
+});
+
+/// Once per canister, not once per render — and not retriggered by the counts it
+/// writes, which would make it count forever.
+test("counting happens once per canister", async () => {
+  refreshableFleet([projectRows("first")]);
+  vi.mocked(commands.countRows).mockClear();
+  vi.mocked(commands.countRows).mockResolvedValue(1);
+
+  render(<App />);
+  await pickCanister("shard");
+  await waitFor(() => expect(commands.countRows).toHaveBeenCalled());
+
+  // Select the table too, which re-renders and re-derives plenty.
+  fireEvent.click(await screen.findByText("Project"));
+  await screen.findByText("first");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  expect(vi.mocked(commands.countRows).mock.calls).toHaveLength(1);
+});
+
+/// The numbers arrive on their own now, so the manual action is refreshing one that
+/// is already there — and it lives in the pane header with the same text-only
+/// treatment as the row actions.
+test("the Tables header offers a recount", async () => {
+  refreshableFleet([projectRows("first")]);
+  vi.mocked(commands.countRows).mockResolvedValue(1);
+
+  render(<App />);
+  await pickCanister("shard");
+  const recount = await screen.findByRole("button", { name: "Recount rows" });
+
+  // Text, not a boxed button: the pane header is `py-1` around a `text-xs` title.
+  expect(recount.className).not.toMatch(/\bpy-\d/);
+  expect(recount.className).not.toMatch(/\bborder\b/);
+
+  vi.mocked(commands.countRows).mockClear();
+  fireEvent.click(recount);
+  await waitFor(() => expect(commands.countRows).toHaveBeenCalled());
+});
+
+/// Nothing to count, so nothing offered.
+test("a canister with no tables offers no recount", async () => {
+  refreshableFleet([projectRows("first")]);
+  vi.mocked(commands.listTables).mockResolvedValue({ type: "entities", entities: [] });
+
+  render(<App />);
+  await pickCanister("shard");
+
+  await screen.findByText(/doesn't expose any icydb entities/);
+  expect(screen.queryByRole("button", { name: /Recount/ })).not.toBeInTheDocument();
+});
+
+/// Counting is sequential — N full scans, one at a time — so on a canister with a
+/// dozen big tables "Counting…" alone reads as stuck. A fraction says work is
+/// happening and roughly how much is left, which is the whole complaint this
+/// addresses.
+test("the counting control reports how far along it is", async () => {
+  refreshableFleet([projectRows("first")]);
+  vi.mocked(commands.listTables).mockResolvedValue({
+    type: "entities",
+    entities: [entity("Project", 1), entity("Other", 1), entity("Third", 1)],
+  });
+
+  // The first count settles, the second is held open — so the pass is genuinely
+  // mid-flight when the label is read.
+  const second = deferred<number>();
+  let call = 0;
+  vi.mocked(commands.countRows).mockImplementation(async () => {
+    call += 1;
+    if (call === 1) return 5;
+    return second.promise;
+  });
+
+  render(<App />);
+  await pickCanister("shard");
+
+  expect(await screen.findByRole("button", { name: /Counting 1 of 3/ })).toBeInTheDocument();
+
+  second.resolve(9);
 });

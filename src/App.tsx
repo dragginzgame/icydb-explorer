@@ -228,6 +228,7 @@ function App() {
   const [identityNote, setIdentityNote] = useState<string | null>(null);
   const [rowCounts, setRowCounts] = useState<RowCounts>({});
   const [counting, setCounting] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   const [schema, setSchema] = useState<SchemaDto | null>(null);
   const [schemaError, setSchemaError] = useState<AppErrorDto | null>(null);
@@ -781,6 +782,39 @@ function App() {
     setSqlError(undefined);
   }, []);
 
+  // Counts a canister's tables as soon as they are listed, once per canister.
+  //
+  // This reverses a deliberate earlier choice, and the cost is worth stating: each
+  // count is a full scan, so selecting a canister now issues one statement per
+  // table without being asked. Against a local replica that is free; against a
+  // production canister it is not, and the counts are the only thing in this app
+  // that behaves that way.
+  //
+  // Keyed on the canister so it happens once rather than on every render, and
+  // deliberately *not* on `rowCounts` — which it writes, and would otherwise
+  // retrigger itself.
+  // The effect's own dependencies are the mechanism: it runs when the canister
+  // changes, when the entity list is re-fetched, and when a refresh bumps the
+  // generation — and not otherwise, because a re-render changes none of those.
+  //
+  // An earlier version added a ref keyed on canister-plus-generation to stop it
+  // running twice. Removing that ref changed no test, which is how it was found to
+  // be describing a guarantee the deps already gave. It also quietly *suppressed*
+  // one case that should recount: switching identity re-lists the tables, and the
+  // counts should follow.
+  //
+  // `refreshGeneration` is load-bearing rather than decorative: a re-fetch can
+  // return an identical entity list, so the generation is what makes "again" mean
+  // again.
+  useEffect(() => {
+    if (!canister || !entities || entities.length === 0) return;
+    void countAllRows(entities);
+    // `countAllRows` is excluded on purpose: it closes over the selection and is
+    // rebuilt whenever any part of it changes, which would re-run this effect
+    // mid-count and start a second pass over the same tables.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canister, entities, refreshGeneration]);
+
   // Saves the page on screen. The rows are already here, so this serialises
   // locally and asks Rust only to write — no extra query, and nothing fetched
   // that the reader is not already looking at.
@@ -852,24 +886,29 @@ function App() {
   // by something else (creating a project in the app, say) is invisible until
   // something re-asks. This is that something.
   //
-  // Counts are re-run only where one is already on screen. They are full scans,
-  // which this app never issues unasked; but a count the reader already paid for
-  // going stale silently is worse than paying for it again, and dropping it would
-  // make refresh visibly destroy information.
+  // Counts are re-read too, by letting the automatic pass run again. This used to
+  // filter to "tables that already have a count", which was the right rule while
+  // counting was manual — but with counting automatic that set is everything, and
+  // the filter left a gap: a refresh fired *before* the first pass finished would
+  // recount only the tables counted so far and never revisit the rest, because the
+  // pass does not re-fire for a canister it has already seen.
   const refresh = useCallback(() => {
     setRefreshing(true);
-    const alreadyCounted = (entities ?? []).filter((listed) => listed.name in rowCounts);
+    // The bump is what makes the automatic count pass run again: it is part of
+    // that effect's key.
     setRefreshGeneration((generation) => generation + 1);
-    if (alreadyCounted.length > 0) void countAllRows(alreadyCounted);
     // The fetches are effect-driven and each guards its own staleness, so there
     // is nothing here to await. The spinner is a deliberate fixed beat: it says
     // "this was received" rather than tracking a completion this callback cannot
     // observe. Claiming to know when every fetch has landed would be a lie.
     window.setTimeout(() => setRefreshing(false), 400);
-  }, [entities, rowCounts, countAllRows]);
+  }, []);
 
   const loadMore = useCallback(() => {
     if (!env || !canister || !entity || !identity) return;
+    // A page against a large table can take seconds, and the button previously
+    // just sat there — which reads as a click that did not register.
+    setLoadingMore(true);
     const nextOffset = offset + DEFAULT_ROW_LIMIT;
     const isStale = () => {
       const current = selectionRef.current;
@@ -883,6 +922,7 @@ function App() {
     fetchRows(env, canister, entity, nextOffset, identity)
       .then((result) => {
         if (isStale()) return;
+        setLoadingMore(false);
         if (result.type !== "rows") {
           setRowsError(genericError("fetch_rows returned an unexpected result shape."));
           return;
@@ -895,6 +935,9 @@ function App() {
       })
       .catch((error: AppErrorDto) => {
         if (isStale()) return;
+        // Cleared on the failing path too, or a rejected page leaves the button
+        // saying "Loading…" for the rest of the session.
+        setLoadingMore(false);
         setRowsError(error);
       });
   }, [env, canister, entity, identity, offset]);
@@ -1048,6 +1091,12 @@ function App() {
   // gates for one rule means either can be removed with every test still green,
   // which is how the perpetual-skeleton bug survived review the first time.
   const rowsPending = rows === null && rowsError === null;
+
+  // How many of this canister's tables have a count. Counting is sequential — N
+  // full scans, one at a time — so on a canister with a dozen big tables the pass
+  // takes long enough that "Counting…" alone reads as stuck. A fraction says work
+  // is happening and roughly how much is left.
+  const countProgress = (entities ?? []).filter((listed) => listed.name in rowCounts).length;
 
   const currentEnvironment = environments.find((candidate) => candidate.name === env) ?? null;
 
@@ -1338,6 +1387,24 @@ function App() {
               width={layout.widths.tables}
               onResize={(width) => setWidth("tables", width)}
               className="border-r border-rule bg-surface-1"
+              trailing={
+                /* "Recount", not "Count": the counts arrive on their own now, so
+                   the manual action is refreshing a number that is already there.
+                   In the header with the same text-only treatment as the row
+                   actions, rather than a bordered button taking a row from the
+                   list it sits above. */
+                entities && entities.length > 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => void countAllRows(entities)}
+                    disabled={counting}
+                    title="Runs COUNT(*) on every table in this canister. Each one is a full scan."
+                    className="rounded-row px-0.5 text-xs text-text-3 underline decoration-dotted underline-offset-2 hover:text-text-1 disabled:no-underline disabled:opacity-60"
+                  >
+                    {counting ? `Counting ${countProgress} of ${entities.length}…` : "Recount rows"}
+                  </button>
+                ) : null
+              }
             >
               {entitiesError && <ErrorBanner error={entitiesError} />}
               {/* Three blank conditions used to collapse into one silent gap:
@@ -1362,7 +1429,6 @@ function App() {
                   onSelect={setEntity}
                   counts={rowCounts}
                   counting={counting}
-                  onCount={() => void countAllRows(entities)}
                 />
               )}
             </Pane>
@@ -1487,6 +1553,7 @@ function App() {
                       hasMore={hasMore}
                       onLoadMore={loadMore}
                       loading={rowsPending}
+                      loadingMore={loadingMore}
                       skeletonColumns={skeletonColumns}
                       /* Only the selected table's own grid gets relation
                          affordances. A statement's output need not have this

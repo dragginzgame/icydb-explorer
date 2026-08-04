@@ -5,7 +5,8 @@ import { followPlan } from "../lib/followRelation";
 import { type FleetIndex, fleetLinks } from "../lib/fleetLinks";
 
 import { PaneEmpty } from "./PaneStates";
-import { ValueCell, formatExpanded, isExpandable } from "./ValueCell";
+import { CopyButton } from "./CopyButton";
+import { ValueCell, formatExpanded, hasOwnCopyControl, isExpandable } from "./ValueCell";
 
 // Enough rows to fill the pane without implying a page size we do not know.
 const SKELETON_ROWS = 8;
@@ -23,6 +24,7 @@ export function RowGrid({
   hasMore,
   onLoadMore,
   loading = false,
+  loadingMore = false,
   skeletonColumns,
   relations,
   onFollow,
@@ -38,6 +40,10 @@ export function RowGrid({
   hasMore: boolean;
   onLoadMore: () => void;
   loading?: boolean;
+  /** Whether the next page is in flight. A page against a large table can take
+   *  seconds, and a control that does not change on click reads as one that did
+   *  not register it. */
+  loadingMore?: boolean;
   /** How many columns the entity being loaded has, for sizing skeletons while
    *  `rows` is null. A count, not names: the caller knows the arity from
    *  `EntityDto.columns` before any row arrives, but not the names — those come
@@ -182,9 +188,11 @@ export function RowGrid({
           <button
             type="button"
             onClick={onLoadMore}
-            className="w-full rounded-control border border-rule py-1.5 text-sm text-text-2 hover:bg-surface-2"
+            disabled={loadingMore}
+            aria-busy={loadingMore}
+            className="w-full rounded-control border border-rule py-1.5 text-sm text-text-2 hover:bg-surface-2 disabled:text-text-3"
           >
-            Load more
+            {loadingMore ? "Loading…" : "Load more"}
           </button>
         </div>
       )}
@@ -462,6 +470,12 @@ function ExpandableRow({
           // ids. Most principals in a fleet's data are users and resolve to
           // nothing, which is the correct answer and the common case.
           const links = fleet ? fleetLinks(cell, fleet) : [];
+          // Every cell is clipped to `max-w-cell`, so the value on screen is often
+          // not the whole value — which makes "copy this cell" the only way to get
+          // at the rest of it short of expanding and selecting by hand. Skipped
+          // where the kind already carries its own control, rather than offering
+          // two ways to do one thing.
+          const copyable = cell.display !== "" && !hasOwnCopyControl(cell);
           const valueCell = (
             <ValueCell
               value={cell}
@@ -478,8 +492,8 @@ function ExpandableRow({
               {/* Wrapped only when there is something to wrap. Every cell in the
                   app would otherwise gain a flex container for the sake of the
                   few that hold a relation key. */}
-              {followable || links.length > 0 ? (
-                <div className="flex flex-wrap items-start gap-1">
+              {followable || links.length > 0 || copyable ? (
+                <div className="group flex flex-wrap items-start gap-1">
                   {valueCell}
                   {followable && (
                     <FollowButton relation={relation} cell={cell} onFollow={onFollow} />
@@ -487,6 +501,18 @@ function ExpandableRow({
                   {links.map((link) => (
                     <FleetChip key={link.pid} link={link} onGoTo={onGoToCanister} />
                   ))}
+                  {copyable && (
+                    /* Revealed on hover so a hundred rows are not a hundred visible
+                       controls — but `focus-visible` too, or the control would be
+                       unreachable by keyboard. Hidden with `opacity`, not
+                       `display`, so it keeps its place in the tab order and in the
+                       accessibility tree either way. */
+                    <CopyButton
+                      value={cell.display}
+                      label={`Copy ${columns[columnIndex] ?? "value"}`}
+                      className="px-1 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                    />
+                  )}
                 </div>
               ) : (
                 valueCell

@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 import type { TreeNode } from "../api/types";
-import { copyText } from "../lib/copyText";
+import { CopyButton } from "./CopyButton";
 import {
   ancestorsOf,
   descendantCount,
@@ -147,49 +147,6 @@ export function CanisterTree({
   );
 }
 
-/** Copies a canister's principal.
- *
- *  Worth its own control because the principal is the thing a reader takes
- *  *out* of this app — into a `dfx` command, a bug report, a log search — and
- *  selecting the text out of a tree row is fiddly at best.
- *
- *  Confirms only on success: `copyText` has two routes and neither is guaranteed
- *  in a webview, so a silent failure must not be reported as a copy.
- */
-function CopyPrincipal({ pid, role }: { pid: string; role: string }) {
-  const [copied, setCopied] = useState(false);
-  // So a second click cannot have its confirmation cut short by the first
-  // click's timer, and nothing stays scheduled after this row unmounts — which
-  // happens whenever the filter changes.
-  const hideTimer = useRef<number | undefined>(undefined);
-
-  useEffect(() => () => window.clearTimeout(hideTimer.current), []);
-
-  return (
-    <button
-      type="button"
-      onClick={() => {
-        void copyText(pid).then((ok) => {
-          if (!ok) return;
-          window.clearTimeout(hideTimer.current);
-          setCopied(true);
-          hideTimer.current = window.setTimeout(() => setCopied(false), 1200);
-        });
-      }}
-      aria-label={`Copy ${role} principal`}
-      title={pid}
-      className="w-6 shrink-0 rounded-row text-xs text-text-3 hover:bg-surface-2 hover:text-text-1"
-    >
-      <span aria-hidden="true">{copied ? "✓" : "⧉"}</span>
-      {/* Announced rather than only drawn: the glyph swap says nothing to a
-          screen reader, and "did that work" is the whole question. */}
-      <span className="sr-only" role="status">
-        {copied ? "Copied" : ""}
-      </span>
-    </button>
-  );
-}
-
 /** Every canister in a forest that has children, at any depth. */
 function withChildren(trees: TreeNode[]): string[] {
   return trees.flatMap((node) => [
@@ -282,7 +239,7 @@ function CanisterTreeNode({
         {/* A sibling of the select button, not inside it: a button within a button
             is invalid, and clicking to copy an id must not also re-query the
             canister it belongs to. */}
-        <CopyPrincipal pid={node.pid} role={node.role} />
+        <CopyButton value={node.pid} label={`Copy ${node.role} principal`} className="w-6" />
       </div>
 
       {hasChildren && !isCollapsed && (

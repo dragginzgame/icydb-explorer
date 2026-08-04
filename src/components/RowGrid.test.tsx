@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { RowGrid } from "./RowGrid";
 
 const rows = {
@@ -812,7 +812,10 @@ test("the ordinal leads the row and the data follows unchanged", () => {
 
   const cells = [...document.querySelectorAll("tbody tr")[1].querySelectorAll("td")];
   expect(cells[0].textContent).toBe("2");
-  expect(cells[1].textContent).toBe("remco");
+  // `toHaveTextContent` rather than an exact match: a data cell also holds its
+  // hover copy control, whose glyph is in `textContent` even though it is
+  // `aria-hidden`. The ordinal cell has no control, so it stays exact.
+  expect(cells[1]).toHaveTextContent("remco");
 });
 
 /// Digits down a column have to line up, or a long list is unreadable.
@@ -842,7 +845,9 @@ test("a merged result is numbered too, in front of the origin column", () => {
   const heads = [...document.querySelectorAll("thead th")].map((th) => th.textContent);
   expect(heads).toEqual(["#", "_canister", "handle"]);
   const first = [...document.querySelectorAll("tbody tr")[0].querySelectorAll("td")];
-  expect(first.map((cell) => cell.textContent)).toEqual(["1", "shard_1", "juno"]);
+  expect(first[0].textContent).toBe("1");
+  expect(first[1]).toHaveTextContent("shard_1");
+  expect(first[2]).toHaveTextContent("juno");
 });
 
 /// Appending a page continues the count rather than restarting it — the numbering
@@ -865,4 +870,102 @@ test("loading another page continues the numbering", () => {
 
   const rows = [...document.querySelectorAll("tbody tr")];
   expect(rows[3].querySelector("td")?.textContent).toBe("4");
+});
+
+// ── Copying a cell ───────────────────────────────────────────────────────────
+
+const longCell = {
+  entity: "User",
+  columns: ["id", "bio"],
+  rows: [
+    [
+      { kind: "ulid", display: "01KYVVPD156GJG000000000001" },
+      { kind: "text", display: "a".repeat(200) },
+    ],
+  ],
+  rowCount: 1,
+  nextCursor: null,
+};
+
+/// Every cell is clipped to `max-w-cell`, so what is on screen is often not the
+/// whole value — which makes copying the only way to get the rest of it short of
+/// expanding and selecting by hand.
+test("a cell offers to copy its full value, not the clipped text", async () => {
+  const written: string[] = [];
+  vi.stubGlobal("navigator", {
+    clipboard: {
+      writeText: async (text: string) => {
+        written.push(text);
+      },
+    },
+  });
+
+  render(<RowGrid rows={longCell} hasMore={false} onLoadMore={() => {}} />);
+  fireEvent.click(screen.getByRole("button", { name: "Copy bio" }));
+
+  await waitFor(() => expect(written).toEqual(["a".repeat(200)]));
+  vi.unstubAllGlobals();
+});
+
+/// Named for its column: a row of identically-named buttons tells a screen-reader
+/// user nothing about which is which.
+test("each copy control is named for its column", () => {
+  render(<RowGrid rows={longCell} hasMore={false} onLoadMore={() => {}} />);
+
+  expect(screen.getByRole("button", { name: "Copy bio" })).toBeInTheDocument();
+});
+
+/// An identifier renders as `Identifier`, whose whole elided value *is* the copy
+/// button. A second one beside it would be two ways to do one thing.
+test("a kind that already copies itself gets no second control", () => {
+  render(<RowGrid rows={longCell} hasMore={false} onLoadMore={() => {}} />);
+
+  expect(screen.queryByRole("button", { name: "Copy id" })).not.toBeInTheDocument();
+});
+
+/// Nothing to copy, so nothing offered.
+test("an empty cell offers no copy control", () => {
+  render(
+    <RowGrid
+      rows={{ ...longCell, rows: [[{ kind: "ulid", display: "01H" }, { kind: "null", display: "" }]] }}
+      hasMore={false}
+      onLoadMore={() => {}}
+    />,
+  );
+
+  expect(screen.queryByRole("button", { name: /^Copy / })).not.toBeInTheDocument();
+});
+
+/// Revealed on hover so a hundred rows are not a hundred visible controls — but
+/// hidden with `opacity`, not `display`, so it keeps its place in the tab order,
+/// and revealed on focus too or it would be unreachable by keyboard.
+test("the copy control is hover-revealed but still keyboard-reachable", () => {
+  render(<RowGrid rows={longCell} hasMore={false} onLoadMore={() => {}} />);
+
+  const copy = screen.getByRole("button", { name: "Copy bio" });
+  expect(copy.className).toMatch(/\bopacity-0\b/);
+  expect(copy.className).toMatch(/group-hover:opacity-100/);
+  // The half that makes it usable without a mouse.
+  expect(copy.className).toMatch(/focus-visible:opacity-100/);
+  // And the wrapper it reacts to.
+  expect(copy.parentElement?.className).toMatch(/\bgroup\b/);
+});
+
+/// A page against a large table can take seconds, and a control that does not
+/// change on click reads as one that did not register it.
+test("Load more reports that it is working and cannot be fired twice", () => {
+  render(<RowGrid rows={wide} hasMore onLoadMore={() => {}} loadingMore />);
+
+  const more = screen.getByRole("button", { name: /loading/i });
+  expect(more).toBeDisabled();
+  expect(more).toHaveAttribute("aria-busy", "true");
+  expect(screen.queryByRole("button", { name: /^load more$/i })).not.toBeInTheDocument();
+});
+
+test("Load more reads normally when idle", () => {
+  render(<RowGrid rows={wide} hasMore onLoadMore={() => {}} />);
+
+  const more = screen.getByRole("button", { name: /load more/i });
+  expect(more).not.toBeDisabled();
+  expect(more).toHaveAttribute("aria-busy", "false");
 });

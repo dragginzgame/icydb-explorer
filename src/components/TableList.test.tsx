@@ -24,22 +24,19 @@ test("shows the schema facts that came for free with SHOW ENTITIES", () => {
   expect(screen.getByText(/6 columns · 1 indexes/)).toBeInTheDocument();
 });
 
-/// Counting is a full scan per table, so it must never happen just because a
-/// canister was selected. Without an `onCount` there is no control at all.
-test("offers no counting control unless the caller supplies one", () => {
-  render(<TableList entities={entities} selected={null} onSelect={() => {}} />);
+/// The counting control moved to the pane header and counting became automatic,
+/// so the three tests that used to live here are gone rather than adapted: two of
+/// them asserted that counting must *not* happen on canister selection, which is
+/// the behaviour that was deliberately reversed. Their replacements — that a
+/// canister counts itself, that the header offers a recount, that the control
+/// reports progress — are in `App.test.tsx`, where the control is now rendered.
+///
+/// This list still renders the counts; it just no longer owns asking for them.
+test("this list renders counts but offers no control for them", () => {
+  render(<TableList entities={entities} selected={null} onSelect={() => {}} counts={{ User: 3 }} />);
 
-  expect(screen.queryByRole("button", { name: /count rows/i })).not.toBeInTheDocument();
-});
-
-test("counting is user-initiated", () => {
-  const clicks: number[] = [];
-  render(
-    <TableList entities={entities} selected={null} onSelect={() => {}} onCount={() => clicks.push(1)} />,
-  );
-
-  fireEvent.click(screen.getByRole("button", { name: /count rows/i }));
-  expect(clicks).toHaveLength(1);
+  expect(screen.getByText(/3 rows/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /count/i })).not.toBeInTheDocument();
 });
 
 test("a known count is shown beside its table, singular where it should be", () => {
@@ -78,21 +75,6 @@ test("a failed count is distinguished from an uncounted table", () => {
   // Address was never counted, so it says nothing at all about rows.
   const address = screen.getByText("Address").parentElement;
   expect(address?.textContent).not.toMatch(/row|unavailable/);
-});
-
-test("the control reports progress and cannot be fired twice", () => {
-  render(
-    <TableList
-      entities={entities}
-      selected={null}
-      onSelect={() => {}}
-      onCount={() => {}}
-      counting
-    />,
-  );
-
-  const control = screen.getByRole("button", { name: /counting/i });
-  expect(control).toBeDisabled();
 });
 
 const many = Array.from({ length: 8 }, (_, index) => ({
@@ -285,4 +267,54 @@ test("switching between an empty canister and one with tables does not break", (
 
   rerender(<TableList entities={unsorted} selected={null} onSelect={() => {}} />);
   expect(listed()).toEqual(["Address", "User", "UserProjects"]);
+});
+
+// ── Progress while counting ──────────────────────────────────────────────────
+
+/// Counting runs one table at a time, so on a canister with a dozen large tables
+/// most rows sit uncounted for a while — and a blank there looks the same as a
+/// count that is never coming.
+test("a table awaiting its count says so while a pass is running", () => {
+  render(
+    <TableList
+      entities={unsorted}
+      selected={null}
+      onSelect={() => {}}
+      counts={{ UserProjects: 4 }}
+      counting
+    />,
+  );
+
+  // The one that has its number shows it, not "counting…".
+  const done = screen.getByText("UserProjects").closest("button");
+  expect(done).toHaveTextContent("4 rows");
+  expect(done).not.toHaveTextContent("counting…");
+
+  // The two still queued say what they are waiting for.
+  expect(screen.getByText("Address").closest("button")).toHaveTextContent("counting…");
+  expect(screen.getByText("User").closest("button")).toHaveTextContent("counting…");
+});
+
+/// With no pass running, an uncounted table is simply uncounted — claiming
+/// otherwise would show a spinner for work nobody is doing.
+test("an uncounted table says nothing when no pass is running", () => {
+  render(<TableList entities={unsorted} selected={null} onSelect={() => {}} />);
+
+  expect(screen.getByText("Address").closest("button")).not.toHaveTextContent("counting…");
+});
+
+/// A count that was attempted and failed is a fact worth seeing, and must not be
+/// replaced by "counting…" on the next pass.
+test("a failed count still reads as unavailable", () => {
+  render(
+    <TableList
+      entities={unsorted}
+      selected={null}
+      onSelect={() => {}}
+      counts={{ Address: null }}
+      counting
+    />,
+  );
+
+  expect(screen.getByText("Address").closest("button")).toHaveTextContent("count unavailable");
 });
