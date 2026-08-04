@@ -2604,3 +2604,70 @@ test("a merged sweep offers neither", async () => {
   expect(screen.queryByRole("button", { name: /^Export / })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Explain query" })).not.toBeInTheDocument();
 });
+
+/// The bug that made a missing capability look like an unwired button: the dialog
+/// call sat outside the try, so a rejection from the plugin became an unhandled
+/// promise rejection. The click did nothing and said nothing.
+test("a rejected save dialog is reported rather than silently doing nothing", async () => {
+  refreshableFleet([projectRows("first")]);
+  // Reset first: an earlier test sets `mockResolvedValue` (not `Once`), which
+  // otherwise answers this call too. Mock state is per-file, not per-test.
+  // Reset first: an earlier test sets `mockResolvedValue` (not `Once`), which
+  // otherwise answers this call too, and `writeExport` carries that test's call
+  // history. Mock state in this file is per-file, not per-test.
+  dialogSave.mockReset();
+  vi.mocked(commands.writeExport).mockClear();
+  dialogSave.mockRejectedValueOnce(
+    new Error("dialog.save not allowed. Permission dialog:allow-save not granted"),
+  );
+
+  render(<App />);
+  await pickCanister("shard");
+  fireEvent.click(await screen.findByText("Project"));
+  await screen.findByText("first");
+
+  fireEvent.click(screen.getByRole("button", { name: "Export CSV" }));
+
+  // The plugin's own message, normalised into the app's error shape — a cast
+  // would have produced a banner with an undefined explanation, which is a
+  // failure reported into a blank box.
+  expect(await screen.findByText(/dialog:allow-save not granted/)).toBeInTheDocument();
+  expect(commands.writeExport).not.toHaveBeenCalled();
+});
+
+/// Cancelling is not failing, and must not raise anything.
+test("cancelling the export dialog reports nothing", async () => {
+  refreshableFleet([projectRows("first")]);
+  dialogSave.mockReset();
+  dialogSave.mockResolvedValueOnce(null);
+  vi.mocked(commands.writeExport).mockClear();
+
+  render(<App />);
+  await pickCanister("shard");
+  fireEvent.click(await screen.findByText("Project"));
+  await screen.findByText("first");
+
+  fireEvent.click(screen.getByRole("button", { name: "Export JSON" }));
+
+  await waitFor(() => expect(dialogSave).toHaveBeenCalled());
+  expect(commands.writeExport).not.toHaveBeenCalled();
+  expect(screen.queryByText(/not allowed|failed/i)).not.toBeInTheDocument();
+});
+
+/// Text, not boxed buttons: the pane header is `py-1` around a `text-xs` title, so
+/// vertical padding and a border there make the row taller than the content it is
+/// chrome for.
+test("the row actions add no height to the pane header", async () => {
+  refreshableFleet([projectRows("first")]);
+
+  render(<App />);
+  await pickCanister("shard");
+  fireEvent.click(await screen.findByText("Project"));
+  await screen.findByText("first");
+
+  for (const name of ["Export CSV", "Export JSON", "Explain query"]) {
+    const control = screen.getByRole("button", { name });
+    expect(control.className).not.toMatch(/\bpy-\d/);
+    expect(control.className).not.toMatch(/\bborder\b/);
+  }
+});

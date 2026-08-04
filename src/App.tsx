@@ -16,6 +16,7 @@ import {
   selectIdentity,
   selectProject,
 } from "./api/commands";
+import { toAppErrorDto } from "./api/errors";
 import type {
   AppErrorDto,
   EntityDto,
@@ -75,8 +76,12 @@ function GridActions({
   onExport?: (format: ExportFormat) => void;
   onExplain?: () => void;
 }) {
+  // Text, not buttons with a box. The pane header is `py-1` around a `text-xs`
+  // title, so anything with vertical padding and a border makes the row taller —
+  // and this row is chrome above the rows it acts on, which should not be the
+  // tallest thing in the pane.
   const shared =
-    "rounded-control border border-rule px-2 py-0.5 text-xs text-text-2 hover:bg-surface-2";
+    "rounded-row px-0.5 text-xs text-text-3 underline decoration-dotted underline-offset-2 hover:text-text-1";
 
   return (
     <span className="flex items-center gap-1.5">
@@ -665,12 +670,13 @@ function App() {
   const exportResultRows = useCallback(
     async (format: ExportFormat) => {
       if (sqlResult?.type !== "rows") return;
-      const path = await save({ defaultPath: exportFilename(sqlResult, format) });
-      if (!path) return;
       try {
+        const path = await save({ defaultPath: exportFilename(sqlResult, format) });
+        // Cancelling the dialog is an ordinary outcome, not a failure.
+        if (!path) return;
         await writeExport(path, exportRows(sqlResult, format));
       } catch (error) {
-        setSqlError(error as AppErrorDto);
+        setSqlError(toAppErrorDto(error));
       }
     },
     [sqlResult],
@@ -781,13 +787,20 @@ function App() {
   const exportCurrentRows = useCallback(
     async (format: ExportFormat) => {
       if (!rows) return;
-      const path = await save({ defaultPath: exportFilename(rows, format) });
-      // Cancelling the dialog is an ordinary outcome, not a failure.
-      if (!path) return;
+      // The dialog call is inside the try. Outside it, a rejection from the
+      // dialog plugin — a missing `dialog:allow-save` capability, which is exactly
+      // what was wrong — became an unhandled promise rejection: the click did
+      // nothing, said nothing, and looked like an unwired button.
       try {
+        const path = await save({ defaultPath: exportFilename(rows, format) });
+        // Cancelling the dialog is an ordinary outcome, not a failure.
+        if (!path) return;
         await writeExport(path, exportRows(rows, format));
       } catch (error) {
-        setRowsError(error as AppErrorDto);
+        // Normalised rather than cast: a plugin rejection is not an `AppErrorDto`,
+        // and casting one produced a banner with an undefined explanation — a
+        // failure reported into a blank box.
+        setRowsError(toAppErrorDto(error));
       }
     },
     [rows],

@@ -19,8 +19,9 @@
 // like an `AppErrorDto` (e.g. Tauri's own IPC-level failures) is normalized
 // into one rather than left as an opaque string or `Error`.
 import { invoke } from "@tauri-apps/api/core";
+
+import { toAppErrorDto } from "./errors";
 import type {
-  AppErrorDto,
   Project,
   ProjectSelection,
   ResultDto,
@@ -29,23 +30,6 @@ import type {
   SweepRunDto,
   TreeNode,
 } from "./types";
-
-function isAppErrorDto(error: unknown): error is AppErrorDto {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    typeof (error as { kind?: unknown }).kind === "string" &&
-    typeof (error as { explanation?: unknown }).explanation === "string"
-  );
-}
-
-function toAppErrorDto(error: unknown): AppErrorDto {
-  if (isAppErrorDto(error)) {
-    return error;
-  }
-  const explanation = error instanceof Error ? error.message : String(error);
-  return { kind: "unknown", explanation };
-}
 
 /** Returns the open project, or `null` if the user hasn't chosen one — a
  * first launch, or a remembered root that has since vanished. */
