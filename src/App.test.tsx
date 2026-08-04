@@ -618,7 +618,13 @@ test("offers the picker and no panes when no project is open", async () => {
 
   render(<App />);
 
-  expect(await screen.findByText(/choose a project to explore/i)).toBeInTheDocument();
+  // The welcome screen replaced the single line of text this used to look for. It
+  // names the app and states the requirements, so a reader who has not chosen
+  // anything yet learns what a chooseable project has to be.
+  expect(await screen.findByText(/Nothing is read until you choose one/i)).toBeInTheDocument();
+  // One picker, not two: the header hides its own while this screen is up, so
+  // there is a single answer to "how do I choose a project".
+  expect(screen.getAllByRole("button", { name: /choose a project/i })).toHaveLength(1);
   expect(screen.queryByText(/no environments were found/i)).not.toBeInTheDocument();
   // "No panes" is now something this test can actually assert: each pane is a
   // named region, so their absence is checkable rather than implied.
@@ -2792,4 +2798,93 @@ test("the counting control reports how far along it is", async () => {
   expect(await screen.findByRole("button", { name: /Counting 1 of 3/ })).toBeInTheDocument();
 
   second.resolve(9);
+});
+
+// ── The welcome screen ───────────────────────────────────────────────────────
+
+/// The case with no guidance before this: a reader picks a directory, it is not a
+/// project, and the app showed a banner in an otherwise empty window. The banner
+/// and the requirements for avoiding it were never on screen together.
+test("a rejected folder shows what went wrong and what a project needs", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue(null);
+  vi.mocked(commands.selectProject).mockRejectedValue({
+    kind: "io",
+    explanation: "no .icp directory was found at or above this path",
+  });
+  dialogOpen.mockResolvedValue("/Users/me/not-a-project");
+
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: /choose a project/i }));
+
+  // The failure, the directory it happened on, and the requirements, together.
+  expect(await screen.findByText(/no \.icp directory was found/)).toBeInTheDocument();
+  expect(screen.getByText("/Users/me/not-a-project")).toBeInTheDocument();
+  expect(screen.getByText(/A project with an \.icp\/ directory/)).toBeInTheDocument();
+  expect(screen.getByText(/Try a different directory/)).toBeInTheDocument();
+});
+
+/// Split by who can act. Being told to check something you do not control, without
+/// being told that, is worse than not being told.
+test("the requirements say which are the canister's rather than yours", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue(null);
+
+  render(<App />);
+  await screen.findByText(/Nothing is read until you choose one/);
+
+  expect(screen.getByText("On your machine")).toBeInTheDocument();
+  expect(screen.getByText("In the canisters")).toBeInTheDocument();
+  // The requirement that actually blocked this app against a real fleet, and the
+  // one a reader cannot fix from here.
+  expect(screen.getByText(/The icydb SQL surface compiled in/)).toBeInTheDocument();
+  expect(screen.getByText(/canister's owner is who can fix it/)).toBeInTheDocument();
+});
+
+/// No rejection to report on a first launch, so nothing is invented to fill the
+/// space — an error banner with nothing behind it would be a lie.
+test("a first launch shows the requirements without an error", async () => {
+  vi.mocked(commands.listEnvironments).mockResolvedValue(null);
+
+  render(<App />);
+  await screen.findByText(/Nothing is read until you choose one/);
+
+  expect(screen.queryByText(/Tried/)).not.toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+/// A project that opens replaces all of this with the panes, and stops naming a
+/// directory as rejected.
+test("opening a project leaves the welcome screen", async () => {
+  refreshableFleet([projectRows("first")]);
+  vi.mocked(commands.selectProject).mockResolvedValue({
+    project: { root: "/project", error: null, environments: [environmentFixture()] },
+    persistWarning: null,
+  });
+  dialogOpen.mockResolvedValue("/project");
+  vi.mocked(commands.listEnvironments).mockResolvedValue(null);
+
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: /choose a project/i }));
+
+  await waitFor(() =>
+    expect(screen.getByRole("region", { name: "Canisters" })).toBeInTheDocument(),
+  );
+  expect(screen.queryByText("On your machine")).not.toBeInTheDocument();
+});
+
+/// An error can arrive without a pick — the mount-time load failing — and telling
+/// the reader to try a different directory then advises against a choice they never
+/// made. Found by looking at the screen, not by a failing test.
+test("an error with no directory tried does not advise trying another", async () => {
+  vi.mocked(commands.listEnvironments).mockRejectedValue({
+    kind: "unknown",
+    explanation: "the backend could not be reached",
+  });
+
+  render(<App />);
+
+  expect(await screen.findByText(/could not be reached/)).toBeInTheDocument();
+  expect(screen.queryByText(/Try a different directory/)).not.toBeInTheDocument();
+  expect(screen.getByText(/Nothing is read until you choose one/)).toBeInTheDocument();
+  // And nothing claims a path was attempted.
+  expect(screen.queryByText(/^Tried/)).not.toBeInTheDocument();
 });

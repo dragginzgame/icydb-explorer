@@ -47,6 +47,7 @@ import { SchemaInspector } from "./components/SchemaInspector";
 import { SchemaPanel } from "./components/SchemaPanel";
 import { SettingsMenu } from "./components/SettingsMenu";
 import { SqlConsole } from "./components/SqlConsole";
+import { Welcome } from "./components/Welcome";
 import { SweepAllRefused, SweepStatusStrip } from "./components/SweepView";
 import { TableList, type RowCounts } from "./components/TableList";
 import { usePaneLayout } from "./layout/usePaneLayout";
@@ -198,6 +199,11 @@ function App() {
   // launch, or a remembered root that has since been moved or deleted.
   const [root, setRoot] = useState<string | null>(null);
   const [projectBusy, setProjectBusy] = useState(false);
+  // The directory a failed selection was pointed at. `root` deliberately stays
+  // null on a rejection — that is what keeps the welcome screen up — so without
+  // this the banner could say what went wrong but not what it went wrong *on*,
+  // which is the first thing a reader checks.
+  const [rejectedRoot, setRejectedRoot] = useState<string | null>(null);
   // Set when a project was opened but the choice couldn't be remembered.
   // Deliberately not an `AppErrorDto`: failing to remember a choice is not
   // the same kind of event as failing to read a project, and rendering it
@@ -380,10 +386,14 @@ function App() {
     (path: string) => {
       setProjectBusy(true);
       setPersistWarning(null);
+      setRejectedRoot(path);
       selectProject(path)
         .then((selection) => {
           adoptProject(selection.project);
           setPersistWarning(selection.persistWarning);
+          // Cleared only on the path that actually opened something, so a folder
+          // that resolved but carries a discovery error still names itself.
+          if (selection.project.error === null) setRejectedRoot(null);
         })
         .catch((error: AppErrorDto) => setEnvironmentsError(error))
         .finally(() => setProjectBusy(false));
@@ -1111,7 +1121,13 @@ function App() {
   // disagree with what actually renders.
   const hasTopLevelBanner =
     identityNote !== null ||
-    environmentsError !== null ||
+    // `root !== null` is what keeps this off the welcome screen, which renders the
+    // same error itself beside the directory it happened on. Suppressing it here
+    // rather than at the banner below, because the region also reserves height: two
+    // guards would be two mechanisms for one rule, and the first version of this
+    // had both — deleting the inner one changed no test, which is how the
+    // redundancy showed up.
+    (environmentsError !== null && root !== null) ||
     identityError !== null ||
     persistWarning !== null ||
     (environmentsLoaded && root !== null && environments.length === 0 && !environmentsError) ||
@@ -1169,7 +1185,12 @@ function App() {
             white tile on four of them. */}
         <img src={icydbGlyph} alt="" aria-hidden="true" className="size-7 shrink-0" />
         <h1 className="text-lg font-semibold">icydb Explorer</h1>
-        <ProjectSelector root={root} busy={projectBusy} onSelect={handleSelectProject} />
+        {/* Only once a project is open. With none, the welcome screen below owns
+            choosing one, and two identical buttons for one action is a question
+            about which to press. */}
+        {root !== null && (
+          <ProjectSelector root={root} busy={projectBusy} onSelect={handleSelectProject} />
+        )}
         {environments.length > 0 && (
           <select
             value={env ?? ""}
@@ -1300,15 +1321,24 @@ function App() {
           `flex-1` and deliberately NOT inside the bounded banner region
           above: this is the app's main empty state for a first-time user,
           not a banner, and it must keep filling the available space. */}
-      {environmentsLoaded && root === null && !environmentsError && (
-        <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8">
-          <p className="text-sm text-text-2">Choose a project to explore.</p>
-          <p className="text-xs text-text-3">
-            Pick a directory containing an <code>.icp/</code> layout — or any directory inside
-            one.
-          </p>
-          <ProjectSelector root={null} busy={projectBusy} onSelect={handleSelectProject} />
-        </div>
+      {/* The first screen, and the screen a rejected folder lands on.
+          Deliberately one component for both: "nothing chosen yet" and "what you
+          chose could not be read" want the same requirements in front of them, and
+          the second is where they are actually needed. It used to be one line of
+          text either way, which told a reader with a wrong directory nothing about
+          why or what to do.
+
+          `environmentsError` no longer suppresses this — it is passed *into* it.
+          The banner used to render in the shell above an otherwise empty window,
+          so the failure and the instructions for avoiding it were never on screen
+          together. */}
+      {environmentsLoaded && root === null && (
+        <Welcome
+          error={environmentsError}
+          root={rejectedRoot}
+          busy={projectBusy}
+          onSelect={handleSelectProject}
+        />
       )}
 
       {/* Four panes left to right, then the SQL bar across the bottom.
