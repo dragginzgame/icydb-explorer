@@ -43,6 +43,7 @@ fn recorded_project(config_dir: &std::path::Path) -> Option<Project> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(AgentPool::new())
         .setup(|app| {
             let project = app

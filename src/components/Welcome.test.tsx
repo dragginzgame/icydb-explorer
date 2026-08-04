@@ -105,3 +105,46 @@ test("the page leaves room below its last card", () => {
   expect(content.className).toMatch(/\bpb-\d/);
   expect(content.className).toMatch(/\bmx-auto\b/);
 });
+
+/// The stake a reader is most likely to get wrong: that "read-only browser"
+/// implies a low-privilege key. It does not — `icydb_query` is controller-gated,
+/// so the identity is one that could also upgrade the canisters. If that sentence
+/// ever goes missing, someone points this at production believing the blast radius
+/// is smaller than it is.
+test("the security section says the key is a controller key", () => {
+  render(<Welcome {...props} />);
+
+  const security = screen.getByRole("heading", { name: "Security" }).parentElement!;
+  const text = security.textContent ?? "";
+
+  expect(text).toMatch(/controller/i);
+  expect(text).toMatch(/upgrade|stop/i);
+});
+
+/// The caveat is the load-bearing half of the read-only claim, and the half most
+/// likely to be trimmed as hedging. Without it the section reads as "this app is
+/// safe to point anywhere", which is a stronger claim than the code supports:
+/// being structurally unable to write is a property of this app, not a restriction
+/// on what the identity may do or on what other processes can read.
+test("the read-only claim keeps its caveat", () => {
+  render(<Welcome {...props} />);
+
+  const security = screen.getByRole("heading", { name: "Security" }).parentElement!;
+  const text = security.textContent ?? "";
+
+  expect(text).toMatch(/not a sandbox/i);
+  expect(text).toMatch(/permission/i);
+});
+
+/// The outbound request is disclosed on screen, not only in the README. An app
+/// that contacts a host the user did not configure should say so where they can
+/// see it.
+test("the GitHub update request is disclosed", () => {
+  render(<Welcome {...props} />);
+
+  const security = screen.getByRole("heading", { name: "Security" }).parentElement!;
+  const text = security.textContent ?? "";
+
+  expect(text).toMatch(/GitHub/);
+  expect(text).toMatch(/no identity|carries no identity/i);
+});

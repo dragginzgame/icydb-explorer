@@ -28,6 +28,111 @@ React/Vite/Tailwind  ──tauri invoke──▶  Rust backend  ──ic-agent�
   never even attempts them — see [Read-only, and where that guarantee
   actually lives](#read-only-and-where-that-guarantee-actually-lives).
 
+## Security
+
+This app reads private keys. That is not a side effect of how it is built — it
+is the only way it can work, and it is worth understanding before you point it
+at anything you care about.
+
+### The keys involved are high-privilege ones
+
+icydb's `icydb_query` endpoint is controller-gated: it answers only a caller
+that controls the canister. So the identity this app uses is, necessarily, a
+controller identity — the same key that can upgrade or stop those canisters.
+There is no read-only-observer identity to use instead; icydb does not offer
+one. Browsing your data with this app therefore means unlocking a key that can
+do considerably more than browse.
+
+That is a property of icydb's access model, not of this app, but it sets the
+stakes for everything below.
+
+### What it does with them
+
+Identities come from `icp`'s own identity store — never `dfx`'s — from both the
+project's `.icp/cli-home/identity/` and the user-level store. For an identity
+with no readable file, the app shells out to `icp identity export <name>`,
+which prints a PEM on stdout.
+
+`src-tauri/src/agent/export.rs` is the only module in the app that handles key
+material, and it is written to that standard:
+
+- the exported bytes are used to build an `ic-agent` identity in memory and are
+  never written to disk;
+- they are never logged;
+- they are never placed in an `AppError`. Failures report the child process's
+  exit status and *stderr* only — never stdout, which is where the key is. A
+  test (`nonzero_exit_reports_status_and_stderr_but_never_stdout`) asserts that
+  a key present in stdout does not appear in the resulting error text.
+
+An identity protected by a password cannot be used: `icp` prompts
+interactively, this app cannot answer, and the export times out after 20
+seconds with an explanation. That is a limitation, but it fails closed.
+
+This repository also contains no private key material of its own, not even a
+throwaway test key: `*.pem` and `*.key` are gitignored, two fixture keys were
+purged from history, and the tests generate keys at run time
+(`src-tauri/src/test_support.rs`).
+
+### What leaves your machine
+
+Two destinations, and only two:
+
+1. **Query calls to the IC replica** whose URL your own project configuration
+   names. These carry the SQL this app builds and are signed by the identity
+   you selected.
+2. **One unauthenticated HTTPS GET to `api.github.com`** at launch, asking for
+   this project's latest published release so the app can tell you a newer
+   version exists. It sends no identity, no principal, no project path, and no
+   query data — see [Update checks](#update-checks).
+
+Nothing else. There is no telemetry, no crash reporting, and no analytics.
+
+### Read-only: what that does and does not mean
+
+The app issues no update calls. This is structural rather than a policy someone
+has to remember — there is exactly one `.query()` call site for SQL and one for
+topology, no `.update()` anywhere in the crate, and a classifier that admits
+only `SELECT`/`SHOW`/`DESCRIBE`/`EXPLAIN`. `src-tauri/tests/read_only_shape.rs`
+asserts all of it against the crate's own source. See [Read-only, and where
+that guarantee actually
+lives](#read-only-and-where-that-guarantee-actually-lives).
+
+Be clear about the scope of that claim: it constrains **what this app does**.
+It is not a sandbox and it does not restrict what the identity is *permitted*
+to do. A controller key is still a controller key while the app holds it, and
+any other process running as your user can read the same identity store this
+app reads. Running this app extends it the same trust you extend any developer
+tool on your machine.
+
+### Unsigned builds
+
+Release binaries are not code-signed. macOS Gatekeeper refuses them until you
+right-click → Open; Windows SmartScreen warns. This means the OS is not
+vouching for the origin of what you downloaded, and for a tool that unlocks
+controller keys that is worth taking seriously — prefer building from source
+for anything sensitive, or check the release against the workflow run that
+produced it.
+
+### Update checks
+
+The app checks for a newer release and tells you. It does not download or
+install anything, and it has no code path that can replace its own binary.
+
+That is a deliberate choice rather than an unfinished feature. A conventional
+auto-updater requires someone to hold a signing key that can push arbitrary
+code to every installation — code which, in this app, would run with access to
+the identity store described above. Notify-only keeps a person in the loop on
+every version change and removes the key from existence entirely.
+
+The check is one request per launch, not a poll. It fails silently: offline,
+rate-limited, or unreachable all produce no message rather than an error. It
+reads GitHub's `releases/latest`, which excludes drafts, so an unpublished
+build is never advertised. Dismissing a notice is remembered per version.
+
+If you would rather it made no outbound request at all, the whole feature is
+`src/api/update.ts` plus the `<UpdateBar>` element in `src/App.tsx`; removing
+the `useEffect` that calls `checkForUpdate` disables it.
+
 ## Prerequisites
 
 - Rust **1.96.0** (pinned in `rust-toolchain.toml`; installing via `rustup`

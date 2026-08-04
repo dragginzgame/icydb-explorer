@@ -239,8 +239,61 @@ export function Welcome({
           note="Build-time and deployment choices this app cannot change — if one of these is missing, the canister's owner is who can fix it."
           requirements={CANISTER}
         />
+        <Security />
       </div>
     </div>
+  );
+}
+
+/** What this app does with the keys it reads.
+ *
+ *  On the first screen rather than buried in a menu, because this is where
+ *  someone decides whether to point the app at a real fleet — and the decision
+ *  needs the stakes. The requirement groups above already say an identity is
+ *  needed and that `icydb_query` is controller-gated; this says what follows from
+ *  those two facts together, which is that browsing data here means unlocking a
+ *  key that can also upgrade the canisters.
+ *
+ *  Deliberately short. The full account is in the README's Security section; this
+ *  is the part nobody should be able to miss. */
+function Security() {
+  return (
+    <section className="mt-8">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-text-3">Security</h3>
+      <p className="mt-1 text-xs text-text-3">
+        This app reads private keys. Worth knowing what it does with them.
+      </p>
+      <ul className="mt-3 flex flex-col gap-2 text-sm leading-relaxed text-text-2">
+        <li className="rounded-control border border-rule bg-surface-1 p-3">
+          <span className="font-semibold text-text-1">
+            The key it uses can do more than read.
+          </span>{" "}
+          <code>icydb_query</code> answers only a controller, so the identity this app needs is
+          one that could also upgrade or stop those canisters. icydb offers no read-only
+          observer identity to use instead.
+        </li>
+        <li className="rounded-control border border-rule bg-surface-1 p-3">
+          <span className="font-semibold text-text-1">Keys stay in memory.</span> A PEM obtained
+          from <code>icp identity export</code> builds an in-memory signing identity and is
+          never written to disk, logged, or included in an error message.
+        </li>
+        <li className="rounded-control border border-rule bg-surface-1 p-3">
+          <span className="font-semibold text-text-1">Two destinations, no telemetry.</span>{" "}
+          Signed queries go to the replica your project configuration names. Once per launch,
+          an unauthenticated request asks GitHub for the latest release so this app can mention
+          a new version — it carries no identity, principal, or query data. Nothing else leaves
+          your machine.
+        </li>
+        <li className="rounded-control border border-rule bg-surface-1 p-3">
+          <span className="font-semibold text-text-1">It issues no update calls.</span> One
+          query call site for SQL, one for topology, no update call anywhere, and only{" "}
+          <code>SELECT</code>/<code>SHOW</code>/<code>DESCRIBE</code>/<code>EXPLAIN</code> are
+          admitted — asserted by a test against this app&apos;s own source. That constrains what
+          this app does; it is not a sandbox, and the identity keeps every permission it
+          already had.
+        </li>
+      </ul>
+    </section>
   );
 }
 

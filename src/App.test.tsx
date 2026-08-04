@@ -5,6 +5,10 @@ import * as commands from "./api/commands";
 import type { EntityDto, Environment, IdentityRef, ResultDto, TreeNode } from "./api/types";
 
 vi.mock("./api/commands");
+// The real one calls `fetch` against api.github.com. Mocked to `null` — the
+// up-to-date answer — so no test in this file reaches the network and none of
+// them renders the update bar. `UpdateBar.test.tsx` covers the bar itself.
+vi.mock("./api/update", () => ({ checkForUpdate: () => Promise.resolve(null) }));
 
 const dialogOpen = vi.hoisted(() => vi.fn());
 const dialogSave = vi.hoisted(() => vi.fn());

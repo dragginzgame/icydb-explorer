@@ -48,6 +48,8 @@ import { SchemaPanel } from "./components/SchemaPanel";
 import { SettingsMenu } from "./components/SettingsMenu";
 import { SqlConsole } from "./components/SqlConsole";
 import { Welcome } from "./components/Welcome";
+import { UpdateBar } from "./components/UpdateBar";
+import { checkForUpdate, type AvailableUpdate } from "./api/update";
 import { SweepAllRefused, SweepStatusStrip } from "./components/SweepView";
 import { TableList, type RowCounts } from "./components/TableList";
 import { usePaneLayout } from "./layout/usePaneLayout";
@@ -237,6 +239,9 @@ function App() {
   const [rowCounts, setRowCounts] = useState<RowCounts>({});
   const [counting, setCounting] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  // A newer published release, once GitHub has been asked. Stays `null` when
+  // up to date, offline, or when the check failed for any reason at all.
+  const [update, setUpdate] = useState<AvailableUpdate | null>(null);
 
   const [schema, setSchema] = useState<SchemaDto | null>(null);
   const [schemaError, setSchemaError] = useState<AppErrorDto | null>(null);
@@ -378,6 +383,20 @@ function App() {
       cancelled = true;
     };
   }, [adoptProject]);
+
+  // Asked once per launch, not on a timer. A background poll would keep
+  // contacting GitHub for the life of the session to tell someone something
+  // they can act on whenever they like, and `checkForUpdate` never rejects, so
+  // there is deliberately no `.catch` and no error state to render.
+  useEffect(() => {
+    let cancelled = false;
+    void checkForUpdate().then((available) => {
+      if (!cancelled) setUpdate(available);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // A rejected pick changes nothing: `select_project` only rejects on a path
   // it could not adopt at all, in which case the backend never swapped its
@@ -1190,6 +1209,11 @@ function App() {
 
   return (
     <main className="flex h-screen flex-col bg-surface-0 font-ui text-text-1">
+      {/* Above the header rather than inside it: this is about the application
+          itself, not about the project the header is for, and it disappears
+          permanently once dismissed. It renders `null` in every ordinary
+          session. */}
+      <UpdateBar update={update} />
       <header className="flex items-center gap-3 border-b border-rule bg-surface-1 px-4 py-2">
         {/* `alt=""` and `aria-hidden`: the mark sits beside the wordmark that
             already names the app, so announcing it would read as "icydb logo,
