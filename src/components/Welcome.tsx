@@ -1,8 +1,31 @@
 import icydbGlyph from "../assets/icydb-glyph.svg";
 import type { AppErrorDto } from "../api/types";
 
+import { CopyButton } from "./CopyButton";
 import { ErrorBanner } from "./ErrorBanner";
 import { ProjectSelector } from "./ProjectSelector";
+
+/** The icydb this explorer is built against.
+ *
+ *  Pinned exactly in the workspace `Cargo.toml`, and asserted equal to it by
+ *  `Welcome.test.tsx` — a version printed here that has drifted from the one the
+ *  binary actually links is worse than none, because a reader would act on it. */
+export const ICYDB_VERSION = "0.215.7";
+
+/** The edits that turn the SQL surface on, verbatim from the change that made a
+ *  real fleet readable. Offered to copy rather than applied: see the card. */
+const ENABLE_SNIPPET = `// build.rs
+icydb_model::build_with_options!(
+    "<your>::schema::path::Canister",
+    icydb_model::build::BuildOptions::default()
+        .with_sql_readonly_enabled(true)
+        .with_sql_introspection_enabled(true)
+);
+
+# Cargo.toml — the canister crate's own features, not icydb's
+[features]
+default = ["sql"]
+sql = ["icydb/sql-explain"]`;
 
 /** One thing that has to be true, and how to make it so. */
 type Requirement = { needs: string; how: React.ReactNode };
@@ -52,6 +75,22 @@ const LOCAL: Requirement[] = [
   },
 ];
 
+/** The one requirement that is not about configuration at all. */
+const FOUNDATION: Requirement[] = [
+  {
+    needs: "The canister actually uses icydb",
+    how: (
+      <>
+        This reads icydb&apos;s own SQL endpoint and nothing else — it is not a generic
+        canister browser, and there is no fallback for a canister that stores its state some
+        other way. Built against icydb <code>{ICYDB_VERSION}</code>, pinned exactly. Responses
+        are decoded structurally, so a nearby version often works; one that changed a response
+        shape will not, and it will say so rather than show you the wrong thing.
+      </>
+    ),
+  },
+];
+
 /** What has to be true of the canisters. These the reader may not be able to fix
  *  themselves, which is exactly why they are listed apart — being told to check
  *  something you do not control is worse than being told who does. */
@@ -67,6 +106,7 @@ const CANISTER: Requirement[] = [
         <code>DESCRIBE</code> — plus the canister crate enabling its own <code>sql</code>{" "}
         feature, since Cargo does not forward a dependency&apos;s features to the crate that
         uses it.
+        <Snippet />
       </>
     ),
   },
@@ -117,7 +157,10 @@ export function Welcome({
   onSelect: (path: string) => void;
 }) {
   return (
-    <div className="flex min-h-0 flex-1 justify-center overflow-auto p-8">
+    /* `pb-16` rather than a symmetric `p-8`: the last requirement card ended flush
+       against the bottom of the window, which reads as content cut off rather than
+       content ended. */
+    <div className="flex min-h-0 flex-1 justify-center overflow-auto p-8 pb-16">
       <div className="w-full max-w-2xl">
         <div className="flex items-center gap-3">
           <img src={icydbGlyph} alt="" aria-hidden="true" className="size-10 shrink-0" />
@@ -174,6 +217,11 @@ export function Welcome({
         </div>
 
         <Group
+          title="Before anything else"
+          note="The hard requirement. Nothing below matters without it."
+          requirements={FOUNDATION}
+        />
+        <Group
           title="On your machine"
           note="Four things this app reads before it can show you anything."
           requirements={LOCAL}
@@ -185,6 +233,28 @@ export function Welcome({
         />
       </div>
     </div>
+  );
+}
+
+/** The edits to make, to copy.
+ *
+ *  Not applied for you, and the reason is worth stating rather than leaving as an
+ *  omission: enabling this means editing a source tree and then *upgrading a
+ *  canister*, which is an update call. This app makes none — `read_only_shape.rs`
+ *  asserts there is no agent update call anywhere in it — and that is what makes it
+ *  safe to point at a production fleet without thinking about it. Doing the edit for
+ *  you would trade that guarantee for a convenience.
+ *
+ *  So: the exact lines, one click away, and you run the build.
+ */
+function Snippet() {
+  return (
+    <span className="mt-2 flex items-start gap-2">
+      <pre className="min-w-0 flex-1 overflow-x-auto rounded-control border border-rule bg-surface-0 p-2 font-mono text-xs leading-relaxed text-text-2">
+        {ENABLE_SNIPPET}
+      </pre>
+      <CopyButton value={ENABLE_SNIPPET} label="Copy the changes needed" className="px-1 py-0.5" />
+    </span>
   );
 }
 
