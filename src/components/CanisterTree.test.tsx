@@ -349,3 +349,142 @@ test("a newly-appeared branch arrives collapsed", () => {
   expect(screen.getByText("new_hub")).toBeInTheDocument();
   expect(screen.queryByText("new_child")).not.toBeInTheDocument();
 });
+
+// ── Opening to the first queryable canister ──────────────────────────────────
+
+/// Collapsed-by-default is right for a large fleet but lands the reader on a
+/// single row with nothing to do. A canic fleet's upper levels are hubs and
+/// stores with no icydb schema, so "the top of the tree" and "somewhere worth
+/// looking" are different places.
+test("the path to the first queryable canister is open", () => {
+  render(
+    <CanisterTree
+      trees={fleet}
+      selectedPid={null}
+      onSelect={() => {}}
+      queryable={{ "root-id": false, "phub-id": false, "pi1-id": true }}
+    />,
+  );
+
+  // Its ancestors are open, so it is on screen.
+  expect(screen.getByText("project_hub")).toBeInTheDocument();
+  expect(screen.getAllByText("project_instance")).toHaveLength(2);
+});
+
+/// Only the path. Opening the whole fleet to reach one canister would undo the
+/// fold the reader asked for.
+test("branches off the path stay collapsed", () => {
+  render(
+    <CanisterTree
+      trees={fleet}
+      selectedPid={null}
+      onSelect={() => {}}
+      queryable={{ "pi1-id": true }}
+    />,
+  );
+
+  // `user_hub` is a sibling of the opened branch and keeps its children folded.
+  expect(screen.getByText("user_hub")).toBeInTheDocument();
+  expect(screen.queryByText("user_shard")).not.toBeInTheDocument();
+});
+
+/// The *first* in fleet order, not just any — otherwise which canister the reader
+/// lands on would depend on object key order.
+test("the first queryable in fleet order is the one revealed", () => {
+  render(
+    <CanisterTree
+      trees={fleet}
+      selectedPid={null}
+      onSelect={() => {}}
+      queryable={{ "ushard-id": true, "pi1-id": true }}
+    />,
+  );
+
+  // `project_hub` comes before `user_hub` in the fleet, so its branch opens and
+  // the later match's does not.
+  expect(screen.getAllByText("project_instance")).toHaveLength(2);
+  expect(screen.queryByText("user_shard")).not.toBeInTheDocument();
+});
+
+/// A refresh re-probes and arrives at the same answer. Re-opening what the reader
+/// just folded would make the tree fight them.
+test("folding the revealed branch back up survives a re-probe", () => {
+  const queryable = { "pi1-id": true };
+  const { rerender } = render(
+    <CanisterTree trees={fleet} selectedPid={null} onSelect={() => {}} queryable={queryable} />,
+  );
+  expect(screen.getByText("project_hub")).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "Collapse root" }));
+  expect(screen.queryByText("project_hub")).not.toBeInTheDocument();
+
+  // A fresh probe object with the same verdict, which is what Refresh produces.
+  rerender(
+    <CanisterTree trees={fleet} selectedPid={null} onSelect={() => {}} queryable={{ ...queryable }} />,
+  );
+
+  expect(screen.queryByText("project_hub")).not.toBeInTheDocument();
+});
+
+/// A different fleet arrives at a different answer and gets its own reveal.
+test("a new first-queryable canister opens its own path", () => {
+  const { rerender } = render(
+    <CanisterTree
+      trees={fleet}
+      selectedPid={null}
+      onSelect={() => {}}
+      queryable={{ "pi1-id": true }}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Collapse root" }));
+
+  rerender(
+    <CanisterTree
+      trees={fleet}
+      selectedPid={null}
+      onSelect={() => {}}
+      queryable={{ "ushard-id": true }}
+    />,
+  );
+
+  expect(screen.getByText("user_shard")).toBeInTheDocument();
+});
+
+/// Before the probe resolves there is nothing to aim at, and the fold has to hold
+/// rather than guessing at a target.
+test("with no probe results nothing is revealed", () => {
+  renderTree();
+
+  expect(screen.queryByText("project_hub")).not.toBeInTheDocument();
+});
+
+/// A fleet where nothing carries an icydb schema has nowhere worth opening to,
+/// and inventing a destination would be worse than leaving it folded.
+test("a fleet with nothing queryable stays folded", () => {
+  render(
+    <CanisterTree
+      trees={fleet}
+      selectedPid={null}
+      onSelect={() => {}}
+      queryable={{ "root-id": false, "phub-id": false, "pi1-id": false }}
+    />,
+  );
+
+  expect(screen.queryByText("project_hub")).not.toBeInTheDocument();
+});
+
+/// Revealing is not selecting: opening a path must not query a canister the
+/// reader never clicked.
+test("revealing does not select anything", () => {
+  const selected: string[] = [];
+  render(
+    <CanisterTree
+      trees={fleet}
+      selectedPid={null}
+      onSelect={(pid) => selected.push(pid)}
+      queryable={{ "pi1-id": true }}
+    />,
+  );
+
+  expect(selected).toEqual([]);
+});

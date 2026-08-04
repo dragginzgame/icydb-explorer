@@ -47,3 +47,24 @@ function matches(node: TreeNode, needle: string): boolean {
 export function forestSize(trees: TreeNode[]): number {
   return trees.reduce((total, node) => total + 1 + descendantCount(node), 0);
 }
+
+/** The ancestors of `pid`, outermost first, or `null` if it is not in the fleet.
+ *
+ *  `null` rather than an empty array for "absent", because an empty array is the
+ *  correct answer for a root — it has no ancestors — and a caller that needs to
+ *  open a path has to tell "already at the top" from "not here at all".
+ */
+export function ancestorsOf(trees: TreeNode[], pid: string): string[] | null {
+  for (const node of trees) {
+    if (node.pid === pid) return [];
+    const below = ancestorsOf(node.children, pid);
+    if (below !== null) return [node.pid, ...below];
+  }
+
+  return null;
+}
+
+/** Every canister's principal, depth-first — fleet order. */
+export function pidsInOrder(trees: TreeNode[]): string[] {
+  return trees.flatMap((node) => [node.pid, ...pidsInOrder(node.children)]);
+}

@@ -1,7 +1,13 @@
 import { expect, test } from "vitest";
 
 import type { TreeNode } from "../api/types";
-import { descendantCount, filterForest, forestSize } from "./filterFleet";
+import {
+  ancestorsOf,
+  descendantCount,
+  filterForest,
+  forestSize,
+  pidsInOrder,
+} from "./filterFleet";
 
 /** Shaped like toko's real fleet, from the running replica. */
 const fleet: TreeNode[] = [
@@ -142,4 +148,33 @@ test("a multi-root fleet filters each root independently", () => {
 
   expect(filterForest(forest, "alpha").map((node) => node.role)).toEqual(["alpha", "beta"]);
   expect(filterForest(forest, "beta").map((node) => node.role)).toEqual(["beta"]);
+});
+
+/// `null` for absent, `[]` for a root: a caller opening a path has to tell
+/// "already at the top" from "not in this fleet at all".
+test("ancestors are listed outermost first, and a root has none", () => {
+  expect(ancestorsOf(fleet, "jx2ua-6t777-77774-qaaeq-cai")).toEqual([
+    "igqk7-g3777-77774-qaaba-cai",
+    "jq3su-tl777-77774-qaaea-cai",
+  ]);
+  expect(ancestorsOf(fleet, "igqk7-g3777-77774-qaaba-cai")).toEqual([]);
+  expect(ancestorsOf(fleet, "not-in-this-fleet")).toBeNull();
+});
+
+test("a deep canister's whole path is returned in order", () => {
+  expect(ancestorsOf(fleet, "jzyzi-fd777-77774-qaafq-cai")).toEqual([
+    "igqk7-g3777-77774-qaaba-cai",
+    "i2uqo-r3777-77774-qaada-cai",
+    "j6z74-i3777-77774-qaafa-cai",
+  ]);
+});
+
+test("pids come back in fleet order, parents before children", () => {
+  expect(pidsInOrder(fleet).slice(0, 4)).toEqual([
+    "igqk7-g3777-77774-qaaba-cai",
+    "ibrml-1d777-77774-qaabq-cai",
+    "iuw5g-k1777-77774-qaaca-cai",
+    "itx3s-ht777-77774-qaacq-cai",
+  ]);
+  expect(pidsInOrder([])).toEqual([]);
 });

@@ -2,7 +2,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { TreeNode } from "../api/types";
 import { copyText } from "../lib/copyText";
-import { descendantCount, filterForest, forestSize } from "../lib/filterFleet";
+import {
+  ancestorsOf,
+  descendantCount,
+  filterForest,
+  forestSize,
+  pidsInOrder,
+} from "../lib/filterFleet";
 
 /// Whether a canister exposes an icydb SQL surface, once known.
 ///
@@ -49,6 +55,38 @@ export function CanisterTree({
     // expanded-then-collapsed. React's documented pattern for derived state.
     for (const pid of unseen) seen.current.add(pid);
     setCollapsed((current) => new Set([...current, ...unseen]));
+  }
+
+  // Opened as far as the first canister that can actually be queried.
+  //
+  // Collapsed-by-default is right for a large fleet but lands the reader on a
+  // single row with nothing to do. The first queryable canister is where they
+  // were going anyway: a canic fleet's upper levels are hubs and stores with no
+  // icydb schema, so "the top of the tree" and "somewhere worth looking" are
+  // different places.
+  //
+  // Depends on the capability probe, which resolves after the tree, so this runs
+  // when that lands rather than on mount.
+  const firstQueryable = useMemo(
+    () => (queryable ? (pidsInOrder(trees).find((pid) => queryable[pid] === true) ?? null) : null),
+    [trees, queryable],
+  );
+  // Once per target, not once per render, and not again if the reader folds it
+  // back up. A refresh re-probes and arrives at the same answer, which must not
+  // re-open what they closed; a different project arrives at a different one and
+  // gets its own reveal.
+  const revealedFor = useRef<string | null>(null);
+  if (firstQueryable !== null && revealedFor.current !== firstQueryable) {
+    revealedFor.current = firstQueryable;
+    const path = ancestorsOf(trees, firstQueryable) ?? [];
+    if (path.length > 0) {
+      setCollapsed((current) => {
+        const next = new Set(current);
+        for (const pid of path) next.delete(pid);
+
+        return next;
+      });
+    }
   }
 
   const searching = query.trim() !== "";
